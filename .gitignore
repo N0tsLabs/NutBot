@@ -1,8 +1,38 @@
+# Dependencies
 node_modules/
-.env
-*.log
+web/node_modules/
+
+# Build outputs
+dist/
+web/dist/
+
+# Data
+data/
 screenshots/
 temp/
-dist/
+
+# Environment
+.env
+.env.local
+
+# Config (user)
+config.json
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
 .DS_Store
 Thumbs.db
+
+# Test
+coverage/
+
+# Cache
+.cache/
+.npm/

@@ -1,0 +1,524 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================
+   VSCode 风格主题变量
+   ============================================ */
+
+:root {
+	/* 深色主题（默认） */
+	--bg-primary: #1e1e1e;
+	--bg-secondary: #252526;
+	--bg-tertiary: #2d2d2d;
+	--bg-input: #3c3c3c;
+	--bg-hover: #2a2d2e;
+	--bg-active: #37373d;
+	--bg-selection: #264f78;
+
+	--border-color: #3c3c3c;
+	--border-active: #007acc;
+
+	--text-primary: #d4d4d4;
+	--text-secondary: #808080;
+	--text-muted: #6e6e6e;
+
+	--accent: #007acc;
+	--accent-hover: #1177bb;
+	--accent-subtle: rgba(0, 122, 204, 0.2);
+
+	--success: #4ec9b0;
+	--error: #f14c4c;
+	--warning: #cca700;
+	--info: #3794ff;
+
+	/* 滚动条 */
+	--scrollbar-bg: transparent;
+	--scrollbar-thumb: #424242;
+	--scrollbar-thumb-hover: #555555;
+}
+
+/* 浅色主题 */
+[data-theme='light'] {
+	--bg-primary: #ffffff;
+	--bg-secondary: #f3f3f3;
+	--bg-tertiary: #e8e8e8;
+	--bg-input: #ffffff;
+	--bg-hover: #e8e8e8;
+	--bg-active: #d4d4d4;
+	--bg-selection: #add6ff;
+
+	--border-color: #e5e5e5;
+	--border-active: #007acc;
+
+	--text-primary: #333333;
+	--text-secondary: #616161;
+	--text-muted: #999999;
+
+	--accent: #007acc;
+	--accent-hover: #005a9e;
+	--accent-subtle: rgba(0, 122, 204, 0.1);
+
+	--scrollbar-bg: #f3f3f3;
+	--scrollbar-thumb: #c1c1c1;
+	--scrollbar-thumb-hover: #a8a8a8;
+}
+
+/* ============================================
+   基础样式
+   ============================================ */
+
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+body {
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+	background-color: var(--bg-primary);
+	color: var(--text-primary);
+	min-height: 100vh;
+	line-height: 1.5;
+	-webkit-font-smoothing: antialiased;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+
+::-webkit-scrollbar-track {
+	background: var(--scrollbar-bg);
+}
+
+::-webkit-scrollbar-thumb {
+	background: var(--scrollbar-thumb);
+	border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: var(--scrollbar-thumb-hover);
+}
+
+/* ============================================
+   组件样式
+   ============================================ */
+
+.btn {
+	@apply px-4 py-2 rounded font-medium transition-all duration-150 text-sm;
+	background-color: var(--bg-input);
+	color: var(--text-primary);
+	border: 1px solid var(--border-color);
+}
+
+.btn:hover:not(:disabled) {
+	background-color: var(--bg-hover);
+}
+
+.btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.btn-primary {
+	background-color: var(--accent);
+	color: #ffffff;
+	border-color: var(--accent);
+}
+
+.btn-primary:hover:not(:disabled) {
+	background-color: var(--accent-hover);
+	border-color: var(--accent-hover);
+}
+
+.btn-secondary {
+	background-color: var(--bg-input);
+	color: var(--text-primary);
+}
+
+.input {
+	@apply w-full px-3 py-2 rounded text-sm;
+	background-color: var(--bg-input);
+	border: 1px solid var(--border-color);
+	color: var(--text-primary);
+	outline: none;
+	transition: border-color 0.15s;
+}
+
+.input::placeholder {
+	color: var(--text-muted);
+}
+
+.input:focus {
+	border-color: var(--border-active);
+}
+
+.card {
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	@apply rounded-lg p-4;
+}
+
+/* ============================================
+   消息样式
+   ============================================ */
+
+.message {
+	@apply p-4 rounded-lg max-w-[85%];
+}
+
+.message-user {
+	background-color: var(--accent-subtle);
+	border: 1px solid var(--accent);
+	border-opacity: 30%;
+	@apply ml-auto;
+}
+
+.message-assistant {
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+}
+
+/* ============================================
+   Markdown 样式
+   ============================================ */
+
+.markdown {
+	@apply leading-relaxed;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+	@apply font-semibold mb-3 mt-4;
+	color: var(--text-primary);
+}
+
+.markdown h1 {
+	@apply text-xl;
+}
+.markdown h2 {
+	@apply text-lg;
+}
+.markdown h3 {
+	@apply text-base;
+}
+
+.markdown p {
+	@apply mb-3;
+}
+
+.markdown code {
+	@apply px-1.5 py-0.5 rounded text-sm font-mono;
+	background-color: var(--bg-tertiary);
+	color: #ce9178;
+}
+
+.markdown pre {
+	@apply p-4 rounded-lg overflow-x-auto mb-3;
+	background-color: var(--bg-primary);
+	border: 1px solid var(--border-color);
+}
+
+.markdown pre code {
+	@apply bg-transparent p-0;
+	color: var(--text-primary);
+}
+
+.markdown ul,
+.markdown ol {
+	@apply pl-6 mb-3;
+}
+
+.markdown li {
+	@apply mb-1;
+}
+
+.markdown a {
+	color: var(--accent);
+}
+
+.markdown a:hover {
+	text-decoration: underline;
+}
+
+/* ============================================
+   工具调用样式
+   ============================================ */
+
+.tool-thinking {
+	@apply text-sm italic px-3 py-2 mb-2 rounded;
+	background: var(--accent-subtle);
+	border-left: 3px solid var(--accent);
+	color: var(--text-secondary);
+}
+
+.tools-summary {
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	@apply rounded-lg overflow-hidden;
+}
+
+.tools-header {
+	@apply flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors;
+}
+
+.tools-header:hover {
+	background-color: var(--bg-hover);
+}
+
+.tools-progress {
+	@apply flex gap-1.5;
+}
+
+.tool-dot {
+	@apply w-2 h-2 rounded-full;
+	background-color: var(--text-muted);
+	transition: all 0.3s;
+}
+
+.tool-dot.running {
+	background-color: var(--warning);
+	animation: pulse 1.5s ease-in-out infinite;
+}
+
+.tool-dot.success {
+	background-color: var(--success);
+}
+
+.tool-dot.error {
+	background-color: var(--error);
+}
+
+.tools-text {
+	@apply text-sm flex-1;
+	color: var(--text-secondary);
+}
+
+.tools-toggle {
+	@apply text-xs;
+	color: var(--text-muted);
+}
+
+.tools-detail {
+	border-top: 1px solid var(--border-color);
+}
+
+/* 单个工具项 */
+.tool-item {
+	border-bottom: 1px solid var(--border-color);
+}
+
+.tool-item:last-child {
+	border-bottom: none;
+}
+
+.tool-item-header {
+	@apply flex items-center gap-2 px-4 py-2.5 cursor-pointer transition-colors;
+}
+
+.tool-item-header:hover {
+	background-color: var(--bg-hover);
+}
+
+.tool-status-icon {
+	@apply text-sm w-5 text-center;
+}
+
+.tool-name {
+	@apply font-mono text-sm font-medium;
+	color: var(--accent);
+}
+
+.tool-action {
+	@apply text-xs flex-1 truncate;
+	color: var(--text-muted);
+}
+
+.tool-item-toggle {
+	@apply text-sm w-4 text-center;
+	color: var(--text-muted);
+}
+
+.tool-item-detail {
+	@apply px-4 py-3 space-y-3;
+	background-color: var(--bg-primary);
+}
+
+.tool-section {
+	@apply space-y-2;
+}
+
+.tool-section-header {
+	@apply flex items-center justify-between;
+}
+
+.tool-label {
+	@apply text-xs font-medium;
+	color: var(--text-muted);
+}
+
+.copy-btn {
+	@apply text-xs px-2 py-1 rounded transition-colors;
+	color: var(--text-muted);
+}
+
+.copy-btn:hover {
+	background-color: var(--bg-hover);
+	color: var(--text-primary);
+}
+
+.tool-code {
+	@apply text-xs font-mono p-3 rounded overflow-x-auto;
+	background-color: var(--bg-tertiary);
+	border: 1px solid var(--border-color);
+	color: var(--text-primary);
+	white-space: pre-wrap;
+	word-break: break-all;
+	max-height: 200px;
+	overflow-y: auto;
+}
+
+.tool-code.scrollable {
+	max-height: 400px;
+}
+
+.tool-code.error {
+	color: var(--error);
+	background-color: rgba(244, 67, 54, 0.1);
+	border-color: var(--error);
+}
+
+/* ============================================
+   实时执行状态
+   ============================================ */
+
+.execution-status {
+	@apply rounded-lg px-4 py-3 mx-auto max-w-xl;
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	animation: fadeIn 0.2s ease-out;
+}
+
+.status-content {
+	@apply flex items-center gap-3;
+}
+
+.status-icon {
+	@apply text-lg flex-shrink-0;
+}
+
+.status-text-wrapper {
+	@apply flex flex-col gap-0.5 min-w-0;
+}
+
+.status-text {
+	@apply text-sm;
+	color: var(--text-primary);
+}
+
+.status-detail {
+	@apply text-xs truncate;
+	color: var(--text-muted);
+}
+
+/* ============================================
+   截图预览
+   ============================================ */
+
+.screenshot-preview {
+	@apply relative cursor-pointer rounded-lg overflow-hidden;
+	max-width: 300px;
+}
+
+.screenshot-thumbnail {
+	@apply w-full h-auto rounded-lg;
+	max-height: 200px;
+	object-fit: cover;
+	border: 1px solid var(--border-color);
+}
+
+.screenshot-overlay {
+	@apply absolute inset-0 flex items-center justify-center opacity-0 transition-opacity;
+	background-color: rgba(0, 0, 0, 0.6);
+}
+
+.screenshot-preview:hover .screenshot-overlay {
+	@apply opacity-100;
+}
+
+.screenshot-overlay span {
+	@apply text-white text-sm font-medium;
+}
+
+/* 图片预览模态框 */
+.image-modal {
+	@apply fixed inset-0 flex items-center justify-center z-50;
+	background-color: rgba(0, 0, 0, 0.85);
+	animation: fadeIn 0.2s ease-out;
+}
+
+.image-modal-content {
+	@apply relative max-w-[90vw] max-h-[90vh];
+}
+
+.image-modal-close {
+	@apply absolute -top-10 right-0 w-8 h-8 flex items-center justify-center rounded-full transition-colors;
+	color: rgba(255, 255, 255, 0.7);
+	background-color: rgba(60, 60, 60, 0.8);
+}
+
+.image-modal-close:hover {
+	color: #ffffff;
+	background-color: rgba(60, 60, 60, 1);
+}
+
+.image-modal-img {
+	@apply max-w-full max-h-[85vh] rounded-lg shadow-2xl;
+}
+
+/* ============================================
+   动画
+   ============================================ */
+
+@keyframes fadeIn {
+	from {
+		opacity: 0;
+		transform: translateY(10px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.5;
+	}
+}
+
+/* ============================================
+   响应式适配
+   ============================================ */
+
+/* 移动端 */
+@media (max-width: 768px) {
+	.message {
+		@apply max-w-[95%];
+	}
+
+	.tool-item-header {
+		@apply flex-wrap;
+	}
+
+	.tool-action {
+		@apply w-full mt-1;
+	}
+}

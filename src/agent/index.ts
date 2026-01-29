@@ -1,0 +1,742 @@
+/**
+ * Agent 核心
+ * 执行 AI 对话和工具调用
+ */
+
+import { logger } from '../utils/logger.js';
+import { generateId, safeParseJSON, getLocationByIP, type UserLocation } from '../utils/helpers.js';
+import { getSystemDescription } from '../tools/exec.js';
+import { memoryManager } from '../memory/index.js';
+import type { Gateway } from '../gateway/index.js';
+import type { AgentChunk, ChatChunk, ToolCall, ToolUse, ContentBlock } from '../types/index.js';
+import { SessionManager } from './session.js';
+
+interface AgentRunOptions {
+	model?: string;
+	systemPrompt?: string;
+	maxIterations?: number;
+}
+
+// 需要 Vision 能力的工具
+const VISION_REQUIRED_TOOLS = ['screenshot', 'computer'];
+
+interface StoredSession {
+	id: string;
+	title: string;
+	createdAt: string;
+	updatedAt: string;
+	messages: unknown[];
+	metadata?: Record<string, unknown>;
+}
+
+/**
+ * Agent 类
+ */
+export class Agent {
+	private gateway: Gateway;
+	private logger = logger.child('Agent');
+	private defaultSystemPrompt: string;
+
+	constructor(gateway: Gateway) {
+		this.gateway = gateway;
+		this.defaultSystemPrompt = ''; // 动态生成
+	}
+
+	/**
+	 * 生成系统提示（根据 Vision 能力和用户信息动态调整）
+	 */
+	private generateSystemPrompt(
+		hasVision: boolean,
+		userInfo?: { name?: string; location?: UserLocation; customPrompt?: string; language?: string }
+	): string {
+		// 用户信息部分
+		const userInfoSection = userInfo
+			? `
+## 用户信息
+${userInfo.name ? `- 用户名称：${userInfo.name}` : ''}
+${userInfo.location ? `- 用户位置：${userInfo.location.city}${userInfo.location.region ? `，${userInfo.location.region}` : ''}${userInfo.location.country ? `，${userInfo.location.country}` : ''}` : ''}
+${userInfo.location?.timezone ? `- 时区：${userInfo.location.timezone}` : ''}
+${userInfo.language ? `- 偏好语言：${userInfo.language}` : ''}
+
+**提示**：当用户询问天气、本地新闻、附近服务等与位置相关的信息时，可以直接使用上述位置，无需再次询问。
+`
+			: '';
+
+		// 用户记忆部分
+		const memorySummary = memoryManager.getSummary();
+
+		// 用户自定义 prompt
+		const customPromptSection = userInfo?.customPrompt
+			? `
+## 用户自定义指令
+${userInfo.customPrompt}
+`
+			: '';
+
+		const basePrompt = `你是 NutBot，我的私人 AI 助理。你运行在我的电脑上，能看到我的屏幕，能操控我的电脑。
+${userInfoSection}${memorySummary ? `\n${memorySummary}\n` : ''}${customPromptSection}
+${getSystemDescription()}
+
+## 核心原则（绝对必须遵守）
+
+### 0. ⭐⭐⭐ 工具选择（最重要！）
+
+**浏览器操作 = browser 工具，桌面操作 = screenshot + computer**
+
+| 关键词 | 使用工具 |
+|-------|---------|
+| 网页、网站、浏览器、链接、URL、搜索xxx | **browser** |
+| 本地应用、软件、桌面、文件夹、记事本、微信、Excel | **screenshot + computer** |
+
+**绝对禁止**：用 screenshot + computer 操作浏览器窗口！浏览器只能用 browser 工具！
+
+### 1. 你必须自己完成任务，绝对不能推给用户
+- ❌ 错误："需要你点击左侧的xxx"、"请你手动操作"
+- ✅ 正确：自己使用工具完成操作
+
+### 2. 先观察再行动
+- **浏览器**：browser snapshot 获取页面元素
+- **桌面**：computer list_elements 获取屏幕元素（精确坐标！）或 screenshot 截图
+
+### 3. 持续循环直到完成
+- 不要中途停下来问用户，自己判断下一步
+- 只有任务真正完成后才向用户报告结果
+
+### 4. 善始善终
+- 用 browser 打开的网页，完成后必须 close
+- 操作桌面应用后，如果用户没说保持打开，可以最小化或关闭
+
+## 可用工具
+
+### exec - 执行系统命令
+- Windows: PowerShell | macOS/Linux: bash
+- 打开应用最可靠的方式是用 computer 工具通过开始菜单搜索`;
+
+		// Vision 模式：支持截图分析和桌面控制
+		const visionTools = `
+
+### screenshot - 屏幕截图
+- 仅用于**桌面应用**（记事本、微信、Excel 等）
+- 网页任务禁止使用，用 browser snapshot
+
+### computer - 桌面控制
+- 仅用于**桌面应用**（记事本、微信、Excel 等）
+- 网页任务禁止使用，用 browser 工具
+
+#### ⭐ 精确点击（优先使用！）
+- **list_elements**: 获取屏幕上所有可交互元素的精确坐标
+  - filter_type: "taskbar" - 只获取任务栏元素
+  - filter_type: "buttons" - 只获取按钮
+  - filter_type: "all" - 获取所有元素
+- **click_element**: 根据名称直接点击元素（自动匹配+精确点击）
+  - element_name: "QQ" - 点击名称包含 QQ 的元素
+  - element_name: "微信" - 点击微信
+
+#### 坐标点击（list_elements 找不到时的备选）
+- left_click: 左键点击坐标 [x, y]
+- right_click: 右键点击
+- double_click: 双击
+
+#### 其他操作
+- type: 输入文本（支持中文）
+- key: 按键（Enter, Tab, Escape, Up, Down 等）
+- hotkey: 快捷键 ["ctrl", "c"]、["win"]
+- scroll: 滚动 (up/down)
+- mouse_move: 移动鼠标
+- **delay 参数**：操作后等待毫秒数`;
+
+		// 非 Vision 模式：只有浏览器操作
+		const nonVisionNotice = `
+
+### ⚠️ 桌面控制受限
+当前模型不支持图像理解，无法分析截图。
+- 只能使用 browser 工具操作网页
+- 不能进行桌面级操作`;
+
+		const browserTool = `
+
+### 网页操作 - 根据任务选择工具
+
+#### 方式1：用默认浏览器打开（保留登录状态）⭐ 简单打开推荐
+如果只是想在用户的浏览器中打开网页（保留登录状态、书签等），使用 exec 工具：
+\`\`\`
+exec command: 'Start-Process "https://www.bilibili.com"'  # Windows
+exec command: 'open "https://www.bilibili.com"'          # macOS  
+exec command: 'xdg-open "https://www.bilibili.com"'      # Linux
+\`\`\`
+优点：使用用户常用浏览器，保留登录状态
+缺点：只能打开，不能自动操作
+
+#### 方式2：browser 工具（自动化操作）
+如果需要自动点击、输入、提取数据，使用 browser 工具。
+**重要**：browser open 会优先使用用户已打开的浏览器（保留登录状态），只需 action: "open"，不要传 mode。
+
+**核心操作流程：**
+1. \`browser open\` - 打开/连接浏览器（优先用用户当前浏览器）
+2. \`browser goto url:"..."\` - 导航到目标网页
+3. \`browser snapshot\` - **获取页面元素列表**（返回所有可交互元素及其 ref 编号）
+4. 根据 snapshot 结果找到目标元素的 ref，执行操作
+5. \`browser close\` - 完成后关闭
+
+**如何找到搜索框并搜索：**
+1. snapshot 会返回页面所有元素，搜索框通常是 \`<input>\` 标签，文本可能包含"搜索"、"search"等
+2. 找到搜索框的 ref 后：\`browser click ref:搜索框ref\` 聚焦
+3. 输入内容：\`browser type text:"关键词"\`
+4. 提交搜索：\`browser press key:"Enter"\`
+5. 等待加载：\`browser wait waitFor:"network"\`
+6. 再次 snapshot 查看搜索结果
+
+#### 选择建议：
+- **"帮我打开xxx网站"** → exec + Start-Process（用户自己浏览）
+- **"帮我搜索/点击/操作"** → browser 工具（自动化操作）
+- **"获取网页内容"** → web fetch（获取文本即可）
+
+### web - 轻量网页获取
+- fetch: 获取网页文本内容（不需要交互时用）`;
+
+		const taskModes = `
+
+## 任务类型判断（最重要！）
+
+### ⭐ 判断规则：
+| 用户意图 | 选择方式 |
+|----------|----------|
+| 只是打开网页让用户自己看 | exec + Start-Process |
+| 需要自动搜索/点击/填表/提取数据 | browser 工具 |
+| 只需要获取网页文本内容 | web fetch |
+| 操作本地桌面应用程序 | screenshot + computer |
+
+### 方式1：简单打开网页（用户自己看）
+\`\`\`
+exec command: 'Start-Process "网址"'   # Windows
+exec command: 'open "网址"'            # macOS
+\`\`\`
+→ 在用户的默认浏览器打开，保留登录状态
+
+### 方式2：自动化操作网页（browser 工具）
+\`\`\`
+browser open                          # 1. 打开浏览器
+browser goto url:"目标网址"            # 2. 导航到网页
+browser snapshot                      # 3. 获取元素列表（关键！）
+# snapshot 返回示例：[{ref:1, tag:"input", text:"搜索"}, {ref:2, tag:"button", text:"登录"}, ...]
+browser click ref:搜索框的ref          # 4. 点击搜索框聚焦
+browser type text:"搜索内容"           # 5. 输入文字
+browser press key:"Enter"             # 6. 按回车提交
+browser wait waitFor:"network"        # 7. 等待页面加载
+browser snapshot                      # 8. 再次获取元素，查看结果
+browser close                         # 9. 完成后关闭
+\`\`\`
+**snapshot 是核心！** 通过它获取页面元素的 ref，才能精确操作。
+
+### 桌面任务流程（优先使用 list_elements + click_element！）
+**⚠️ 仅用于本地桌面应用（如：记事本、Excel、微信），网页任务必须用 browser！**
+
+#### ⭐ 推荐流程（精确定位）
+\`\`\`
+1. computer list_elements filter_type:"taskbar" → 获取任务栏元素列表
+2. 从列表中找到目标应用
+3. computer click_element element_name:"应用名" → 直接点击
+4. 如需验证：screenshot 截图查看结果
+\`\`\`
+
+#### 备选流程（只在 list_elements 找不到时使用）
+\`\`\`
+1. screenshot 截图 → 了解当前屏幕
+2. 分析屏幕，决定操作
+3. computer left_click coordinate:[x,y] → 点击坐标
+4. screenshot 截图 → 验证结果
+\`\`\`
+
+### 打开本地应用程序（非浏览器）
+
+**⭐ 优先用 list_elements 检查任务栏！**
+
+\`\`\`
+1. computer list_elements filter_type:"taskbar" → 检查任务栏有没有目标应用
+2. 找到了 → computer click_element element_name:"应用名"
+3. 找不到 → computer hotkey keys:["win"] delay:800 打开开始菜单
+4. computer type text:"应用名" → 搜索
+5. computer key key:"Enter" → 打开
+\`\`\`
+
+**优势：list_elements 返回精确坐标，不会点错位置！**
+
+## 重要提醒
+
+1. **⭐ 网页任务必须用 browser 工具**，即使用户说"打开浏览器"，也用 browser open！
+2. **不要告诉用户去做什么，自己做！** 
+3. 任务完成后给用户清晰的结果汇总`;
+
+		const desktopMode = hasVision
+			? `
+
+## 桌面操作技巧（仅用于本地应用，网页任务请用 browser！）
+
+### ⭐ 精确定位（优先使用！）
+1. **list_elements** - 获取屏幕元素的精确坐标（比截图分析准确100倍）
+2. **click_element** - 根据名称直接点击（自动匹配最佳元素）
+
+示例：打开 QQ
+\`\`\`
+computer click_element element_name:"QQ"  // 直接点击，无需截图分析！
+\`\`\`
+
+### 坐标点击（备选方案）
+- 只有 list_elements 找不到目标元素时才用截图+坐标
+- 直接使用截图中的像素坐标，工具会自动处理缩放
+
+### 定位技巧
+1. 任务栏元素 → 用 filter_type:"taskbar" 过滤
+2. 系统托盘 → 元素名称通常包含应用名
+3. 操作后加 delay 等待界面响应`
+			: '';
+
+		const footer = `
+
+## 回复格式
+
+### ⭐ 每次调用工具前必须先说明思考（非常重要！）
+在调用每个工具之前，你必须先用一句话说明你的思考和意图：
+- "我需要先打开浏览器"
+- "现在访问B站首页"
+- "获取页面元素，找到搜索框"
+- "点击搜索框输入关键词"
+- "任务完成，关闭浏览器"
+
+这让用户能看到你的思考过程，而不是只看到一堆工具调用。
+
+### 最终结果
+完成任务后，用清晰的格式返回结果：
+- 搜索结果 → 编号列表
+- 数据 → 表格或分点
+- 操作结果 → 简洁状态报告
+
+当前时间：${new Date().toLocaleString()}
+${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' : '🔴 Vision 模式未启用，仅支持浏览器操作'}`;
+
+		return (
+			basePrompt + (hasVision ? visionTools : nonVisionNotice) + browserTool + taskModes + desktopMode + footer
+		);
+	}
+
+	/**
+	 * 初始化
+	 */
+	async init(): Promise<void> {
+		this.logger.debug('Agent 初始化完成');
+	}
+
+	/**
+	 * 运行 Agent
+	 */
+	async *run(message: string, session: StoredSession, options: AgentRunOptions = {}): AsyncGenerator<AgentChunk> {
+		const runId = generateId('run');
+		const startTime = Date.now();
+
+		this.logger.info(`开始 Agent 运行: ${runId}`);
+		this.logger.info(`用户消息: ${message.substring(0, 100)}${message.length > 100 ? '...' : ''}`);
+
+		try {
+			// 添加用户消息
+			this.gateway.sessionManager.addMessage(session.id, {
+				role: 'user',
+				content: message,
+			});
+
+			// 获取模型和 Provider
+			const modelRef = options.model || this.gateway.config.get<string>('agent.defaultModel');
+			this.logger.info(`使用模型: ${modelRef || '默认'}`);
+
+			// 检查 Vision 支持
+			const hasVision = this.gateway.providerManager.checkVisionSupport(modelRef);
+			this.logger.info(`Vision 支持: ${hasVision ? '✅ 是' : '❌ 否'}`);
+
+			// 获取用户信息（配置 + IP 定位）
+			const userName = this.gateway.config.get<string>('user.name');
+			const customPrompt = this.gateway.config.get<string>('user.customPrompt');
+			const language = this.gateway.config.get<string>('user.language');
+			let userLocation = this.gateway.config.get<UserLocation>('user.location');
+
+			// 如果配置中没有位置，尝试 IP 定位
+			if (!userLocation) {
+				try {
+					userLocation = (await getLocationByIP()) || undefined;
+					if (userLocation) {
+						this.logger.info(`IP 定位成功: ${userLocation.city}, ${userLocation.region || ''}`);
+					}
+				} catch (e) {
+					this.logger.debug('IP 定位失败，继续执行');
+				}
+			}
+
+			const userInfo = {
+				name: userName || undefined,
+				location: userLocation || undefined,
+				customPrompt: customPrompt || undefined,
+				language: language || undefined,
+			};
+
+			// 获取系统提示（根据 Vision 能力和用户信息动态生成）
+			const systemPrompt =
+				options.systemPrompt ||
+				this.gateway.config.get<string>('agent.systemPrompt') ||
+				this.generateSystemPrompt(hasVision, userInfo);
+
+			// 获取工具（如果不支持 Vision，过滤掉需要 Vision 的工具）
+			let tools = this.gateway.toolRegistry.getToolSchemas();
+			if (!hasVision) {
+				tools = tools.filter((t) => !VISION_REQUIRED_TOOLS.includes(t.name));
+			}
+			this.logger.info(`可用工具: ${tools.map((t) => t.name).join(', ') || '无'}`);
+
+			// 最大迭代次数（用于工具调用循环）
+			const maxIterations = options.maxIterations || this.gateway.config.get<number>('agent.maxIterations', 20);
+
+			let iteration = 0;
+
+			while (iteration < maxIterations) {
+				iteration++;
+				this.logger.info(`─────────── 迭代 ${iteration}/${maxIterations} ───────────`);
+
+				// 获取消息历史
+				const messages = this.gateway.sessionManager.getMessagesForAI(session.id, {
+					systemPrompt,
+					maxMessages: 30,
+				});
+
+				// 调用 AI
+				let fullContent = '';
+				let toolCalls: Array<ToolCall | ToolUse> = [];
+				let finishReason: string | null = null;
+
+				yield { type: 'thinking', iteration };
+
+				for await (const chunk of this.gateway.providerManager.chat(modelRef, messages, {
+					tools: tools.length > 0 ? tools : undefined,
+				})) {
+					if (chunk.type === 'content') {
+						fullContent = chunk.fullContent || fullContent + (chunk.content || '');
+						yield { type: 'content', content: chunk.content };
+					} else if (chunk.type === 'finish') {
+						finishReason = chunk.reason || null;
+						toolCalls = (chunk.toolCalls || []) as ToolCall[];
+					} else if (chunk.type === 'tool_use' && chunk.toolUse) {
+						toolCalls.push(chunk.toolUse);
+					}
+				}
+
+				// 保存 AI 响应
+				if (fullContent || toolCalls.length > 0) {
+					this.gateway.sessionManager.addMessage(session.id, {
+						role: 'assistant',
+						content: fullContent,
+						toolCalls: toolCalls.length > 0 ? this.normalizeToolCalls(toolCalls) : undefined,
+					});
+				}
+
+				// 检查是否需要执行工具
+				if (toolCalls.length === 0 || finishReason === 'stop') {
+					// 没有工具调用，结束
+					this.logger.info(`AI 响应完成，无工具调用`);
+					if (fullContent) {
+						this.logger.debug(
+							`AI 回复: ${fullContent.substring(0, 200)}${fullContent.length > 200 ? '...' : ''}`
+						);
+					}
+					yield { type: 'done', content: fullContent };
+					break;
+				}
+
+				// 执行工具调用
+				this.logger.info(`AI 请求执行 ${toolCalls.length} 个工具`);
+				yield { type: 'tools', count: toolCalls.length, thinking: fullContent };
+
+				// AI 的思考内容（工具调用前的文字）
+				const thinking = fullContent || '';
+				if (thinking) {
+					this.logger.info(`AI 思考: ${thinking.substring(0, 100)}${thinking.length > 100 ? '...' : ''}`);
+				}
+
+				for (const toolCall of toolCalls) {
+					const toolName = this.getToolName(toolCall);
+					const toolArgs = this.parseToolArgs(toolCall);
+					const toolId = this.getToolId(toolCall);
+
+					this.logger.info(`┌─ 执行工具: ${toolName}`);
+					this.logger.info(`│  参数: ${JSON.stringify(toolArgs).substring(0, 200)}`);
+					// 附带 AI 的思考内容
+					yield { type: 'tool_start', tool: toolName, args: toolArgs, thinking };
+
+					const toolStartTime = Date.now();
+					try {
+						const result = await this.gateway.executeTool(toolName, toolArgs);
+						const toolDuration = Date.now() - toolStartTime;
+
+						// 格式化结果用于日志
+						const resultStr =
+							typeof result === 'string'
+								? result.substring(0, 300)
+								: JSON.stringify(result).substring(0, 300);
+						this.logger.info(`│  结果: ${resultStr}${resultStr.length >= 300 ? '...' : ''}`);
+						this.logger.info(`└─ 完成 (${toolDuration}ms)`);
+
+						yield { type: 'tool_result', tool: toolName, result };
+
+						// 处理工具结果 - 特殊处理截图等大数据
+						const processed = this.processToolResult(toolName, result, hasVision);
+
+						// 添加工具结果消息
+						this.gateway.sessionManager.addMessage(session.id, {
+							role: 'tool',
+							content: processed.content,
+							metadata: {
+								toolCallId: toolId,
+								toolName,
+								isMultimodal: processed.isMultimodal,
+							},
+						});
+					} catch (error) {
+						const toolDuration = Date.now() - toolStartTime;
+						this.logger.error(`│  错误: ${(error as Error).message}`);
+						this.logger.error(`└─ 失败 (${toolDuration}ms)`);
+						yield { type: 'tool_error', tool: toolName, error: (error as Error).message };
+
+						// 添加错误消息
+						this.gateway.sessionManager.addMessage(session.id, {
+							role: 'tool',
+							content: JSON.stringify({ error: (error as Error).message }),
+							metadata: { toolCallId: toolId, toolName, error: true },
+						});
+					}
+				}
+
+				// 继续循环，让 AI 处理工具结果
+			}
+
+			// 超过最大迭代 - 强制让 AI 返回总结
+			if (iteration >= maxIterations) {
+				this.logger.warn(`达到最大迭代次数 ${maxIterations}，强制生成总结...`);
+
+				// 添加一条系统消息，要求 AI 总结
+				this.gateway.sessionManager.addMessage(session.id, {
+					role: 'user',
+					content:
+						'[系统提示] 已达到最大操作次数限制。请立即停止所有工具调用，根据目前已收集到的信息，给用户一个总结回复。如果任务未完成，请说明已完成的部分和未完成的原因。',
+				});
+
+				// 让 AI 生成最终响应（不允许工具调用）
+				const messages = this.gateway.sessionManager.getMessagesForAI(session.id, {
+					systemPrompt,
+					maxMessages: 30,
+				});
+
+				for await (const chunk of this.gateway.providerManager.chat(modelRef, messages, {
+					tools: undefined, // 不提供工具，强制文字回复
+				})) {
+					if (chunk.type === 'content') {
+						yield { type: 'content', content: chunk.content };
+					}
+				}
+
+				yield { type: 'max_iterations', iterations: iteration };
+			}
+
+			const duration = Date.now() - startTime;
+			this.logger.info(`Agent 运行完成: ${runId} (${duration}ms)`);
+		} catch (error) {
+			this.logger.error(`Agent 运行失败: ${runId}`, (error as Error).message);
+			yield { type: 'error', error: (error as Error).message };
+		}
+	}
+
+	/**
+	 * 获取工具名称
+	 */
+	private getToolName(toolCall: ToolCall | ToolUse): string {
+		if ('function' in toolCall && toolCall.function) {
+			return toolCall.function.name;
+		}
+		if ('name' in toolCall) {
+			return toolCall.name;
+		}
+		return '';
+	}
+
+	/**
+	 * 获取工具 ID
+	 */
+	private getToolId(toolCall: ToolCall | ToolUse): string {
+		return toolCall.id || '';
+	}
+
+	/**
+	 * 解析工具参数
+	 */
+	private parseToolArgs(toolCall: ToolCall | ToolUse): Record<string, unknown> {
+		// OpenAI 格式
+		if ('function' in toolCall && toolCall.function?.arguments) {
+			return safeParseJSON(toolCall.function.arguments, {});
+		}
+		// Anthropic 格式
+		if ('input' in toolCall && toolCall.input) {
+			return typeof toolCall.input === 'string' ? safeParseJSON(toolCall.input, {}) : toolCall.input;
+		}
+		return {};
+	}
+
+	/**
+	 * 标准化工具调用格式
+	 */
+	private normalizeToolCalls(toolCalls: Array<ToolCall | ToolUse>): ToolCall[] {
+		return toolCalls.map((tc) => {
+			if ('function' in tc) {
+				return tc as ToolCall;
+			}
+			// 转换 ToolUse 为 ToolCall
+			const toolUse = tc as ToolUse;
+			return {
+				id: toolUse.id,
+				type: 'function' as const,
+				function: {
+					name: toolUse.name,
+					arguments: JSON.stringify(toolUse.input),
+				},
+			};
+		});
+	}
+
+	/**
+	 * 处理工具结果 - 特殊处理截图等大数据
+	 * @param hasVision - 当前模型是否支持 Vision
+	 */
+	private processToolResult(
+		toolName: string,
+		result: unknown,
+		hasVision: boolean
+	): { content: string | ContentBlock[]; isMultimodal: boolean } {
+		// 截图工具特殊处理
+		if (toolName === 'screenshot') {
+			const screenshotResult = result as {
+				success: boolean;
+				base64?: string;
+				path?: string;
+				screens?: unknown[];
+			};
+
+			if (screenshotResult.base64) {
+				const sizeKB = Math.round((screenshotResult.base64.length * 0.75) / 1024);
+
+				if (hasVision) {
+					// Vision 模式：返回多模态内容，AI 可以直接看到图片
+					return {
+						content: [
+							{ type: 'text', text: `截图成功 (${sizeKB}KB)，请分析图片内容：` },
+							{
+								type: 'image_url',
+								image_url: { url: `data:image/png;base64,${screenshotResult.base64}` },
+							},
+						],
+						isMultimodal: true,
+					};
+				} else {
+					// 非 Vision 模式：不应该走到这里（工具已被过滤），但以防万一
+					return {
+						content: JSON.stringify({
+							success: screenshotResult.success,
+							error: '当前模型不支持图像理解，无法分析截图',
+						}),
+						isMultimodal: false,
+					};
+				}
+			}
+
+			// 保存到文件或列出屏幕
+			return {
+				content: JSON.stringify(result),
+				isMultimodal: false,
+			};
+		}
+
+		// browser 工具的截图也需要处理
+		if (toolName === 'browser') {
+			const browserResult = result as { success: boolean; base64?: string };
+			if (browserResult.base64) {
+				const sizeKB = Math.round((browserResult.base64.length * 0.75) / 1024);
+
+				if (hasVision) {
+					return {
+						content: [
+							{ type: 'text', text: `浏览器截图成功 (${sizeKB}KB)：` },
+							{ type: 'image_url', image_url: { url: `data:image/png;base64,${browserResult.base64}` } },
+						],
+						isMultimodal: true,
+					};
+				} else {
+					return {
+						content: JSON.stringify({
+							success: browserResult.success,
+							message: `截图成功 (${sizeKB}KB)。建议使用 snapshot 获取页面元素列表。`,
+						}),
+						isMultimodal: false,
+					};
+				}
+			}
+		}
+
+		// 其他工具直接返回
+		return {
+			content: typeof result === 'string' ? result : JSON.stringify(result),
+			isMultimodal: false,
+		};
+	}
+
+	/**
+	 * 分析截图
+	 */
+	async analyzeScreenshot(
+		screenshotBase64: string,
+		task: string,
+		options: { model?: string } = {}
+	): Promise<Record<string, unknown>> {
+		const { provider, model } = this.gateway.providerManager.resolveModel(options.model);
+
+		const prompt = `分析这个屏幕截图，并根据以下任务生成操作指令：
+
+任务：${task}
+
+请返回 JSON 格式的分析结果：
+{
+  "status": "continue|complete|error",
+  "description": "当前屏幕状态描述",
+  "actions": [
+    {
+      "type": "click|type|scroll|key",
+      "params": { ... }
+    }
+  ],
+  "reasoning": "推理过程"
+}`;
+
+		const messages = [
+			{
+				role: 'user' as const,
+				content: [
+					{ type: 'text' as const, text: prompt },
+					{ type: 'image_url' as const, image_url: { url: `data:image/png;base64,${screenshotBase64}` } },
+				],
+			},
+		];
+
+		let fullContent = '';
+		for await (const chunk of provider.chat(messages, { model, maxTokens: 2000 })) {
+			if (chunk.type === 'content' && chunk.content) {
+				fullContent += chunk.content;
+			}
+		}
+
+		return safeParseJSON(fullContent, { status: 'error', description: 'Failed to parse response' });
+	}
+}
+
+export { SessionManager };
+export default Agent;

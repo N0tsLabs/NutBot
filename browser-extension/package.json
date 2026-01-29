@@ -1,0 +1,17 @@
+{
+  "name": "nutbot-browser-extension",
+  "version": "1.0.0",
+  "description": "NutBot 浏览器控制扩展",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/background.ts --bundle --outfile=dist/background.js --format=esm --target=chrome100",
+    "watch": "esbuild src/background.ts --bundle --outfile=dist/background.js --format=esm --target=chrome100 --watch",
+    "icons": "node scripts/gen-icons.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "esbuild": "^0.20.0",
+    "sharp": "^0.33.5",
+    "typescript": "^5.3.3"
+  }
+}

@@ -1,0 +1,79 @@
+{
+	"$schema": "./schema.json",
+	"user": {
+		"name": null,
+		"location": null,
+		"timezone": null
+	},
+	"server": {
+		"host": "127.0.0.1",
+		"port": 18800,
+		"cors": {
+			"enabled": true,
+			"origins": ["*"]
+		}
+	},
+	"agent": {
+		"defaultModel": null,
+		"maxIterations": 20,
+		"timeout": 300000,
+		"systemPrompt": null
+	},
+	"providers": {},
+	"tools": {
+		"enabled": ["exec", "browser", "desktop", "screenshot", "web"],
+		"exec": {
+			"enabled": true,
+			"timeout": 30000,
+			"sandbox": true
+		},
+		"browser": {
+			"enabled": true,
+			"headless": true,
+			"timeout": 30000
+		},
+		"desktop": {
+			"enabled": true,
+			"mouseSpeed": 1000,
+			"keyboardDelay": 50
+		},
+		"screenshot": {
+			"enabled": true,
+			"quality": 80,
+			"format": "png"
+		},
+		"web": {
+			"enabled": true,
+			"timeout": 10000
+		}
+	},
+	"mcp": {
+		"enabled": true,
+		"port": 18801
+	},
+	"cron": {
+		"enabled": true,
+		"jobs": []
+	},
+	"sandbox": {
+		"enabled": true,
+		"mode": "permissive",
+		"allowedPaths": [],
+		"deniedCommands": []
+	},
+	"skills": {
+		"enabled": true,
+		"directory": "./skills",
+		"autoload": true
+	},
+	"logging": {
+		"level": "info",
+		"file": null,
+		"console": true
+	},
+	"data": {
+		"directory": "./data",
+		"sessions": "./data/sessions",
+		"logs": "./data/logs"
+	}
+}
