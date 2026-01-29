@@ -347,6 +347,13 @@ export class BrowserTool extends BaseTool {
 					this.initialPageUrl = this.page.url();
 				}
 
+				// 聚焦到当前页面
+				try {
+					await this.page.bringToFront();
+				} catch {
+					// 忽略聚焦失败
+				}
+
 				const targetCount = this.context.pages().length;
 				this.logger.info(`已通过扩展连接到浏览器（${targetCount} 个标签页）`);
 				return {
@@ -629,6 +636,13 @@ export class BrowserTool extends BaseTool {
 
 		// 跳转并等待网络基本稳定
 		await page.goto(url, { timeout, waitUntil: 'domcontentloaded' });
+
+		// 聚焦到当前页面（让用户看到操作的页面）
+		try {
+			await page.bringToFront();
+		} catch {
+			// 忽略聚焦失败
+		}
 
 		// 额外等待一小段时间让页面渲染
 		try {
@@ -929,18 +943,39 @@ export class BrowserTool extends BaseTool {
 	private async closeBrowser(): Promise<{ success: boolean; message: string }> {
 		let closedTabs = 0;
 
-		// 扩展模式下：关闭 NutBot 管理的标签页（不关闭用户原有的标签页）
-		if (this.mode === 'extension' && this.managedPages.size > 0) {
+		// 扩展模式下：关闭当前页面
+		if (this.mode === 'extension') {
+			// 优先关闭当前正在操作的页面
+			if (this.page && !this.page.isClosed()) {
+				try {
+					const url = this.page.url();
+					this.logger.debug(`正在关闭当前标签页: ${url}`);
+					await Promise.race([
+						this.page.close(),
+						new Promise((_, reject) => setTimeout(() => reject(new Error('关闭标签页超时')), 5000)),
+					]);
+					closedTabs++;
+					this.logger.info(`已关闭标签页: ${url}`);
+				} catch (e) {
+					this.logger.debug(`关闭当前标签页时出错: ${(e as Error).message}`);
+				}
+			}
+
+			// 关闭其他管理的标签页
 			for (const page of this.managedPages) {
+				if (page === this.page) continue; // 已经关闭过了
 				try {
 					if (!page.isClosed()) {
-						await page.close();
+						const url = page.url();
+						await Promise.race([
+							page.close(),
+							new Promise((_, reject) => setTimeout(() => reject(new Error('关闭标签页超时')), 5000)),
+						]);
 						closedTabs++;
-						this.logger.debug(`已关闭标签页: ${page.url()}`);
+						this.logger.debug(`已关闭标签页: ${url}`);
 					}
 				} catch (e) {
-					// 页面可能已被用户关闭
-					this.logger.debug('关闭标签页时出错（可能已关闭）');
+					this.logger.debug(`关闭标签页时出错: ${(e as Error).message}`);
 				}
 			}
 			this.managedPages.clear();
@@ -958,7 +993,16 @@ export class BrowserTool extends BaseTool {
 				this.context = null;
 			}
 			if (this.browser) {
-				await this.browser.close(); // 这只是断开 CDP 连接
+				this.logger.debug('正在断开 CDP 连接...');
+				try {
+					// 添加超时保护
+					await Promise.race([
+						this.browser.close(),
+						new Promise((_, reject) => setTimeout(() => reject(new Error('断开连接超时')), 5000)),
+					]);
+				} catch (e) {
+					this.logger.debug(`断开连接时出错: ${(e as Error).message}`);
+				}
 				this.browser = null;
 			}
 			this.logger.info(`已关闭 ${closedTabs} 个标签页并断开连接`);
