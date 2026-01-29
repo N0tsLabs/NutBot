@@ -482,6 +482,32 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 
 						yield { type: 'tool_result', tool: toolName, result };
 
+						// 检查是否是浏览器扩展未连接的致命错误
+						if (toolName === 'browser') {
+							const browserResult = result as { success?: boolean; message?: string };
+							if (
+								browserResult.success === false &&
+								browserResult.message?.includes('浏览器扩展未连接')
+							) {
+								this.logger.warn('浏览器扩展未连接，终止 Agent 运行');
+
+								// 添加工具结果消息
+								this.gateway.sessionManager.addMessage(session.id, {
+									role: 'tool',
+									content: JSON.stringify(result),
+									metadata: { toolCallId: toolId, toolName },
+								});
+
+								// 返回终止事件给前端
+								yield {
+									type: 'terminated',
+									reason: 'extension_not_connected',
+									content: browserResult.message,
+								};
+								return; // 终止 Agent 运行
+							}
+						}
+
 						// 处理工具结果 - 特殊处理截图等大数据
 						const processed = this.processToolResult(toolName, result, hasVision);
 
@@ -546,6 +572,14 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 		} catch (error) {
 			this.logger.error(`Agent 运行失败: ${runId}`, (error as Error).message);
 			yield { type: 'error', error: (error as Error).message };
+		} finally {
+			// 任务完成后自动清理浏览器连接
+			try {
+				await this.gateway.toolRegistry.cleanupTool('browser');
+				this.logger.debug('浏览器连接已清理');
+			} catch (cleanupError) {
+				this.logger.debug(`浏览器清理失败: ${(cleanupError as Error).message}`);
+			}
 		}
 	}
 

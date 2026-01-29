@@ -3,7 +3,7 @@
   "name": "NutBot Browser Control",
   "version": "1.0.0",
   "description": "让 NutBot 控制您的浏览器标签页，保留登录状态",
-  "permissions": ["debugger", "tabs", "activeTab"],
+  "permissions": ["debugger", "tabs", "activeTab", "windows"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "dist/background.js",

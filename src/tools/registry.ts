@@ -294,6 +294,16 @@ export class ToolRegistry {
 			await tool.cleanup();
 		}
 	}
+
+	/**
+	 * 清理指定工具的资源
+	 */
+	async cleanupTool(name: string): Promise<void> {
+		const tool = this.tools.get(name);
+		if (tool) {
+			await tool.cleanup();
+		}
+	}
 }
 
 export default ToolRegistry;

@@ -178,6 +178,26 @@ export const useAppStore = defineStore('app', () => {
 			case 'max_iterations':
 				currentStatus.value = { type: 'max_iterations', iterations: chunk.iterations };
 				break;
+
+			case 'terminated':
+				// Agent 因致命错误终止（如扩展未连接）
+				currentStatus.value = {
+					type: 'terminated',
+					reason: chunk.reason,
+					content: chunk.content,
+				};
+				// 更新最后一条消息，显示终止原因
+				if (lastMessage && lastMessage.role === 'assistant') {
+					lastMessage.streaming = false;
+					// 设置错误信息或内容
+					if (chunk.content) {
+						lastMessage.content = chunk.content;
+					}
+					lastMessage.error = chunk.reason === 'extension_not_connected' ? '浏览器扩展未连接，任务已终止' : '任务已终止';
+				}
+				// 清理工具执行状态
+				toolExecutions.value = [];
+				break;
 		}
 	};
 

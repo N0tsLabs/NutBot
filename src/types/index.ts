@@ -168,6 +168,7 @@ export interface AgentChunk {
 		| 'tool_result'
 		| 'tool_error'
 		| 'max_iterations'
+		| 'terminated'
 		| 'error';
 	iteration?: number;
 	content?: string;
@@ -177,6 +178,8 @@ export interface AgentChunk {
 	result?: unknown;
 	error?: string;
 	iterations?: number;
+	reason?: string; // 终止原因
+	thinking?: string; // AI 思考内容
 }
 
 export interface AgentOptions {

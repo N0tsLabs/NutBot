@@ -942,42 +942,61 @@ export class BrowserTool extends BaseTool {
 
 	private async closeBrowser(): Promise<{ success: boolean; message: string }> {
 		let closedTabs = 0;
+		let closedWindow = false;
 
-		// 扩展模式下：关闭当前页面
+		// 扩展模式下：关闭浏览器窗口
 		if (this.mode === 'extension') {
-			// 优先关闭当前正在操作的页面
-			if (this.page && !this.page.isClosed()) {
+			// 通过 Target.closeTarget 关闭浏览器（让扩展调用 chrome.windows.remove）
+			const closeBrowserViaExtension = async (page: Page): Promise<boolean> => {
 				try {
-					const url = this.page.url();
-					this.logger.debug(`正在关闭当前标签页: ${url}`);
-					await Promise.race([
-						this.page.close(),
-						new Promise((_, reject) => setTimeout(() => reject(new Error('关闭标签页超时')), 5000)),
-					]);
-					closedTabs++;
-					this.logger.info(`已关闭标签页: ${url}`);
+					const url = page.url();
+					this.logger.info(`正在关闭浏览器: ${url}`);
+
+					// 获取 browser 对象发送 Target.closeTarget
+					const browser = page.context().browser();
+					if (browser) {
+						try {
+							// 通过 browser CDP session 获取 targets 并关闭
+							const cdpSession = await browser.newBrowserCDPSession();
+
+							// 获取所有 targets
+							const { targetInfos } = (await cdpSession.send('Target.getTargets')) as {
+								targetInfos: Array<{ targetId: string; url: string; type: string }>;
+							};
+
+							// 找到匹配 URL 的 target
+							const target = targetInfos.find((t) => t.url === url && t.type === 'page');
+							if (target) {
+								// 发送关闭命令，带上 closeBrowser: true 来关闭整个窗口
+								await cdpSession.send('Target.closeTarget', {
+									targetId: target.targetId,
+									closeBrowser: true, // 告诉扩展关闭整个浏览器窗口
+								});
+								this.logger.info(`已通过扩展关闭浏览器窗口`);
+								return true;
+							} else {
+								this.logger.debug(`未找到匹配的 target: ${url}`);
+							}
+						} catch (cdpError) {
+							this.logger.debug(`关闭浏览器失败: ${(cdpError as Error).message}`);
+						}
+					}
+
+					return false;
 				} catch (e) {
-					this.logger.debug(`关闭当前标签页时出错: ${(e as Error).message}`);
+					this.logger.debug(`关闭浏览器时出错: ${(e as Error).message}`);
+					return false;
+				}
+			};
+
+			// 关闭当前正在操作的页面所在的浏览器窗口
+			if (this.page && !this.page.isClosed()) {
+				if (await closeBrowserViaExtension(this.page)) {
+					closedTabs++;
+					closedWindow = true;
 				}
 			}
 
-			// 关闭其他管理的标签页
-			for (const page of this.managedPages) {
-				if (page === this.page) continue; // 已经关闭过了
-				try {
-					if (!page.isClosed()) {
-						const url = page.url();
-						await Promise.race([
-							page.close(),
-							new Promise((_, reject) => setTimeout(() => reject(new Error('关闭标签页超时')), 5000)),
-						]);
-						closedTabs++;
-						this.logger.debug(`已关闭标签页: ${url}`);
-					}
-				} catch (e) {
-					this.logger.debug(`关闭标签页时出错: ${(e as Error).message}`);
-				}
-			}
 			this.managedPages.clear();
 		}
 

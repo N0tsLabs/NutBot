@@ -398,10 +398,68 @@ async function handleCDPCommand(msg: ExtensionCommandMessage): Promise<unknown> 
     }
 
     case 'Target.closeTarget': {
-      if (!targetTabId) {
+      const closeTargetId = (cdpParams as { targetId?: string })?.targetId;
+      const closeBrowser = (cdpParams as { closeBrowser?: boolean })?.closeBrowser;
+      let tabIdToClose: number | undefined = targetTabId;
+      
+      // 通过 targetId 查找 tabId
+      if (closeTargetId && !tabIdToClose) {
+        for (const [tabId, tab] of state.tabs) {
+          if (tab.targetId === closeTargetId) {
+            tabIdToClose = tabId;
+            break;
+          }
+        }
+      }
+      
+      if (!tabIdToClose) {
+        logger.warn(`Target.closeTarget: 未找到 targetId=${closeTargetId} 对应的标签页`);
         return { success: false };
       }
-      await chrome.tabs.remove(targetTabId);
+      
+      // 获取标签页所在的窗口
+      let windowId: number | undefined;
+      try {
+        const tab = await chrome.tabs.get(tabIdToClose);
+        windowId = tab.windowId;
+      } catch {
+        // 忽略
+      }
+      
+      logger.info(`关闭标签页: tabId=${tabIdToClose} targetId=${closeTargetId} closeBrowser=${closeBrowser}`);
+      
+      // 先从状态中移除，防止重复处理
+      state.tabs.delete(tabIdToClose);
+      
+      // 先分离 debugger，避免干扰标签页关闭
+      try {
+        await chrome.debugger.detach({ tabId: tabIdToClose });
+        logger.debug(`已分离 debugger: tabId=${tabIdToClose}`);
+      } catch (e) {
+        logger.debug(`分离 debugger 失败（可能已分离）: ${(e as Error).message}`);
+      }
+      
+      // 如果要关闭整个浏览器窗口
+      if (closeBrowser && windowId) {
+        try {
+          await chrome.windows.remove(windowId);
+          logger.info(`浏览器窗口已关闭: windowId=${windowId}`);
+          return { success: true, closedWindow: true };
+        } catch (e) {
+          logger.error(`关闭浏览器窗口失败: ${(e as Error).message}`);
+          // 回退到关闭标签页
+        }
+      }
+      
+      // 关闭标签页
+      try {
+        await chrome.tabs.remove(tabIdToClose);
+        logger.info(`标签页已关闭: tabId=${tabIdToClose}`);
+      } catch (e) {
+        logger.error(`关闭标签页失败: ${(e as Error).message}`);
+        throw e;
+      }
+      
       return { success: true };
     }
   }
