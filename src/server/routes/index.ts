@@ -5,6 +5,7 @@
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import type { Gateway } from '../../gateway/index.js';
 import { memoryManager, type Memory } from '../../memory/index.js';
+import { ocrSomService, type OcrSomOptions } from '../../services/ocr-som.js';
 
 /**
  * 创建路由插件
@@ -499,6 +500,77 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 		fastify.delete('/memories', async () => {
 			memoryManager.clear();
 			return { success: true };
+		});
+
+		// ==================== OCR-SoM 服务 ====================
+
+		// 检查 OCR-SoM 连接
+		fastify.get('/ocr/status', async () => {
+			return ocrSomService.checkConnection();
+		});
+
+		// 获取 OCR 配置
+		fastify.get('/ocr/config', async () => {
+			return {
+				enabled: gateway.config.get<boolean>('ocr.enabled', true),
+				baseUrl: gateway.config.get<string>('ocr.baseUrl', 'http://localhost:5000'),
+				timeout: gateway.config.get<number>('ocr.timeout', 30000),
+			};
+		});
+
+		// 更新 OCR 配置
+		fastify.put<{
+			Body: {
+				enabled?: boolean;
+				baseUrl?: string;
+				timeout?: number;
+			};
+		}>('/ocr/config', async (request) => {
+			const { enabled, baseUrl, timeout } = request.body;
+
+			if (enabled !== undefined) gateway.config.set('ocr.enabled', enabled);
+			if (baseUrl !== undefined) gateway.config.set('ocr.baseUrl', baseUrl);
+			if (timeout !== undefined) gateway.config.set('ocr.timeout', timeout);
+
+			gateway.config.save();
+			return { success: true };
+		});
+
+		// OCR 识别（SoM 标注）
+		fastify.post<{
+			Body: {
+				image_base64: string;
+				options?: OcrSomOptions;
+			};
+		}>('/ocr/analyze', async (request, reply) => {
+			const { image_base64, options } = request.body;
+
+			if (!image_base64) {
+				return reply.code(400).send({
+					success: false,
+					error: 'Missing image_base64',
+				});
+			}
+
+			const result = await ocrSomService.analyze(image_base64, options || {});
+			return result;
+		});
+
+		// 仅 OCR 识别
+		fastify.post<{
+			Body: { image_base64: string };
+		}>('/ocr/text', async (request, reply) => {
+			const { image_base64 } = request.body;
+
+			if (!image_base64) {
+				return reply.code(400).send({
+					success: false,
+					error: 'Missing image_base64',
+				});
+			}
+
+			const result = await ocrSomService.ocr(image_base64);
+			return result;
 		});
 	};
 }

@@ -51,6 +51,11 @@
 		"enabled": true,
 		"port": 18801
 	},
+	"ocr": {
+		"enabled": true,
+		"baseUrl": "http://localhost:5000",
+		"timeout": 30000
+	},
 	"cron": {
 		"enabled": true,
 		"jobs": []

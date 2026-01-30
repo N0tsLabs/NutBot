@@ -206,6 +206,83 @@
 			</div>
 		</section>
 
+		<!-- OCR-SoM 设置 -->
+		<section class="card mb-6">
+			<h3 class="text-lg font-medium mb-4 flex items-center gap-2">
+				<span>👁️</span>
+				OCR-SoM 视觉识别
+			</h3>
+			<p class="text-sm text-muted mb-4">
+				OCR-SoM 用于识别屏幕上的文字和 UI 元素，为 AI 提供精确的点击坐标。
+				<a href="https://github.com/N0tsLabs/Set-of-Mark" target="_blank" class="text-blue-400 hover:underline">了解更多</a>
+			</p>
+			
+			<div class="space-y-4">
+				<!-- 启用开关 -->
+				<div class="flex items-center justify-between">
+					<div>
+						<div class="font-medium">启用 OCR-SoM</div>
+						<div class="text-sm text-muted">用于桌面自动化的视觉识别</div>
+					</div>
+					<label class="switch">
+						<input type="checkbox" v-model="ocrConfig.enabled" @change="saveOcrConfig" />
+						<span class="slider"></span>
+					</label>
+				</div>
+				
+				<!-- 服务地址 -->
+				<div>
+					<label class="block text-sm text-muted mb-1">服务地址</label>
+					<div class="flex gap-2">
+						<input
+							v-model="ocrConfig.baseUrl"
+							placeholder="http://localhost:5000"
+							class="input flex-1"
+							@blur="saveOcrConfig"
+						/>
+						<button
+							@click="testOcrConnection"
+							:disabled="loadingStates['ocr-test']"
+							class="btn btn-secondary btn-loading"
+							:class="{ loading: loadingStates['ocr-test'] }"
+						>
+							<span v-if="loadingStates['ocr-test']" class="spinner"></span>
+							{{ loadingStates['ocr-test'] ? '检测中' : '测试连接' }}
+						</button>
+					</div>
+				</div>
+				
+				<!-- 连接状态 -->
+				<div v-if="ocrStatus" class="p-3 rounded-lg" :class="ocrStatus.connected ? 'bg-green-900/20' : 'bg-red-900/20'">
+					<div class="flex items-center gap-2">
+						<span>{{ ocrStatus.connected ? '🟢' : '🔴' }}</span>
+						<span class="font-medium">{{ ocrStatus.message }}</span>
+					</div>
+					<div v-if="ocrStatus.info" class="text-sm text-muted mt-2">
+						<div>设备: {{ ocrStatus.info.device || 'N/A' }}</div>
+						<div>版本: {{ ocrStatus.info.version || 'N/A' }}</div>
+					</div>
+					<div v-if="!ocrStatus.connected" class="text-sm text-muted mt-2">
+						请确保 OCR-SoM 服务正在运行：<code class="bg-zinc-700 px-1 rounded">python server.py</code>
+					</div>
+				</div>
+				
+				<!-- 超时设置 -->
+				<div>
+					<label class="block text-sm text-muted mb-1">超时时间 (毫秒)</label>
+					<input
+						v-model.number="ocrConfig.timeout"
+						type="number"
+						min="5000"
+						max="120000"
+						step="1000"
+						class="input w-32"
+						@blur="saveOcrConfig"
+					/>
+				</div>
+			</div>
+		</section>
+
 		<!-- 服务器设置 -->
 		<section class="card mb-6">
 			<h3 class="text-lg font-medium mb-4 flex items-center gap-2">
@@ -451,6 +528,14 @@ const config = reactive({
 	server: { host: '127.0.0.1', port: 18800 },
 });
 
+// OCR-SoM 配置
+const ocrConfig = reactive({
+	enabled: true,
+	baseUrl: 'http://localhost:5000',
+	timeout: 30000,
+});
+const ocrStatus = ref(null);
+
 // 用户设置
 const userSettings = reactive({
 	name: '',
@@ -695,6 +780,49 @@ const saveSandboxMode = async () => {
 	}
 };
 
+// ========== OCR-SoM 设置 ==========
+
+const loadOcrConfig = async () => {
+	try {
+		const data = await api.get('/api/ocr/config');
+		ocrConfig.enabled = data.enabled ?? true;
+		ocrConfig.baseUrl = data.baseUrl || 'http://localhost:5000';
+		ocrConfig.timeout = data.timeout || 30000;
+	} catch (error) {
+		console.error('Load OCR config failed:', error);
+	}
+};
+
+const saveOcrConfig = async () => {
+	try {
+		await api.put('/api/ocr/config', {
+			enabled: ocrConfig.enabled,
+			baseUrl: ocrConfig.baseUrl,
+			timeout: ocrConfig.timeout,
+		});
+	} catch (error) {
+		console.error('Save OCR config failed:', error);
+	}
+};
+
+const testOcrConnection = async () => {
+	if (loadingStates['ocr-test']) return;
+	loadingStates['ocr-test'] = true;
+	ocrStatus.value = null;
+	
+	try {
+		const result = await api.get('/api/ocr/status');
+		ocrStatus.value = result;
+	} catch (error) {
+		ocrStatus.value = {
+			connected: false,
+			message: error.message || '连接失败',
+		};
+	} finally {
+		loadingStates['ocr-test'] = false;
+	}
+};
+
 // ========== 用户设置 ==========
 
 const loadUserSettings = async () => {
@@ -788,6 +916,7 @@ onMounted(async () => {
 	await store.loadConfig();
 	await loadUserSettings();
 	await loadMemories();
+	await loadOcrConfig();
 
 	defaultModel.value = store.config.agent?.defaultModel || '';
 	sandboxMode.value = store.config.sandbox?.mode || 'permissive';
@@ -799,6 +928,11 @@ onMounted(async () => {
 		for (const model of visionModels) {
 			modelVisionSupport[`${provider.id}/${model}`] = true;
 		}
+	}
+	
+	// 自动检测 OCR-SoM 连接
+	if (ocrConfig.enabled) {
+		testOcrConnection();
 	}
 });
 </script>
@@ -1028,5 +1162,51 @@ onMounted(async () => {
 .modal-content {
 	@apply p-6 rounded-xl shadow-xl w-full max-w-md mx-4;
 	background-color: var(--bg-secondary);
+}
+
+/* Switch 开关 */
+.switch {
+	position: relative;
+	display: inline-block;
+	width: 44px;
+	height: 24px;
+}
+
+.switch input {
+	opacity: 0;
+	width: 0;
+	height: 0;
+}
+
+.slider {
+	position: absolute;
+	cursor: pointer;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background-color: #52525b;
+	transition: 0.3s;
+	border-radius: 24px;
+}
+
+.slider:before {
+	position: absolute;
+	content: "";
+	height: 18px;
+	width: 18px;
+	left: 3px;
+	bottom: 3px;
+	background-color: white;
+	transition: 0.3s;
+	border-radius: 50%;
+}
+
+input:checked + .slider {
+	background-color: #10b981;
+}
+
+input:checked + .slider:before {
+	transform: translateX(20px);
 }
 </style>
