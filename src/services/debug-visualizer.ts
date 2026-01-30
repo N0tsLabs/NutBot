@@ -11,8 +11,8 @@ import * as os from 'os';
 
 const log = logger.child('DebugVisualizer');
 
-// 调试图片保存目录
-const DEBUG_DIR = path.join(os.homedir(), '.nutbot', 'debug');
+// 调试图片保存目录（改为 screenshots 与截图工具保持一致）
+const DEBUG_DIR = path.join(os.homedir(), '.nutbot', 'screenshots', 'debug');
 
 // 确保调试目录存在
 function ensureDebugDir(): string {

@@ -577,15 +577,25 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 							try {
 								const approved = await waitForConfirmation(confirmId);
 								if (!approved) {
-									this.logger.info(`│  [调试模式] 用户取消操作`);
-									yield { type: 'tool_result', tool: toolName, result: { cancelled: true, message: '用户取消了操作' } };
-									continue; // 跳过这个工具，继续下一个
+									this.logger.info(`│  [调试模式] 用户取消操作，终止任务`);
+									// 保存取消消息到会话
+									this.gateway.sessionManager.addMessage(session.id, {
+										role: 'assistant',
+										content: '🛑 调试模式：用户取消了操作，任务已终止。',
+									});
+									yield { type: 'terminated', reason: '调试模式：用户取消了操作' };
+									return; // 直接终止整个任务
 								}
 								this.logger.info(`│  [调试模式] 用户确认，继续执行`);
 							} catch (e) {
 								this.logger.warn(`│  [调试模式] 确认超时或失败:`, (e as Error).message);
-								yield { type: 'tool_error', tool: toolName, error: '调试确认超时' };
-								continue;
+								// 超时也终止任务
+								this.gateway.sessionManager.addMessage(session.id, {
+									role: 'assistant',
+									content: '⏱️ 调试模式：确认超时，任务已终止。',
+								});
+								yield { type: 'terminated', reason: '调试模式：确认超时' };
+								return;
 							}
 						}
 					}
