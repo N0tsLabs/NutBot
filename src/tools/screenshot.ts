@@ -296,7 +296,7 @@ export class ScreenshotTool extends BaseTool {
 		try {
 			const ocrEnabled = configManager.get<boolean>('ocr.enabled', true);
 			
-			if (ocrEnabled && ocrSomService.isConfigured()) {
+			if (ocrEnabled) {
 				this.logger.info('调用 OCR-SoM 识别屏幕元素...');
 				const somResult = await ocrSomService.analyze(base64, { returnImage: true });
 				
