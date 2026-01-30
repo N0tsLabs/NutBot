@@ -1,6 +1,6 @@
 /**
  * 日志系统
- * 支持多级别日志、文件输出、颜色输出
+ * 支持多级别日志、文件输出、颜色输出、WebSocket 广播
  */
 
 import chalk from 'chalk';
@@ -35,6 +35,18 @@ const LEVEL_ICONS: Record<string, string> = {
 	error: '❌',
 };
 
+// 日志条目接口（用于 WebSocket 广播）
+export interface LogEntry {
+	timestamp: string;
+	level: string;
+	prefix: string;
+	message: string;
+	icon: string;
+}
+
+// 日志广播回调类型
+type LogBroadcastCallback = (entry: LogEntry) => void;
+
 interface LoggerOptions {
 	level?: LogLevel;
 	console?: boolean;
@@ -53,17 +65,52 @@ interface FormattedLog {
 
 class Logger {
 	private level: LogLevel = 'info';
-	private enableConsole = true;
 	private enableFile = false;
 	private fileStream: WriteStream | null = null;
 	private prefix = 'NutBot';
+
+	// 全局控制台输出开关（静态，所有实例共享）
+	private static globalConsoleEnabled = true;
+
+	// 日志广播回调（用于 WebSocket 推送到前端）
+	private static broadcastCallback: LogBroadcastCallback | null = null;
+
+	// 日志缓存（用于前端初始化时获取历史日志）
+	private static logBuffer: LogEntry[] = [];
+	private static maxBufferSize = 500;
+
+	/**
+	 * 设置日志广播回调
+	 */
+	static setBroadcastCallback(callback: LogBroadcastCallback | null): void {
+		Logger.broadcastCallback = callback;
+	}
+
+	/**
+	 * 获取缓存的日志
+	 */
+	static getLogBuffer(): LogEntry[] {
+		return [...Logger.logBuffer];
+	}
+
+	/**
+	 * 清空日志缓存
+	 */
+	static clearLogBuffer(): void {
+		Logger.logBuffer = [];
+	}
 
 	/**
 	 * 初始化日志系统
 	 */
 	init(options: LoggerOptions = {}): this {
 		this.level = options.level || 'info';
-		this.enableConsole = options.console !== false;
+		// 只有明确设置 console: false 才禁用，否则保持当前状态
+		if (options.console === false) {
+			Logger.globalConsoleEnabled = false;
+		} else if (options.console === true) {
+			Logger.globalConsoleEnabled = true;
+		}
 		this.prefix = options.prefix || 'NutBot';
 
 		if (options.file) {
@@ -76,6 +123,20 @@ class Logger {
 		}
 
 		return this;
+	}
+
+	/**
+	 * 启用/禁用控制台输出（全局生效）
+	 */
+	setConsoleEnabled(enabled: boolean): void {
+		Logger.globalConsoleEnabled = enabled;
+	}
+
+	/**
+	 * 获取控制台输出状态
+	 */
+	isConsoleEnabled(): boolean {
+		return Logger.globalConsoleEnabled;
 	}
 
 	/**
@@ -127,8 +188,28 @@ class Logger {
 		const formatted = this.format(level, message, ...args);
 		const color = LEVEL_COLORS[level] || chalk.white;
 
-		// 控制台输出
-		if (this.enableConsole) {
+		// 创建日志条目用于广播
+		const entry: LogEntry = {
+			timestamp: formatted.timestamp,
+			level,
+			prefix: this.prefix,
+			message: formatted.message,
+			icon: formatted.icon,
+		};
+
+		// 添加到缓存
+		Logger.logBuffer.push(entry);
+		if (Logger.logBuffer.length > Logger.maxBufferSize) {
+			Logger.logBuffer.shift();
+		}
+
+		// WebSocket 广播
+		if (Logger.broadcastCallback) {
+			Logger.broadcastCallback(entry);
+		}
+
+		// 控制台输出（使用全局开关）
+		if (Logger.globalConsoleEnabled) {
 			const consoleMsg = `${chalk.gray(formatted.timestamp)} ${formatted.prefix} ${color(`[${level.toUpperCase()}]`)} ${formatted.icon} ${formatted.message}`;
 			console.log(consoleMsg);
 		}
@@ -162,7 +243,25 @@ class Logger {
 		if (!this.shouldLog('info')) return;
 		const formatted = this.format('info', message, ...args);
 
-		if (this.enableConsole) {
+		// 创建日志条目
+		const entry: LogEntry = {
+			timestamp: formatted.timestamp,
+			level: 'success',
+			prefix: this.prefix,
+			message: formatted.message,
+			icon: '✅',
+		};
+
+		// 添加到缓存并广播
+		Logger.logBuffer.push(entry);
+		if (Logger.logBuffer.length > Logger.maxBufferSize) {
+			Logger.logBuffer.shift();
+		}
+		if (Logger.broadcastCallback) {
+			Logger.broadcastCallback(entry);
+		}
+
+		if (Logger.globalConsoleEnabled) {
 			console.log(
 				`${chalk.gray(formatted.timestamp)} ${formatted.prefix} ${chalk.green('[SUCCESS]')} ✅ ${formatted.message}`
 			);
@@ -180,7 +279,7 @@ class Logger {
 		if (!this.shouldLog('info')) return;
 		const formatted = this.format('info', message, ...args);
 
-		if (this.enableConsole) {
+		if (Logger.globalConsoleEnabled) {
 			console.log(
 				`${chalk.gray(formatted.timestamp)} ${formatted.prefix} ${chalk.cyan('[PROGRESS]')} 🔄 ${formatted.message}`
 			);
@@ -212,7 +311,7 @@ class Logger {
 	child(childPrefix: string): Logger {
 		const childLogger = new Logger();
 		childLogger.level = this.level;
-		childLogger.enableConsole = this.enableConsole;
+		// 控制台输出使用全局开关，不需要复制
 		childLogger.enableFile = this.enableFile;
 		childLogger.fileStream = this.fileStream;
 		childLogger.prefix = this.prefix ? `${this.prefix}:${childPrefix}` : childPrefix;
@@ -232,4 +331,5 @@ class Logger {
 
 // 单例导出
 export const logger = new Logger();
+export { Logger };
 export default logger;

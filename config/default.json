@@ -20,6 +20,12 @@
 		"systemPrompt": null,
 		"debugMode": false
 	},
+	"network": {
+		"timeout": 60000,
+		"streamTimeout": 120000,
+		"retryCount": 3,
+		"retryDelay": 1000
+	},
 	"providers": {},
 	"tools": {
 		"enabled": ["exec", "browser", "desktop", "screenshot", "web"],
@@ -62,10 +68,8 @@
 		"jobs": []
 	},
 	"sandbox": {
-		"enabled": true,
-		"mode": "permissive",
-		"allowedPaths": [],
-		"deniedCommands": []
+		"mode": "standard",
+		"custom": {}
 	},
 	"skills": {
 		"enabled": true,

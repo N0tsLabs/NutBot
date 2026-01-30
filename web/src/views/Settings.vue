@@ -25,13 +25,24 @@
 					快速设置
 				</h2>
 				<div class="settings-grid">
-					<!-- 默认模型 -->
-					<div class="setting-item">
+					<!-- 当前模型 -->
+					<div class="setting-item current-model-item">
 						<div class="setting-header">
-							<span class="setting-label">默认模型</span>
-							<span class="setting-value">{{ defaultModel || '未设置' }}</span>
+							<span class="setting-label">当前模型</span>
+							<select v-model="defaultModel" class="input-sm model-select" @change="onModelChange">
+								<option value="" disabled>选择模型</option>
+								<optgroup v-for="provider in store.providers" :key="provider.id" :label="provider.name || provider.id">
+									<option
+										v-for="model in provider.models"
+										:key="`${provider.id}/${model}`"
+										:value="`${provider.id}/${model}`"
+									>
+										{{ model }}{{ modelVisionSupport[`${provider.id}/${model}`] ? ' 👁️' : '' }}
+									</option>
+								</optgroup>
+							</select>
 						</div>
-						<p class="setting-desc">在 AI Provider 中选择模型并点击"设为默认"</p>
+						<p class="setting-desc">对话使用的 AI 模型，👁️ 表示支持图像</p>
 					</div>
 					
 					<!-- 调试模式 -->
@@ -51,12 +62,12 @@
 						<div class="setting-header">
 							<span class="setting-label">沙盒模式</span>
 							<select v-model="sandboxMode" class="input-sm" @change="saveSandboxMode">
-								<option value="off">关闭</option>
-								<option value="permissive">宽松</option>
-								<option value="strict">严格</option>
+								<option value="trust">🚀 信任</option>
+								<option value="standard">⚖️ 标准</option>
+								<option value="strict">🔒 严格</option>
 							</select>
 						</div>
-						<p class="setting-desc">控制 AI 执行危险操作的权限</p>
+						<p class="setting-desc">控制 AI 执行敏感操作的权限</p>
 					</div>
 				</div>
 			</section>
@@ -66,6 +77,7 @@
 				<h2 class="section-title">
 					<span>🤖</span>
 					AI Provider
+					<button @click="showProviderModal = true; resetProviderForm()" class="btn-sm ml-auto">+ 添加</button>
 				</h2>
 				
 				<!-- Provider 列表 -->
@@ -74,6 +86,7 @@
 						<div class="provider-header">
 							<div class="provider-info">
 								<span class="provider-name">{{ provider.name || provider.id }}</span>
+								<span class="provider-type">{{ provider.type === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容' }}</span>
 								<span class="provider-url">{{ provider.baseUrl }}</span>
 							</div>
 							<div class="provider-actions">
@@ -127,51 +140,16 @@
 									</div>
 								</div>
 							</div>
-							<div v-else class="models-empty">暂无模型</div>
+							<div v-else class="models-empty">
+								暂无模型，点击"获取"自动获取或手动输入添加
+							</div>
 						</div>
 					</div>
 					
 					<div v-if="store.providers.length === 0" class="empty-state">
-						还没有配置 AI Provider
+						<p>还没有配置 AI Provider</p>
+						<button @click="showProviderModal = true; resetProviderForm()" class="btn-sm btn-primary mt-3">+ 添加 Provider</button>
 					</div>
-				</div>
-				
-				<!-- 添加/编辑 Provider -->
-				<div class="provider-form">
-					<h3>{{ editingProvider ? '编辑 Provider' : '添加 Provider' }}</h3>
-					<form @submit.prevent="saveProvider" class="form-grid">
-						<div class="form-row">
-							<div class="form-group">
-								<label>ID</label>
-								<input v-model="providerForm.id" placeholder="如: openai" class="input-sm" :disabled="!!editingProvider" />
-							</div>
-							<div class="form-group">
-								<label>类型</label>
-								<select v-model="providerForm.type" class="input-sm">
-									<option value="openai">OpenAI 兼容</option>
-									<option value="anthropic">Anthropic</option>
-								</select>
-							</div>
-						</div>
-						<div class="form-group">
-							<label>名称</label>
-							<input v-model="providerForm.name" placeholder="显示名称（可选）" class="input-sm" />
-						</div>
-						<div class="form-group">
-							<label>API 地址</label>
-							<input v-model="providerForm.baseUrl" placeholder="https://api.openai.com/v1" class="input-sm" />
-						</div>
-						<div class="form-group">
-							<label>API Key</label>
-							<input v-model="providerForm.apiKey" type="password" :placeholder="editingProvider ? '留空不修改' : 'sk-...'" class="input-sm" />
-						</div>
-						<div class="form-actions">
-							<button v-if="editingProvider" type="button" @click="cancelEdit" class="btn-sm">取消</button>
-							<button type="submit" :disabled="loadingStates['save-provider']" class="btn-sm btn-primary">
-								{{ editingProvider ? '保存' : '添加' }}
-							</button>
-						</div>
-					</form>
 				</div>
 			</section>
 
@@ -299,29 +277,39 @@
 					<span>🔒</span>
 					安全沙盒
 				</h2>
+				<p class="section-desc">系统会在执行层自动拦截危险操作，用户输入不会被过滤</p>
 				
 				<div class="sandbox-modes">
-					<div class="sandbox-mode" :class="{ active: sandboxMode === 'off' }">
-						<span class="mode-badge danger">关闭</span>
+					<div class="sandbox-mode" :class="{ active: sandboxMode === 'trust' }" @click="sandboxMode = 'trust'; saveSandboxMode()">
+						<span class="mode-badge success">信任</span>
 						<div class="mode-info">
-							<strong>完全信任</strong> - AI 可执行任何操作
-							<span class="mode-warning">⚠️ 仅在完全信任时使用</span>
+							<strong>🚀 信任模式</strong> - 大部分操作直接执行
+							<span class="mode-tip">只有安全底线（读取密钥、支付等）需要确认</span>
 						</div>
 					</div>
-					<div class="sandbox-mode" :class="{ active: sandboxMode === 'permissive' }">
-						<span class="mode-badge warning">宽松</span>
+					<div class="sandbox-mode" :class="{ active: sandboxMode === 'standard' }" @click="sandboxMode = 'standard'; saveSandboxMode()">
+						<span class="mode-badge warning">标准</span>
 						<div class="mode-info">
-							<strong>平衡模式</strong> - 危险操作需确认
-							<span class="mode-tip">💡 推荐日常使用</span>
+							<strong>⚖️ 标准模式</strong> - 敏感操作需确认
+							<span class="mode-tip">💡 推荐日常使用，发送消息/删除文件等需确认</span>
 						</div>
 					</div>
-					<div class="sandbox-mode" :class="{ active: sandboxMode === 'strict' }">
-						<span class="mode-badge success">严格</span>
+					<div class="sandbox-mode" :class="{ active: sandboxMode === 'strict' }" @click="sandboxMode = 'strict'; saveSandboxMode()">
+						<span class="mode-badge danger">严格</span>
 						<div class="mode-info">
-							<strong>最高安全</strong> - 所有写操作需确认
-							<span class="mode-tip">🔒 每步都需批准</span>
+							<strong>🔒 严格模式</strong> - 所有操作需确认
+							<span class="mode-tip">每步都需批准，适合敏感任务</span>
 						</div>
 					</div>
+				</div>
+				
+				<div class="sandbox-info">
+					<h4>系统会自动拦截：</h4>
+					<ul>
+						<li>🚫 <strong>绝对禁止</strong>：格式化磁盘、删除系统文件、删除 Windows/系统目录</li>
+						<li>🔐 <strong>敏感文件</strong>：读取 .env、密钥、SSH、浏览器密码等需要确认</li>
+						<li>⚠️ <strong>危险命令</strong>：rm -rf、shutdown、DROP TABLE 等需要确认</li>
+					</ul>
 				</div>
 			</section>
 		</main>
@@ -365,6 +353,48 @@
 				</div>
 			</div>
 		</div>
+		
+		<!-- 添加/编辑 Provider 弹窗 -->
+		<div v-if="showProviderModal" class="modal-overlay" @click.self="closeProviderModal">
+			<div class="modal-content modal-lg">
+				<h4>{{ editingProvider ? '编辑 Provider' : '添加 Provider' }}</h4>
+				<form @submit.prevent="saveProvider" class="form-grid">
+					<div class="form-row">
+						<div class="form-group">
+							<label>ID <span class="required">*</span></label>
+							<input v-model="providerForm.id" placeholder="如: openai, deepseek" class="input-sm" :disabled="!!editingProvider" />
+							<span class="form-hint">唯一标识符，用于区分不同的 Provider</span>
+						</div>
+						<div class="form-group">
+							<label>类型</label>
+							<select v-model="providerForm.type" class="input-sm">
+								<option value="openai">OpenAI 兼容</option>
+								<option value="anthropic">Anthropic</option>
+							</select>
+						</div>
+					</div>
+					<div class="form-group">
+						<label>名称</label>
+						<input v-model="providerForm.name" placeholder="显示名称（可选）" class="input-sm" />
+					</div>
+					<div class="form-group">
+						<label>API 地址 <span class="required">*</span></label>
+						<input v-model="providerForm.baseUrl" placeholder="https://api.openai.com/v1" class="input-sm" />
+						<span class="form-hint">通常以 /v1 结尾</span>
+					</div>
+					<div class="form-group">
+						<label>API Key <span v-if="!editingProvider" class="required">*</span></label>
+						<input v-model="providerForm.apiKey" type="password" :placeholder="editingProvider ? '留空保持不变' : 'sk-...'" class="input-sm" />
+					</div>
+					<div class="form-actions">
+						<button type="button" @click="closeProviderModal" class="btn-sm">取消</button>
+						<button type="submit" :disabled="loadingStates['save-provider']" class="btn-sm btn-primary">
+							{{ loadingStates['save-provider'] ? '保存中...' : (editingProvider ? '保存' : '添加') }}
+						</button>
+					</div>
+				</form>
+			</div>
+		</div>
 	</div>
 </template>
 
@@ -405,13 +435,14 @@ const providerForm = reactive({
 	apiKey: '',
 });
 const editingProvider = ref(null);
+const showProviderModal = ref(false);
 const modelSearchQuery = reactive({});
 const loadingStates = reactive({});
 const modelVisionSupport = reactive({});
 
 // 配置
 const defaultModel = ref('');
-const sandboxMode = ref('permissive');
+const sandboxMode = ref('standard');
 const debugMode = ref(false);
 const config = reactive({
 	server: { host: '127.0.0.1', port: 18800 },
@@ -460,9 +491,11 @@ const editProvider = (provider) => {
 	providerForm.type = provider.type || 'openai';
 	providerForm.baseUrl = provider.baseUrl || '';
 	providerForm.apiKey = '';
+	showProviderModal.value = true;
 };
 
-const cancelEdit = () => {
+const closeProviderModal = () => {
+	showProviderModal.value = false;
 	editingProvider.value = null;
 	resetProviderForm();
 };
@@ -497,13 +530,14 @@ const saveProvider = async () => {
 		} else {
 			if (!providerForm.id || !providerForm.apiKey) {
 				alert('请填写 ID 和 API Key');
+				loadingStates['save-provider'] = false;
 				return;
 			}
 			await api.post('/api/providers', providerForm);
 		}
 
 		await store.loadProviders();
-		cancelEdit();
+		closeProviderModal();
 	} catch (error) {
 		alert('保存失败: ' + error.message);
 	} finally {
@@ -635,6 +669,17 @@ const setDefaultModel = async (providerId, model) => {
 		await store.loadConfig();
 	} catch (error) {
 		alert('设置失败: ' + error.message);
+	}
+};
+
+// 快速设置区的模型切换
+const onModelChange = async () => {
+	if (!defaultModel.value) return;
+	try {
+		await api.put('/api/config', { 'agent.defaultModel': defaultModel.value });
+		await store.loadConfig();
+	} catch (error) {
+		alert('切换失败: ' + error.message);
 	}
 };
 
@@ -1317,6 +1362,11 @@ onMounted(async () => {
 	border-radius: 8px;
 	opacity: 0.6;
 	transition: all 0.15s;
+	cursor: pointer;
+}
+
+.sandbox-mode:hover {
+	opacity: 0.8;
 }
 
 .sandbox-mode.active {
@@ -1454,6 +1504,64 @@ input:checked + .slider:before {
 	margin-bottom: 16px;
 }
 
+.modal-lg {
+	max-width: 500px;
+}
+
+.required {
+	color: var(--error);
+}
+
+.form-hint {
+	font-size: 11px;
+	color: var(--text-muted);
+	margin-top: 4px;
+}
+
+.mt-3 {
+	margin-top: 12px;
+}
+
+.provider-type {
+	font-size: 10px;
+	padding: 2px 6px;
+	background-color: var(--accent-subtle);
+	color: var(--accent);
+	border-radius: 4px;
+	margin-left: 8px;
+}
+
+.sandbox-info {
+	margin-top: 16px;
+	padding: 12px 16px;
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+}
+
+.sandbox-info h4 {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--text-primary);
+	margin-bottom: 8px;
+}
+
+.sandbox-info ul {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+}
+
+.sandbox-info li {
+	font-size: 12px;
+	color: var(--text-secondary);
+	padding: 4px 0;
+}
+
+.sandbox-info li strong {
+	color: var(--text-primary);
+}
+
 /* 响应式 */
 @media (max-width: 768px) {
 	.settings-sidebar {
@@ -1484,4 +1592,15 @@ input:checked + .slider:before {
 .h-20 { height: 80px; }
 .resize-none { resize: none; }
 .text-red-400 { color: #f87171; }
+
+/* 当前模型选择 */
+.current-model-item {
+	background: linear-gradient(135deg, var(--accent-subtle), var(--bg-secondary));
+	border-color: var(--accent);
+}
+
+.model-select {
+	min-width: 200px;
+	font-weight: 500;
+}
 </style>

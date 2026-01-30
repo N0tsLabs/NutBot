@@ -4,11 +4,306 @@
  */
 
 import { Command } from 'commander';
+import * as readline from 'readline';
+import chalk from 'chalk';
 import { gateway } from './gateway/index.js';
 
 const program = new Command();
 
 program.name('nutbot').description('AI 驱动的自动化机器人').version('0.1.0');
+
+/**
+ * 交互式终端聊天
+ */
+async function startInteractiveChat(options: { port: number; host: string; verbose: boolean }) {
+	const { port, host } = options;
+
+	// 清屏并显示欢迎信息
+	console.clear();
+	console.log('');
+	console.log(chalk.yellow.bold('  🥜 NutBot'));
+	console.log(chalk.gray('  ─────────────────────────────────────────────────'));
+	console.log(chalk.gray('  你的 AI 助理，可以帮你操控电脑、浏览网页、执行任务'));
+	console.log(chalk.gray('  Web UI: ') + chalk.cyan(`http://${host}:${port}`));
+	console.log(chalk.gray('  ─────────────────────────────────────────────────'));
+	console.log('');
+
+	// 创建 readline 接口
+	const rl = readline.createInterface({
+		input: process.stdin,
+		output: process.stdout,
+		terminal: true,
+		historySize: 100,
+	});
+
+	let isProcessing = false;
+
+	// 创建一个持久的 session 用于保持对话上下文
+	const session = gateway.sessionManager.createSession();
+	const sessionId = session.id;
+
+	// 显示用户输入提示
+	const showPrompt = () => {
+		process.stdout.write(chalk.green('\n  你 › '));
+	};
+
+	// 工具名翻译
+	const toolNameMap: Record<string, string> = {
+		browser: '浏览器',
+		screenshot: '截图',
+		computer: '电脑操作',
+		web: '网络',
+		exec: '命令行',
+	};
+
+	// 操作翻译
+	const actionMap: Record<string, string> = {
+		goto: '打开',
+		snapshot: '获取页面',
+		click: '点击',
+		type: '输入',
+		fill: '填写',
+		scroll: '滚动',
+		hover: '悬停',
+		select: '选择',
+		close: '关闭',
+		fetch: '读取',
+		search: '搜索',
+		take: '截图',
+		mouse_move: '移动鼠标',
+		left_click: '左键点击',
+		right_click: '右键点击',
+		double_click: '双击',
+		key: '按键',
+		list_elements: '获取元素',
+	};
+
+	// 翻译工具名
+	const translateTool = (name: string): string => toolNameMap[name] || name;
+
+	// 翻译操作
+	const translateAction = (action: string): string => actionMap[action] || action;
+
+	// 生成工具结果简述
+	const getResultSummary = (result: Record<string, unknown>): string => {
+		if (result.title) return `${result.title}`;
+		if (result.url) return `${result.url}`.slice(0, 50);
+		if (result.output) return `${result.output}`.slice(0, 60);
+		if (result.elements) return `获取到 ${(result.elements as unknown[]).length} 个元素`;
+		if (result.message) return `${result.message}`;
+		return '完成';
+	};
+
+	// 显示 AI 消息
+	const showAIMessage = (message: string, isNewLine = true) => {
+		if (isNewLine) {
+			console.log(chalk.yellow('\n  🥜 › ') + message);
+		} else {
+			process.stdout.write(message);
+		}
+	};
+
+	// 显示状态消息
+	const showStatus = (message: string) => {
+		process.stdout.write(chalk.gray(`\r  ⏳ ${message}...`) + ' '.repeat(20));
+	};
+
+	// 清除当前行
+	const clearLine = () => {
+		process.stdout.write('\r' + ' '.repeat(80) + '\r');
+	};
+
+	// 询问确认
+	const askConfirm = (question: string): Promise<boolean> => {
+		return new Promise((resolve) => {
+			rl.question(chalk.yellow(`\n  ⚠️  ${question} (y/n): `), (answer) => {
+				resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
+			});
+		});
+	};
+
+	// 处理输入
+	const handleLine = async (input: string) => {
+		const trimmed = input.trim();
+
+		if (!trimmed) {
+			showPrompt();
+			return;
+		}
+
+		// 处理命令
+		if (trimmed.startsWith('/')) {
+			const cmd = trimmed.slice(1).toLowerCase();
+			switch (cmd) {
+				case 'help':
+					console.log(chalk.cyan('\n  📌 可用命令'));
+					console.log(chalk.white('     /help  ') + chalk.gray('显示帮助'));
+					console.log(chalk.white('     /clear ') + chalk.gray('清屏'));
+					console.log(chalk.white('     /exit  ') + chalk.gray('退出'));
+					console.log(chalk.white('     /web   ') + chalk.gray('打开网页界面'));
+					break;
+				case 'clear':
+					console.clear();
+					console.log(chalk.yellow.bold('\n  🥜 NutBot\n'));
+					break;
+				case 'exit':
+				case 'quit':
+					console.log(chalk.gray('\n  👋 再见！\n'));
+					rl.close();
+					await gateway.stop();
+					process.exit(0);
+					return;
+				case 'web':
+					const { exec } = await import('child_process');
+					const url = `http://${host}:${port}`;
+					const platform = process.platform;
+					const cmd2 = platform === 'win32' ? `start "" "${url}"` : platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;
+					exec(cmd2);
+					console.log(chalk.gray(`\n  🌐 已打开 ${url}`));
+					break;
+				default:
+					console.log(chalk.red(`\n  ❓ 未知命令: /${cmd}`));
+			}
+			showPrompt();
+			return;
+		}
+
+		isProcessing = true;
+		clearLine();
+
+		// 发送给 AI
+		let responseContent = '';
+		let hasStartedResponse = false;
+		let lastThinking = '';
+
+		try {
+			for await (const chunk of gateway.chat(trimmed, { sessionId })) {
+				switch (chunk.type) {
+					case 'thinking':
+						// 显示迭代信息
+						console.log(chalk.gray(`\n  ── 第 ${chunk.iteration} 轮思考 ──`));
+						break;
+
+					case 'tools':
+						// 显示 AI 的思考过程
+						if (chunk.thinking) {
+							lastThinking = chunk.thinking;
+							console.log(chalk.cyan('\n  💭 ') + chalk.white(chunk.thinking));
+						}
+						break;
+
+					case 'content':
+						if (!hasStartedResponse) {
+							console.log(chalk.yellow('\n  🥜 › '));
+							hasStartedResponse = true;
+						}
+						process.stdout.write(chunk.content || '');
+						responseContent += chunk.content || '';
+						break;
+
+					case 'tool_start':
+						// 显示工具名称和操作描述
+						const toolName = translateTool(chunk.tool || 'unknown');
+						const toolArgs = chunk.args || {};
+						const action = toolArgs.action ? translateAction(toolArgs.action as string) : '';
+						
+						// 生成操作描述
+						let actionDesc = action;
+						if (toolArgs.url) {
+							const url = (toolArgs.url as string).slice(0, 45);
+							actionDesc = `${action || '访问'} ${url}${(toolArgs.url as string).length > 45 ? '...' : ''}`;
+						}
+						if (toolArgs.command) {
+							actionDesc = `执行: ${(toolArgs.command as string).slice(0, 50)}`;
+						}
+						if (toolArgs.ref) {
+							actionDesc += actionDesc ? ` [元素${toolArgs.ref}]` : `操作元素 ${toolArgs.ref}`;
+						}
+						if (toolArgs.text) {
+							actionDesc += ` "${(toolArgs.text as string).slice(0, 25)}"`;
+						}
+						if (toolArgs.coordinate) {
+							const coord = toolArgs.coordinate as number[];
+							actionDesc += ` (${coord[0]}, ${coord[1]})`;
+						}
+						
+						// 显示：🔧 浏览器 · 打开 bilibili.com
+						const desc = actionDesc || chunk.description || '处理中';
+						console.log(chalk.cyan(`  🔧 ${toolName}`) + chalk.gray(` · ${desc}`));
+						break;
+
+					case 'tool_result':
+						// 显示工具结果
+						if (chunk.result?.success) {
+							const resultSummary = getResultSummary(chunk.result);
+							console.log(chalk.green(`     ✓ `) + chalk.gray(resultSummary));
+						} else {
+							console.log(chalk.red(`     ✗ 失败`));
+						}
+						break;
+
+					case 'tool_error':
+						console.log(chalk.red(`     ✗ ${chunk.error}`));
+						break;
+
+					case 'error':
+						console.log(chalk.red(`\n  ❌ ${chunk.error}`));
+						break;
+
+					case 'debug_confirm':
+						// 调试模式确认
+						console.log(chalk.yellow(`\n  🔍 调试确认: ${chunk.tool}`));
+						if (chunk.thinking) {
+							console.log(chalk.gray(`     思考: ${chunk.thinking}`));
+						}
+						if (chunk.args) {
+							console.log(chalk.gray(`     参数: ${JSON.stringify(chunk.args)}`));
+						}
+						const confirmed = await askConfirm('确认执行？');
+						if (chunk.confirmId) {
+							gateway.server?.broadcast({
+								type: 'debug_response',
+								payload: { confirmId: chunk.confirmId, approved: confirmed },
+							});
+						}
+						if (!confirmed) {
+							console.log(chalk.gray('  已取消'));
+						}
+						break;
+				}
+			}
+		} catch (error) {
+			console.log(chalk.red(`\n  ❌ ${(error as Error).message}`));
+		}
+
+		if (hasStartedResponse) {
+			console.log(''); // 换行
+		}
+
+		isProcessing = false;
+		showPrompt();
+	};
+
+	// 监听输入
+	rl.on('line', handleLine);
+
+	// Ctrl+C 退出
+	rl.on('SIGINT', async () => {
+		console.log(chalk.gray('\n\n  👋 再见！\n'));
+		rl.close();
+		await gateway.stop();
+		process.exit(0);
+	});
+
+	// 关闭事件
+	rl.on('close', async () => {
+		await gateway.stop();
+		process.exit(0);
+	});
+
+	// 显示初始提示
+	showPrompt();
+}
 
 // 启动命令
 program
@@ -17,11 +312,18 @@ program
 	.option('-c, --config <path>', '配置文件路径')
 	.option('-p, --port <port>', '服务端口', '18800')
 	.option('-h, --host <host>', '服务地址', '127.0.0.1')
+	.option('--no-browser', '不自动打开浏览器')
+	.option('-v, --verbose', '显示详细日志')
+	.option('--no-interactive', '禁用交互式聊天')
 	.action(async (options) => {
 		try {
-			// 初始化
+			// 判断是否使用交互式模式
+			const useInteractive = options.interactive !== false && process.stdin.isTTY;
+
+			// 初始化（交互模式使用静默模式）
 			await gateway.init({
 				configPath: options.config,
+				silent: useInteractive && !options.verbose,
 			});
 
 			// 覆盖配置
@@ -32,18 +334,40 @@ program
 				gateway.config.set('server.host', options.host);
 			}
 
-			// 启动
-			await gateway.start();
+			const port = gateway.config.get('server.port', 18800);
+			const host = gateway.config.get('server.host', '127.0.0.1');
 
-			// 处理退出信号
-			const shutdown = async () => {
-				console.log('\n正在关闭...');
-				await gateway.stop();
-				process.exit(0);
-			};
+			// 重要：init 会重置日志设置，需要在 init 后再次禁用
+			if (!options.verbose) {
+				gateway.logger.setConsoleEnabled(false);
+			}
 
-			process.on('SIGINT', shutdown);
-			process.on('SIGTERM', shutdown);
+			// 启动服务（交互模式下不自动打开浏览器）
+			await gateway.start({ openBrowser: !useInteractive && options.browser !== false });
+
+			// 交互式模式
+			if (useInteractive) {
+				await startInteractiveChat({ port, host, verbose: options.verbose });
+			} else {
+				// 非交互模式（后台运行）
+				console.log('');
+				console.log('  🥜 NutBot 已启动');
+				console.log(`  📍 http://${host}:${port}`);
+				console.log('');
+				console.log('  按 Ctrl+C 退出');
+				console.log('');
+
+				// 处理退出信号
+				const shutdown = async () => {
+					console.log('\n  正在关闭...');
+					await gateway.stop();
+					console.log('  👋 再见！');
+					process.exit(0);
+				};
+
+				process.on('SIGINT', shutdown);
+				process.on('SIGTERM', shutdown);
+			}
 		} catch (error) {
 			console.error('启动失败:', (error as Error).message);
 			process.exit(1);

@@ -17,6 +17,7 @@ import type { AgentChunk } from '../types/index.js';
 
 interface GatewayOptions {
 	configPath?: string;
+	silent?: boolean; // 静默模式，不输出日志
 }
 
 interface ChatOptions {
@@ -51,7 +52,9 @@ export class Gateway {
 	 * 初始化 Gateway
 	 */
 	async init(options: GatewayOptions = {}): Promise<this> {
-		this.logger.info('正在初始化 NutBot Gateway...');
+		const silent = options.silent ?? false;
+
+		if (!silent) this.logger.info('正在初始化 NutBot Gateway...');
 
 		// 初始化配置
 		this.config.init(options.configPath || null);
@@ -59,20 +62,22 @@ export class Gateway {
 		// 初始化日志系统
 		this.logger.init({
 			level: this.config.get('logging.level', 'info'),
-			console: this.config.get('logging.console', true),
+			console: silent ? false : this.config.get('logging.console', true),
 			file: this.config.get<string | undefined>('logging.file'),
 		});
 
 		// 初始化子系统
 		await this.initSubsystems();
 
-		// 打印系统信息
-		const osName = systemInfo.isWindows ? 'Windows' : systemInfo.isMac ? 'macOS' : 'Linux';
-		this.logger.info(`系统环境: ${osName} ${systemInfo.release} (${systemInfo.arch})`);
-		this.logger.info(`用户目录: ${systemInfo.homedir}`);
-		this.logger.info(`默认 Shell: ${systemInfo.shell}`);
+		// 打印系统信息（非静默模式）
+		if (!silent) {
+			const osName = systemInfo.isWindows ? 'Windows' : systemInfo.isMac ? 'macOS' : 'Linux';
+			this.logger.info(`系统环境: ${osName} ${systemInfo.release} (${systemInfo.arch})`);
+			this.logger.info(`用户目录: ${systemInfo.homedir}`);
+			this.logger.info(`默认 Shell: ${systemInfo.shell}`);
+			this.logger.success('Gateway 初始化完成');
+		}
 
-		this.logger.success('Gateway 初始化完成');
 		return this;
 	}
 
@@ -116,7 +121,7 @@ export class Gateway {
 	/**
 	 * 启动 Gateway
 	 */
-	async start(): Promise<this> {
+	async start(options: { openBrowser?: boolean } = {}): Promise<this> {
 		if (this.running) {
 			this.logger.warn('Gateway 已经在运行中');
 			return this;
@@ -125,7 +130,7 @@ export class Gateway {
 		this.logger.info('正在启动 NutBot Gateway...');
 
 		// 启动 HTTP/WS 服务器
-		await this.server?.start();
+		await this.server?.start({ openBrowser: options.openBrowser });
 
 		// 启动 CDP Relay 服务（用于浏览器扩展）
 		try {

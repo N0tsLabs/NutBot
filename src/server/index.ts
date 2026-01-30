@@ -8,10 +8,11 @@ import fastifyCors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
 import { existsSync } from 'fs';
+import { exec } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
-import { logger } from '../utils/logger.js';
+import { logger, Logger, LogEntry } from '../utils/logger.js';
 import { generateId } from '../utils/helpers.js';
 import { registerRoutes } from './routes/index.js';
 import type { Gateway } from '../gateway/index.js';
@@ -137,17 +138,19 @@ export class Server {
 		} else {
 			// 没有构建 Web UI 时显示提示
 			this.app.get('/', async (request, reply) => {
-				return reply.type('text/html').send(`
-          <!DOCTYPE html>
-          <html>
-          <head><title>NutBot</title></head>
-          <body style="background: #1a1a1a; color: #e5e5e5; font-family: system-ui; padding: 40px; text-align: center;">
-            <h1>🥜 NutBot 已启动</h1>
-            <p>API 服务运行中: <a href="/api/health" style="color: #f59e0b;">/api/health</a></p>
-            <p style="color: #a1a1aa;">Web UI 未构建，请运行: <code style="background: #333; padding: 2px 8px; border-radius: 4px;">cd web && yarn install && yarn build</code></p>
-          </body>
-          </html>
-        `);
+				return reply.type('text/html; charset=utf-8').send(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NutBot</title>
+</head>
+<body style="background: #1a1a1a; color: #e5e5e5; font-family: system-ui; padding: 40px; text-align: center;">
+  <h1>🥜 NutBot 已启动</h1>
+  <p>API 服务运行中: <a href="/api/health" style="color: #f59e0b;">/api/health</a></p>
+  <p style="color: #a1a1aa;">Web UI 未构建，请运行: <code style="background: #333; padding: 2px 8px; border-radius: 4px;">cd web && yarn install && yarn build</code></p>
+</body>
+</html>`);
 			});
 		}
 
@@ -180,6 +183,15 @@ export class Server {
 			type: 'connected',
 			clientId,
 		});
+
+		// 发送历史日志
+		const logBuffer = Logger.getLogBuffer();
+		if (logBuffer.length > 0) {
+			this.sendToClient(clientId, {
+				type: 'log_history',
+				logs: logBuffer,
+			});
+		}
 
 		// 处理消息
 		ws.on('message', async (data) => {
@@ -317,10 +329,43 @@ export class Server {
 	/**
 	 * 启动服务器
 	 */
-	async start(): Promise<void> {
+	async start(options: { openBrowser?: boolean } = {}): Promise<void> {
+		// 设置日志广播回调
+		Logger.setBroadcastCallback((entry: LogEntry) => {
+			this.broadcast({ type: 'log', entry });
+		});
+
 		await this.app.listen({ host: this.host, port: this.port });
 		this.logger.success(`服务器已启动: http://${this.host}:${this.port}`);
 		this.logger.info(`WebSocket 地址: ws://${this.host}:${this.port}/ws`);
+
+		// 默认自动打开浏览器
+		if (options.openBrowser !== false) {
+			this.openBrowser();
+		}
+	}
+
+	/**
+	 * 打开浏览器
+	 */
+	private openBrowser(): void {
+		const url = `http://${this.host}:${this.port}`;
+		const platform = process.platform;
+
+		let cmd: string;
+		if (platform === 'win32') {
+			cmd = `start "" "${url}"`;
+		} else if (platform === 'darwin') {
+			cmd = `open "${url}"`;
+		} else {
+			cmd = `xdg-open "${url}"`;
+		}
+
+		exec(cmd, (error) => {
+			if (error) {
+				this.logger.warn(`无法自动打开浏览器，请手动访问: ${url}`);
+			}
+		});
 	}
 
 	/**

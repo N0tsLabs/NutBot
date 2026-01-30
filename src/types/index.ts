@@ -134,7 +134,8 @@ export interface AppConfig {
 		maxIterations?: number;
 	};
 	sandbox: {
-		mode: 'off' | 'permissive' | 'strict';
+		mode: 'strict' | 'standard' | 'trust';
+		custom?: Record<string, unknown>;
 	};
 	providers: Record<string, ProviderConfig>;
 	data: {
@@ -146,6 +147,15 @@ export interface AppConfig {
 		directory: string;
 	};
 }
+
+// 导出沙盒相关类型
+export type { 
+	SandboxMode, 
+	SandboxConfig, 
+	OperationType, 
+	OperationInfo, 
+	SecurityCheckResult 
+} from './sandbox.js';
 
 // ==================== API 相关 ====================
 
@@ -170,7 +180,10 @@ export interface AgentChunk {
 		| 'max_iterations'
 		| 'terminated'
 		| 'error'
-		| 'debug_confirm'; // 调试模式：等待用户确认
+		| 'status'            // 状态提示（如倒计时）
+		| 'debug_confirm'     // 调试模式：等待用户确认
+		| 'security_confirm'; // 沙盒安全：等待用户确认
+	status?: string; // 状态消息
 	iteration?: number;
 	content?: string;
 	count?: number;
@@ -184,6 +197,9 @@ export interface AgentChunk {
 	// 调试模式数据
 	debug?: DebugData;
 	confirmId?: string; // 确认 ID，用于关联响应
+	// 沙盒安全数据
+	message?: string; // 确认消息
+	category?: string; // 安全类别 (forbidden/sensitive/sandbox)
 }
 
 export interface DebugData {

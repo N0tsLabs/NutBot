@@ -32,6 +32,8 @@ export class OpenAIProvider extends BaseProvider {
 	constructor(config: ProviderConfig) {
 		super(config);
 		this.type = 'openai';
+		// 自动补全 baseUrl（OpenAI 兼容 API 通常需要 /v1）
+		this.baseUrl = BaseProvider.normalizeBaseUrl(this.baseUrl, 'openai', '/chat/completions');
 	}
 
 	/**

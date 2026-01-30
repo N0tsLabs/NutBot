@@ -19,6 +19,13 @@ export const useAppStore = defineStore('app', () => {
 	
 	// 调试模式
 	const debugConfirm = ref(null); // 当前等待确认的调试数据
+	
+	// 沙盒安全
+	const securityConfirm = ref(null); // 当前等待确认的安全操作
+
+	// 实时日志
+	const logs = ref([]); // 日志列表
+	const maxLogs = 1000; // 最大日志条数
 
 	// 计算属性
 	const currentSession = computed(() => {
@@ -51,7 +58,28 @@ export const useAppStore = defineStore('app', () => {
 			case 'event':
 				handleEvent(message);
 				break;
+			case 'log':
+				// 单条日志
+				handleLog(message.entry);
+				break;
+			case 'log_history':
+				// 历史日志
+				logs.value = message.logs || [];
+				break;
 		}
+	};
+
+	const handleLog = (entry) => {
+		if (!entry) return;
+		logs.value.push(entry);
+		// 限制日志条数
+		if (logs.value.length > maxLogs) {
+			logs.value = logs.value.slice(-maxLogs);
+		}
+	};
+
+	const clearLogs = () => {
+		logs.value = [];
 	};
 
 	const handleChatChunk = (message) => {
@@ -202,6 +230,14 @@ export const useAppStore = defineStore('app', () => {
 				toolExecutions.value = [];
 				break;
 
+			case 'status':
+				// 状态提示（如倒计时）
+				currentStatus.value = {
+					type: 'status',
+					status: chunk.status,
+				};
+				break;
+
 			case 'debug_confirm':
 				// 调试模式：等待用户确认
 				currentStatus.value = {
@@ -216,6 +252,23 @@ export const useAppStore = defineStore('app', () => {
 					args: chunk.args,
 					debug: chunk.debug,
 					thinking: chunk.thinking,
+				};
+				break;
+				
+			case 'security_confirm':
+				// 沙盒安全：等待用户确认
+				currentStatus.value = {
+					type: 'security_confirm',
+					tool: chunk.tool,
+					args: chunk.args,
+					message: chunk.message,
+				};
+				securityConfirm.value = {
+					confirmId: chunk.confirmId,
+					tool: chunk.tool,
+					args: chunk.args,
+					message: chunk.message,
+					category: chunk.category,
 				};
 				break;
 		}
@@ -404,6 +457,28 @@ export const useAppStore = defineStore('app', () => {
 		debugConfirm.value = null;
 		currentStatus.value = approved ? { type: 'tool_running', tool: 'computer' } : null;
 	};
+	
+	// 发送安全确认响应
+	const sendSecurityResponse = (approved) => {
+		if (!securityConfirm.value) return;
+		
+		const confirmId = securityConfirm.value.confirmId;
+		const tool = securityConfirm.value.tool;
+		
+		if (ws.value && ws.value.readyState === 1) {
+			ws.value.send(JSON.stringify({
+				type: 'debug_response', // 复用同一个响应处理器
+				payload: {
+					confirmId,
+					approved,
+				},
+			}));
+		}
+		
+		// 清除确认状态
+		securityConfirm.value = null;
+		currentStatus.value = approved ? { type: 'tool_running', tool } : null;
+	};
 
 	return {
 		// 状态
@@ -418,6 +493,8 @@ export const useAppStore = defineStore('app', () => {
 		currentStatus,
 		toolExecutions,
 		debugConfirm,
+		securityConfirm,
+		logs,
 
 		// 方法
 		setConnected,
@@ -431,5 +508,7 @@ export const useAppStore = defineStore('app', () => {
 		createSession,
 		selectSession,
 		sendDebugResponse,
+		sendSecurityResponse,
+		clearLogs,
 	};
 });

@@ -27,8 +27,8 @@
   ],
   "scripts": {
     "start": "node bin/nutbot.js start",
-    "dev": "tsx watch src/index.ts -- start",
-    "dev:server": "tsx watch src/index.ts -- start",
+    "dev": "tsx src/index.ts start",
+    "dev:watch": "tsx watch src/index.ts -- start --no-interactive",
     "cli": "tsx src/index.ts",
     "build": "npm run build:server && npm run build:web",
     "build:server": "tsup src/index.ts --format esm --dts --clean",
@@ -76,6 +76,7 @@
     "@fastify/websocket": "^11.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@nut-tree-fork/nut-js": "^4.2.6",
+    "blessed": "^0.1.81",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "croner": "^8.1.0",
@@ -90,6 +91,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/blessed": "^0.1.27",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^22.7.0",
     "@types/ws": "^8.5.12",

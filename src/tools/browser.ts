@@ -61,12 +61,11 @@ export class BrowserTool extends BaseTool {
 4. 用 press Enter 提交
 ❌ 不要用 press "/" 等快捷键，很多网站不支持
 
-【一般工作流程】
-1. open 打开浏览器
-2. goto 访问网址（页面加载完成后返回）
-3. snapshot 获取页面元素列表和 ref
-4. click/type 操作元素
-5. 如需确认加载，用 wait`,
+【智能操作】根据任务需求灵活选择操作，不要写死流程！
+- 需要访问网页：goto（会自动连接浏览器）
+- 需要看当前页面：snapshot
+- 需要关闭浏览器：close
+- 只有在其他操作失败提示"未连接"时才需要显式 open`,
 			parameters: {
 				action: {
 					type: 'string',
@@ -1005,7 +1004,7 @@ export class BrowserTool extends BaseTool {
 		this.elementRefs.clear();
 		this.initialPageUrl = null;
 
-		// 扩展模式下只断开连接，不关闭浏览器
+		// 扩展模式下：优先通过 CDP 关闭，失败则用系统命令
 		if (this.mode === 'extension') {
 			if (this.context) {
 				// 只断开 Playwright 连接，不调用 context.close()（那样会关闭所有页面）
@@ -1024,6 +1023,61 @@ export class BrowserTool extends BaseTool {
 				}
 				this.browser = null;
 			}
+
+			// 如果 CDP 关闭失败（closedTabs === 0），使用系统命令关闭浏览器
+			if (closedTabs === 0 && !closedWindow) {
+				this.logger.info('CDP 关闭失败，尝试使用系统命令关闭浏览器...');
+				const { exec } = await import('child_process');
+				const { promisify } = await import('util');
+				const execAsync = promisify(exec);
+
+				// 获取要关闭的浏览器进程列表（根据平台和常见浏览器）
+				const getBrowserProcesses = (): { win: string[]; mac: string[]; linux: string[] } => {
+					return {
+						// Windows 进程名（不带 .exe）
+						win: ['chrome', 'msedge', 'firefox', 'brave', 'opera', 'vivaldi'],
+						// macOS 应用名
+						mac: ['Google Chrome', 'Microsoft Edge', 'Firefox', 'Brave Browser', 'Opera', 'Vivaldi', 'Safari'],
+						// Linux 进程名
+						linux: ['chrome', 'chromium', 'firefox', 'brave', 'opera', 'vivaldi', 'microsoft-edge'],
+					};
+				};
+
+				try {
+					const browsers = getBrowserProcesses();
+
+					if (process.platform === 'win32') {
+						// Windows: 尝试关闭所有常见浏览器进程
+						const processes = browsers.win.join(',');
+						await execAsync(
+							`powershell -Command "${browsers.win.map((b) => `Stop-Process -Name ${b} -Force -ErrorAction SilentlyContinue`).join('; ')}"`
+						);
+					} else if (process.platform === 'darwin') {
+						// macOS: 使用 osascript 优雅关闭，或 pkill 强制关闭
+						for (const browser of browsers.mac) {
+							try {
+								// 先尝试优雅关闭
+								await execAsync(`osascript -e 'quit app "${browser}"' 2>/dev/null || true`);
+							} catch {
+								// 如果优雅关闭失败，强制关闭
+								await execAsync(`pkill -9 "${browser}" 2>/dev/null || true`);
+							}
+						}
+					} else {
+						// Linux: 尝试关闭所有常见浏览器
+						for (const browser of browsers.linux) {
+							await execAsync(`pkill -9 ${browser} 2>/dev/null || true`);
+						}
+					}
+					this.logger.info('已通过系统命令关闭浏览器');
+					return { success: true, message: '浏览器已关闭' };
+				} catch (e) {
+					// 即使命令"失败"（比如没有找到进程），也认为关闭成功
+					this.logger.info('浏览器已关闭（可能已经关闭）');
+					return { success: true, message: '浏览器已关闭' };
+				}
+			}
+
 			this.logger.info(`已关闭 ${closedTabs} 个标签页并断开连接`);
 			return {
 				success: true,

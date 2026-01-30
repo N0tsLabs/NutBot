@@ -165,6 +165,7 @@
 						<span v-else-if="store.currentStatus.type === 'tool_running'" class="animate-spin">⚙️</span>
 						<span v-else-if="store.currentStatus.type === 'tool_done'">✅</span>
 						<span v-else-if="store.currentStatus.type === 'tool_error'">❌</span>
+						<span v-else-if="store.currentStatus.type === 'status'" class="animate-pulse">⏳</span>
 					</span>
 
 					<!-- 状态文字 -->
@@ -172,6 +173,9 @@
 						<span class="status-text">
 							<template v-if="store.currentStatus.type === 'thinking'"> 正在分析任务... </template>
 							<template v-else-if="store.currentStatus.type === 'generating'"> 正在生成回复... </template>
+							<template v-else-if="store.currentStatus.type === 'status'">
+								{{ store.currentStatus.status }}
+							</template>
 							<template v-else-if="store.currentStatus.type === 'tool_running'">
 								正在{{ getToolDescription(store.currentStatus.tool, store.currentStatus.args) }}
 							</template>
@@ -277,6 +281,43 @@
 				</div>
 			</div>
 		</div>
+		
+		<!-- 安全确认模态框 -->
+		<div v-if="store.securityConfirm" class="security-modal-overlay">
+			<div class="security-modal">
+				<div class="security-modal-header">
+					<h3>
+						<span v-if="store.securityConfirm.category === 'forbidden'">⛔ 操作被阻止</span>
+						<span v-else-if="store.securityConfirm.category === 'sensitive'">🔐 敏感操作确认</span>
+						<span v-else>📦 沙盒安全确认</span>
+					</h3>
+				</div>
+				
+				<div class="security-modal-body">
+					<div class="security-message" v-html="formatSecurityMessage(store.securityConfirm.message)"></div>
+					
+					<div class="security-info">
+						<div class="security-info-item">
+							<span class="security-info-label">工具:</span>
+							<span class="security-info-value">{{ store.securityConfirm.tool }}</span>
+						</div>
+						<div class="security-info-item" v-if="store.securityConfirm.args">
+							<span class="security-info-label">参数:</span>
+							<span class="security-info-value">{{ JSON.stringify(store.securityConfirm.args).substring(0, 100) }}</span>
+						</div>
+					</div>
+				</div>
+				
+				<div class="security-modal-footer">
+					<button class="btn btn-secondary" @click="store.sendSecurityResponse(false)">
+						❌ 取消
+					</button>
+					<button class="btn btn-primary" @click="store.sendSecurityResponse(true)">
+						✅ 确认执行
+					</button>
+				</div>
+			</div>
+		</div>
 	</div>
 </template>
 
@@ -303,6 +344,12 @@ const imageModal = ref({
 const openImageModal = (base64) => {
 	imageModal.value.base64 = base64;
 	imageModal.value.visible = true;
+};
+
+// 格式化安全消息（保留换行）
+const formatSecurityMessage = (message) => {
+	if (!message) return '';
+	return message.replace(/\n/g, '<br>');
 };
 
 const closeImageModal = () => {
@@ -769,6 +816,61 @@ onMounted(() => {
 }
 
 .debug-modal-footer {
+	@apply p-4 border-t flex justify-end gap-3;
+	border-color: var(--border-color);
+}
+
+/* 安全确认模态框 */
+.security-modal-overlay {
+	@apply fixed inset-0 z-50 flex items-center justify-center;
+	background-color: rgba(0, 0, 0, 0.8);
+}
+
+.security-modal {
+	@apply rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col;
+	background-color: var(--bg-secondary);
+}
+
+.security-modal-header {
+	@apply p-4 border-b;
+	border-color: var(--border-color);
+}
+
+.security-modal-header h3 {
+	@apply text-lg font-bold;
+	color: var(--text-primary);
+}
+
+.security-modal-body {
+	@apply p-4;
+}
+
+.security-message {
+	@apply p-4 rounded-lg mb-4 text-sm leading-relaxed;
+	background-color: var(--bg-tertiary);
+	color: var(--text-primary);
+}
+
+.security-info {
+	@apply p-4 rounded-lg space-y-2;
+	background-color: var(--bg-tertiary);
+}
+
+.security-info-item {
+	@apply flex items-center gap-2;
+}
+
+.security-info-label {
+	@apply text-sm font-medium;
+	color: var(--text-muted);
+}
+
+.security-info-value {
+	@apply text-sm font-mono;
+	color: var(--text-primary);
+}
+
+.security-modal-footer {
 	@apply p-4 border-t flex justify-end gap-3;
 	border-color: var(--border-color);
 }

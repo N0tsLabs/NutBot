@@ -3,6 +3,7 @@
  */
 
 import { logger } from '../utils/logger.js';
+import { configManager } from '../utils/config.js';
 import type { ChatMessage, ChatOptions, ChatChunk, ProviderInfo, ToolSchema } from '../types/index.js';
 
 export interface ProviderConfig {
@@ -48,6 +49,41 @@ export abstract class BaseProvider {
 
 		// Vision 支持：由用户配置，默认 false
 		this.supportsVision = config.supportsVision ?? false;
+	}
+
+	/**
+	 * 规范化 baseUrl（自动补全后缀）
+	 * @param url 原始 URL
+	 * @param type API 类型
+	 * @param endpoint 测试端点（用于判断是否需要补全）
+	 */
+	protected static normalizeBaseUrl(url: string, type: 'openai' | 'anthropic', endpoint: string): string {
+		// 移除尾部斜杠
+		let normalized = url.replace(/\/+$/, '');
+		
+		// 如果已经包含端点路径，说明用户配置了完整 URL，直接返回
+		if (normalized.endsWith(endpoint.replace(/^\//, ''))) {
+			return normalized.slice(0, -endpoint.length).replace(/\/+$/, '');
+		}
+		
+		// 检查是否需要添加 /v1 后缀
+		// OpenAI 和 Anthropic 兼容 API 通常需要 /v1
+		if (!normalized.endsWith('/v1')) {
+			// 官方 API 不需要 /v1（它们自己处理）
+			const officialHosts = [
+				'api.openai.com',
+				'api.anthropic.com',
+			];
+			
+			const isOfficial = officialHosts.some(host => normalized.includes(host));
+			
+			if (!isOfficial) {
+				// 第三方 API 通常需要 /v1
+				normalized = `${normalized}/v1`;
+			}
+		}
+		
+		return normalized;
 	}
 
 	/**
@@ -104,12 +140,93 @@ export abstract class BaseProvider {
 	}
 
 	/**
-	 * 发送 HTTP 请求
+	 * 获取网络配置
+	 */
+	protected getNetworkConfig() {
+		return {
+			timeout: configManager.get<number>('network.timeout', 120000),
+			streamTimeout: configManager.get<number>('network.streamTimeout', 300000),
+			retryCount: configManager.get<number>('network.retryCount', 3),
+			retryDelay: configManager.get<number>('network.retryDelay', 1000),
+		};
+	}
+
+	/**
+	 * 延迟函数
+	 */
+	protected sleep(ms: number): Promise<void> {
+		return new Promise(resolve => setTimeout(resolve, ms));
+	}
+
+	/**
+	 * 判断错误是否可重试
+	 */
+	protected isRetryableError(error: Error): boolean {
+		const message = error.message.toLowerCase();
+		const retryablePatterns = [
+			'fetch failed',
+			'network',
+			'econnreset',
+			'econnrefused',
+			'etimedout',
+			'socket hang up',
+			'dns',
+			'getaddrinfo',
+			'abort',
+			'timeout',
+			'connection',
+			'502',
+			'503',
+			'504',
+			'rate limit',
+			'too many requests',
+		];
+		return retryablePatterns.some(pattern => message.includes(pattern));
+	}
+
+	/**
+	 * 发送 HTTP 请求（带重试）
 	 */
 	protected async request<T>(
 		endpoint: string,
 		data: unknown,
 		options: { method?: string; stream?: boolean; headers?: Record<string, string> } = {}
+	): Promise<T | ReadableStream<Uint8Array>> {
+		const networkConfig = this.getNetworkConfig();
+		const { retryCount, retryDelay } = networkConfig;
+		
+		let lastError: Error | null = null;
+		
+		for (let attempt = 1; attempt <= retryCount + 1; attempt++) {
+			try {
+				return await this.doRequest<T>(endpoint, data, options, networkConfig);
+			} catch (error) {
+				lastError = error as Error;
+				
+				// 检查是否可重试
+				if (attempt <= retryCount && this.isRetryableError(lastError)) {
+					const delay = retryDelay * attempt; // 递增延迟
+					this.logger.warn(`🔄 请求失败 (${lastError.message})，${delay}ms 后重试 (${attempt}/${retryCount})...`);
+					await this.sleep(delay);
+					continue;
+				}
+				
+				// 不可重试或已用完重试次数
+				break;
+			}
+		}
+		
+		throw lastError;
+	}
+
+	/**
+	 * 实际发送 HTTP 请求
+	 */
+	protected async doRequest<T>(
+		endpoint: string,
+		data: unknown,
+		options: { method?: string; stream?: boolean; headers?: Record<string, string> },
+		networkConfig: ReturnType<typeof this.getNetworkConfig>
 	): Promise<T | ReadableStream<Uint8Array>> {
 		const url = `${this.baseUrl}${endpoint}`;
 		const { method = 'POST', stream = false } = options;
@@ -122,8 +239,8 @@ export abstract class BaseProvider {
 		};
 
 		const controller = new AbortController();
-		// 流式请求用更长的超时（5分钟），非流式用默认超时
-		const requestTimeout = stream ? 300000 : this.timeout;
+		// 流式请求用更长的超时，非流式用默认超时
+		const requestTimeout = stream ? networkConfig.streamTimeout : (this.timeout || networkConfig.timeout);
 		const timeoutId = setTimeout(() => controller.abort(), requestTimeout);
 
 		try {
@@ -145,6 +262,12 @@ export abstract class BaseProvider {
 				if (isJson) {
 					const errorData = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
 					errorMessage = errorData.error?.message || errorMessage;
+				}
+				// 针对常见错误给出更明确的提示
+				if (response.status === 404) {
+					errorMessage += ` - 请检查 API 地址是否正确（可能需要添加 /v1 后缀）`;
+				} else if (response.status === 401 || response.status === 403) {
+					errorMessage += ` - 请检查 API Key 是否正确`;
 				}
 				throw new Error(errorMessage);
 			}

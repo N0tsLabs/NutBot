@@ -221,6 +221,8 @@ export class ScreenshotTool extends BaseTool {
 			mouseCenter: [number, number]; // 鼠标坐标系的中心点
 		}>;
 		elementsHelp?: string;
+		ocrError?: string;  // OCR 错误信息
+		ocrFatal?: boolean; // 是否是致命错误
 	}> {
 		const options: { format?: string; screen?: number } = { format: 'png' };
 		if (screen !== undefined) {
@@ -293,36 +295,48 @@ export class ScreenshotTool extends BaseTool {
 		};
 
 		// 尝试调用 OCR-SoM
-		try {
-			const ocrEnabled = configManager.get<boolean>('ocr.enabled', true);
+		const ocrEnabled = configManager.get<boolean>('ocr.enabled', true);
+		
+		if (ocrEnabled) {
+			this.logger.info('调用 OCR-SoM 识别屏幕元素...');
+			const somResult = await ocrSomService.analyze(base64, { returnImage: true });
 			
-			if (ocrEnabled) {
-				this.logger.info('调用 OCR-SoM 识别屏幕元素...');
-				const somResult = await ocrSomService.analyze(base64, { returnImage: true });
-				
-				if (somResult.success && somResult.elements.length > 0) {
-					result.ocrEnabled = true;
-					result.markedImage = somResult.marked_image;
-					
-					// 格式化元素列表（与测试用例一致）
-					result.elements = somResult.elements.map(el => {
-						const [x1, y1, x2, y2] = el.box;
-						const centerX = Math.round((x1 + x2) / 2);
-						const centerY = Math.round((y1 + y2) / 2);
-						return {
-							id: el.id,
-							type: el.type,
-							text: el.text || '(无文字)',
-							center: [centerX, centerY] as [number, number],
-							box: el.box,
-						};
-					});
-
-					this.logger.info(`OCR-SoM 识别到 ${result.elements.length} 个元素`);
-				}
+			// 检查是否有致命错误
+			if (!somResult.success && somResult.fatal) {
+				this.logger.error('OCR-SoM 致命错误:', somResult.error);
+				return {
+					...result,
+					success: false,
+					ocrEnabled: true,
+					ocrError: somResult.error,
+					ocrFatal: true,
+				};
 			}
-		} catch (e) {
-			this.logger.warn('OCR-SoM 调用失败:', (e as Error).message);
+			
+			if (somResult.success && somResult.elements.length > 0) {
+				result.ocrEnabled = true;
+				result.markedImage = somResult.marked_image;
+				
+				// 格式化元素列表
+				// center 是图片坐标，computer 工具会自动转换为鼠标坐标
+				result.elements = somResult.elements.map(el => {
+					const [x1, y1, x2, y2] = el.box;
+					const centerX = Math.round((x1 + x2) / 2);
+					const centerY = Math.round((y1 + y2) / 2);
+					return {
+						id: el.id,
+						type: el.type,
+						text: el.text || '(无文字)',
+						center: [centerX, centerY] as [number, number],
+						box: el.box,
+					};
+				});
+
+				this.logger.info(`OCR-SoM 识别到 ${result.elements.length} 个元素`);
+			} else if (!somResult.success) {
+				// 非致命错误，只记录警告
+				this.logger.warn('OCR-SoM 调用失败:', somResult.error);
+			}
 		}
 
 		return result;

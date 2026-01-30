@@ -43,6 +43,8 @@ export class AnthropicProvider extends BaseProvider {
 		super(config);
 		this.type = 'anthropic';
 		this.apiVersion = config.apiVersion || '2023-06-01';
+		// 自动补全 baseUrl（Anthropic 兼容 API 通常需要 /v1）
+		this.baseUrl = BaseProvider.normalizeBaseUrl(this.baseUrl, 'anthropic', '/messages');
 	}
 
 	/**

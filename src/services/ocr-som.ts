@@ -20,6 +20,7 @@ export interface OcrSomResult {
     elements: OcrElement[];
     marked_image?: string; // base64
     error?: string;
+    fatal?: boolean; // 是否是致命错误（如 cuDNN 缺失）
 }
 
 export interface OcrSomOptions {
@@ -152,11 +153,25 @@ class OcrSomService {
             const message = error instanceof Error ? error.message : String(error);
             this.logger.error('OCR-SoM 调用失败:', message);
 
+            // 检测是否是致命错误（GPU 库缺失等）
+            const fatalPatterns = [
+                'cudnn',
+                'cublas',
+                'cuda',
+                'nvrtc',
+                'dynamic library',
+                'PreconditionNotMet',
+            ];
+            const isFatal = fatalPatterns.some(pattern => 
+                message.toLowerCase().includes(pattern.toLowerCase())
+            );
+
             return {
                 success: false,
                 count: 0,
                 elements: [],
                 error: message,
+                fatal: isFatal,
             };
         }
     }
