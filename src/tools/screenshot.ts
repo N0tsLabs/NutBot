@@ -11,7 +11,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { ocrSomService } from '../services/ocr-som.js';
-import { ConfigManager } from '../utils/config.js';
+import { configManager } from '../utils/config.js';
 
 // 截图保存目录
 const SCREENSHOT_DIR = join(systemInfo.homedir, '.nutbot', 'screenshots');
@@ -294,8 +294,7 @@ export class ScreenshotTool extends BaseTool {
 
 		// 尝试调用 OCR-SoM
 		try {
-			const config = ConfigManager.getInstance();
-			const ocrEnabled = config.get<boolean>('ocr.enabled', true);
+			const ocrEnabled = configManager.get<boolean>('ocr.enabled', true);
 			
 			if (ocrEnabled && ocrSomService.isConfigured()) {
 				this.logger.info('调用 OCR-SoM 识别屏幕元素...');
