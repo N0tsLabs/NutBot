@@ -108,18 +108,19 @@ export class ScreenshotTool extends BaseTool {
 	}
 
 	/**
-	 * 压缩图片
+	 * 压缩图片（只做质量压缩，不改变尺寸）
+	 * 保持原始尺寸确保 AI 返回的坐标与屏幕坐标一致
 	 */
 	private async compressImage(buffer: Buffer, quality: string): Promise<Buffer> {
 		if (!this.sharp) {
 			return buffer; // 没有 sharp 就返回原图
 		}
 
-		// 质量配置
+		// 质量配置（只压缩质量，不改变尺寸）
 		const qualityConfig = {
-			low: { maxWidth: 1280, jpegQuality: 50 },
-			medium: { maxWidth: 1920, jpegQuality: 70 },
-			high: { maxWidth: 2560, jpegQuality: 85 },
+			low: { jpegQuality: 50 },
+			medium: { jpegQuality: 70 },
+			high: { jpegQuality: 85 },
 		};
 
 		const config = qualityConfig[quality as keyof typeof qualityConfig] || qualityConfig.medium;
@@ -127,16 +128,10 @@ export class ScreenshotTool extends BaseTool {
 		try {
 			const compressed = await (
 				this.sharp(buffer) as unknown as {
-					resize: (
-						width: number,
-						height: number | null,
-						options: { fit: string; withoutEnlargement: boolean }
-					) => unknown;
 					jpeg: (options: { quality: number }) => unknown;
 					toBuffer: () => Promise<Buffer>;
 				}
 			)
-				.resize(config.maxWidth, null, { fit: 'inside', withoutEnlargement: true })
 				.jpeg({ quality: config.jpegQuality })
 				.toBuffer();
 
@@ -222,54 +217,33 @@ export class ScreenshotTool extends BaseTool {
 		const originalBuffer = await this.screenshotDesktop!(options);
 		const originalSize = originalBuffer.length;
 
-		// 获取原始屏幕信息
+		// 获取屏幕信息（包括缩放）
 		const screenInfo = await this.getScreenInfo(originalBuffer);
 
-		// 压缩
+		// 压缩（只压缩质量，不改变尺寸）
 		const compressedBuffer = await this.compressImage(originalBuffer, quality);
 		const base64 = compressedBuffer.toString('base64');
-
-		// 获取压缩后图片的实际尺寸
-		let compressedWidth = screenInfo.imageWidth;
-		let compressedHeight = screenInfo.imageHeight;
-		if (this.sharp) {
-			try {
-				const metadata = await (
-					this.sharp(compressedBuffer) as unknown as { metadata: () => Promise<{ width?: number; height?: number }> }
-				).metadata();
-				compressedWidth = metadata.width || compressedWidth;
-				compressedHeight = metadata.height || compressedHeight;
-			} catch {
-				// 忽略错误
-			}
-		}
-
-		// 计算压缩后图片到鼠标坐标系的缩放比例（这才是 AI 需要的）
-		const compressedScale = compressedWidth / screenInfo.mouseWidth;
 
 		// 保存到文件
 		const filename = `screenshot_${Date.now()}.jpg`;
 		const savedPath = join(SCREENSHOT_DIR, filename);
 		await fs.writeFile(savedPath, compressedBuffer);
 
-		// 生成坐标转换帮助信息（基于压缩后图片）
+		// 生成坐标转换帮助信息
 		const coordinateHelp =
-			compressedScale > 1.01
-				? `⚠️ 重要：图片坐标需要除以 ${compressedScale.toFixed(2)} 才能用于点击。
-例如：图片坐标 (1000, 800) → 点击坐标 (${Math.round(1000 / compressedScale)}, ${Math.round(800 / compressedScale)})
-任务栏图标 Y 坐标: ${Math.round((screenInfo.mouseHeight - 24) * compressedScale)} (图片坐标)`
-				: `图片坐标可直接用于点击。任务栏图标 Y 坐标: ${screenInfo.mouseHeight - 24}`;
+			screenInfo.scale > 1.01
+				? `⚠️ 重要：屏幕有 ${Math.round(screenInfo.scale * 100)}% 缩放！
+在截图中看到的坐标需要除以 ${screenInfo.scale.toFixed(2)} 才能用于点击。
+例如：截图坐标 (1000, 800) → 点击坐标 (${Math.round(1000 / screenInfo.scale)}, ${Math.round(800 / screenInfo.scale)})
+任务栏图标 Y 坐标: ${screenInfo.mouseHeight - 24} (鼠标坐标系)`
+				: `截图坐标可直接用于点击。任务栏图标 Y 坐标: ${screenInfo.mouseHeight - 24}`;
 
 		this.logger.info(
 			`截图完成: ${originalSize} -> ${compressedBuffer.length} 字节 (压缩 ${Math.round((1 - compressedBuffer.length / originalSize) * 100)}%), 保存: ${savedPath}`
 		);
 		this.logger.info(
-			`原始: ${screenInfo.imageWidth}x${screenInfo.imageHeight}, 压缩后: ${compressedWidth}x${compressedHeight}, 鼠标系: ${screenInfo.mouseWidth}x${screenInfo.mouseHeight}, 缩放: ${compressedScale.toFixed(2)}x`
+			`截图尺寸: ${screenInfo.imageWidth}x${screenInfo.imageHeight}, 鼠标坐标系: ${screenInfo.mouseWidth}x${screenInfo.mouseHeight}, 缩放: ${screenInfo.scale.toFixed(2)}x`
 		);
-
-		// 更新全局缩放比例缓存（供 computer 工具使用）
-		// 这个值是基于压缩后图片的，因为 AI 看到的是压缩后图片
-		await this.updateGlobalScale(compressedScale);
 
 		return {
 			success: true,
@@ -278,27 +252,11 @@ export class ScreenshotTool extends BaseTool {
 			originalSize,
 			compressedSize: compressedBuffer.length,
 			savedPath,
-			imageSize: `${compressedWidth}x${compressedHeight}`,
+			imageSize: `${screenInfo.imageWidth}x${screenInfo.imageHeight}`,
 			mouseCoordSize: `${screenInfo.mouseWidth}x${screenInfo.mouseHeight}`,
-			scale: compressedScale,
+			scale: screenInfo.scale,
 			coordinateHelp,
 		};
-	}
-
-	/**
-	 * 更新 computer 工具使用的全局缩放比例
-	 */
-	private async updateGlobalScale(scale: number): Promise<void> {
-		try {
-			// 动态导入 computer 工具并设置全局缩放
-			const computerModule = await import('./computer.js');
-			if (computerModule.setGlobalScale) {
-				computerModule.setGlobalScale(scale);
-				this.logger.debug(`已更新全局缩放比例: ${scale.toFixed(2)}`);
-			}
-		} catch {
-			// 忽略错误
-		}
 	}
 
 	/**
