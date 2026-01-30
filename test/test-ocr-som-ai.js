@@ -76,20 +76,32 @@ async function callAI(config, messages) {
         process.exit(1);
     }
     
-    // 解析 provider:model 格式
-    const [providerName, modelName] = defaultModel.includes(':') 
-        ? defaultModel.split(':') 
-        : [Object.keys(config.providers)[0], defaultModel];
+    // 解析 provider/model 格式（如 gpt/gpt-5.2）
+    let providerName, modelName;
+    if (defaultModel.includes('/')) {
+        [providerName, modelName] = defaultModel.split('/');
+    } else {
+        providerName = Object.keys(config.providers)[0];
+        modelName = defaultModel;
+    }
     
     const providerConfig = config.providers[providerName];
     if (!providerConfig) {
         console.error(`❌ 未找到 Provider: ${providerName}`);
+        console.log(`   可用 Providers: ${Object.keys(config.providers).join(', ')}`);
+        process.exit(1);
+    }
+    
+    const baseUrl = providerConfig.baseUrl || providerConfig.baseURL;
+    if (!baseUrl) {
+        console.error(`❌ Provider ${providerName} 没有配置 baseUrl`);
         process.exit(1);
     }
     
     console.log(`\n🤖 调用 AI: ${providerName}/${modelName}`);
+    console.log(`   API: ${baseUrl}`);
     
-    const response = await fetch(`${providerConfig.baseURL}/chat/completions`, {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
