@@ -304,26 +304,19 @@ export class ScreenshotTool extends BaseTool {
 					result.ocrEnabled = true;
 					result.markedImage = somResult.marked_image;
 					
-					// 转换元素列表，提供图片坐标（computer 工具会自动转换为鼠标坐标）
+					// 格式化元素列表（与测试用例一致）
 					result.elements = somResult.elements.map(el => {
 						const [x1, y1, x2, y2] = el.box;
 						const centerX = Math.round((x1 + x2) / 2);
 						const centerY = Math.round((y1 + y2) / 2);
 						return {
 							id: el.id,
-							text: el.text || `[${el.type}]`,
-							// 只返回图片坐标，computer 工具会自动除以 scale 转换为鼠标坐标
+							type: el.type,
+							text: el.text || '(无文字)',
 							center: [centerX, centerY] as [number, number],
+							box: el.box,
 						};
 					});
-					
-					// 生成元素使用帮助
-					result.elementsHelp = `
-📋 识别到 ${result.elements.length} 个可点击元素（见标注图中的编号）
-⚠️ 重要：坐标是图片坐标，computer 工具会自动转换为鼠标坐标
-⭐ 使用方法：找到目标元素编号，直接使用其 center 坐标
-例如：要点击 [搜索] 按钮（id=5, center=[1440, 90]）
-→ computer left_click coordinate:[1440, 90]`;
 
 					this.logger.info(`OCR-SoM 识别到 ${result.elements.length} 个元素`);
 				}

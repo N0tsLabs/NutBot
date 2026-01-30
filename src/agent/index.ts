@@ -862,10 +862,11 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 				markedImage?: string;
 				elements?: Array<{
 					id: number;
+					type: string;
 					text: string;
-					center: [number, number];  // 图片坐标，computer 工具会自动转换
+					center: [number, number];
+					box: [number, number, number, number];
 				}>;
-				elementsHelp?: string;
 				scale?: number;
 				coordinateHelp?: string;
 			};
@@ -877,18 +878,18 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 					// Vision 模式：返回多模态内容
 					const content: ContentBlock[] = [];
 					
-					// 如果有 OCR-SoM 结果，包含标注图和元素列表
+					// 如果有 OCR-SoM 结果，包含标注图和元素列表（与测试用例格式一致）
 					if (screenshotResult.ocrEnabled && screenshotResult.elements && screenshotResult.markedImage) {
-						// 格式化元素列表（只显示前30个）
-						const elementsText = screenshotResult.elements.slice(0, 30).map(el => 
-							`[${el.id}] "${el.text}" → center: [${el.center.join(', ')}]`
-						).join('\n');
+						// 元素列表以 JSON 格式发送（与测试用例一致）
+						const elementsJson = JSON.stringify(screenshotResult.elements, null, 2);
 						
 						content.push({
 							type: 'text',
-							text: `截图成功 (${sizeKB}KB)。OCR-SoM 识别到 ${screenshotResult.elements.length} 个元素。
+							text: `## 元素列表
+共 ${screenshotResult.elements.length} 个元素：
+${elementsJson}
 
-📷 原始截图（下图）：`,
+## 原始截图（未标注）`,
 						});
 						content.push({
 							type: 'image_url',
@@ -896,23 +897,11 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 						});
 						content.push({
 							type: 'text', 
-							text: `\n🏷️ 标注截图（元素编号标记）：`,
+							text: `\n## 标注截图（带编号）`,
 						});
 						content.push({
 							type: 'image_url',
 							image_url: { url: `data:image/png;base64,${screenshotResult.markedImage}` },
-						});
-						content.push({
-							type: 'text',
-							text: `
-📋 元素列表（共 ${screenshotResult.elements.length} 个，显示前30个）：
-${elementsText}
-${screenshotResult.elements.length > 30 ? `... 还有 ${screenshotResult.elements.length - 30} 个元素` : ''}
-
-⚠️ 坐标是图片坐标，computer 工具会自动转换为鼠标坐标
-
-⭐ 使用方法：从标注图找到目标元素编号，直接使用其 center 坐标点击
-例如：要点击编号 [5] 的元素 → computer left_click coordinate:[其center坐标]`,
 						});
 					} else {
 						// 没有 OCR-SoM，只返回原始截图
