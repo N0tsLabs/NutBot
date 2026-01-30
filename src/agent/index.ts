@@ -553,22 +553,36 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 								debugCache.stepCount++;
 								try {
 									// 构建详细调试信息
+									// 注意：debugCache.lastElements 是 screenshot 工具返回的格式，包含 center 和 mouseCenter
 									const fullDebugInfo: DebugInfo = {
 										action: debugData.action,
 										thinking,
 										toolName,
 										toolArgs: toolArgs as Record<string, unknown>,
 										coordinate,
-										elements: debugCache.lastElements?.map(el => ({
-											id: el.id,
-											type: el.type,
-											text: el.text,
-											box: el.box,
-											center: el.box ? [
-												Math.round((el.box[0] + el.box[2]) / 2),
-												Math.round((el.box[1] + el.box[3]) / 2),
-											] as [number, number] : undefined,
-										})),
+										elements: debugCache.lastElements?.map(el => {
+											// el 可能是 screenshot 返回的格式 (有 center/mouseCenter) 
+											// 或者是 DebugElement 格式 (有 box)
+											const anyEl = el as { 
+												id: number; 
+												text?: string; 
+												type?: string;
+												box?: [number, number, number, number];
+												center?: [number, number];
+												mouseCenter?: [number, number];
+											};
+											return {
+												id: anyEl.id,
+												type: anyEl.type,
+												text: anyEl.text,
+												box: anyEl.box,
+												center: anyEl.center || (anyEl.box ? [
+													Math.round((anyEl.box[0] + anyEl.box[2]) / 2),
+													Math.round((anyEl.box[1] + anyEl.box[3]) / 2),
+												] as [number, number] : undefined),
+												mouseCenter: anyEl.mouseCenter,
+											};
+										}),
 										screenInfo: debugCache.lastScreenInfo,
 									};
 									
@@ -849,8 +863,7 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 				elements?: Array<{
 					id: number;
 					text: string;
-					center: [number, number];
-					mouseCenter: [number, number];
+					center: [number, number];  // 图片坐标，computer 工具会自动转换
 				}>;
 				elementsHelp?: string;
 				scale?: number;
@@ -868,7 +881,7 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 					if (screenshotResult.ocrEnabled && screenshotResult.elements && screenshotResult.markedImage) {
 						// 格式化元素列表（只显示前30个）
 						const elementsText = screenshotResult.elements.slice(0, 30).map(el => 
-							`[${el.id}] "${el.text}" → mouseCenter: [${el.mouseCenter.join(', ')}]`
+							`[${el.id}] "${el.text}" → center: [${el.center.join(', ')}]`
 						).join('\n');
 						
 						content.push({
@@ -896,10 +909,10 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 ${elementsText}
 ${screenshotResult.elements.length > 30 ? `... 还有 ${screenshotResult.elements.length - 30} 个元素` : ''}
 
-${screenshotResult.coordinateHelp || ''}
+⚠️ 坐标是图片坐标，computer 工具会自动转换为鼠标坐标
 
-⭐ 使用方法：从标注图找到目标元素编号，使用其 mouseCenter 坐标点击
-例如：要点击编号 [5] 的元素 → computer left_click coordinate:[其mouseCenter坐标]`,
+⭐ 使用方法：从标注图找到目标元素编号，直接使用其 center 坐标点击
+例如：要点击编号 [5] 的元素 → computer left_click coordinate:[其center坐标]`,
 						});
 					} else {
 						// 没有 OCR-SoM，只返回原始截图
