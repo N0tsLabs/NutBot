@@ -2,6 +2,7 @@
  * 屏幕截图工具
  * 使用 screenshot-desktop 进行屏幕截图
  * 使用 sharp 进行图片压缩
+ * 集成 OCR-SoM 识别屏幕元素
  */
 
 import { BaseTool } from './registry.js';
@@ -9,6 +10,8 @@ import { systemInfo } from './exec.js';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import { ocrSomService } from '../services/ocr-som.js';
+import { ConfigManager } from '../utils/config.js';
 
 // 截图保存目录
 const SCREENSHOT_DIR = join(systemInfo.homedir, '.nutbot', 'screenshots');
@@ -192,6 +195,7 @@ export class ScreenshotTool extends BaseTool {
 
 	/**
 	 * 截图并返回 base64
+	 * 如果启用 OCR-SoM，会同时返回元素列表和标注图
 	 */
 	private async capture(
 		screen?: number,
@@ -207,6 +211,16 @@ export class ScreenshotTool extends BaseTool {
 		mouseCoordSize: string;
 		scale: number;
 		coordinateHelp: string;
+		// OCR-SoM 相关
+		ocrEnabled?: boolean;
+		markedImage?: string;
+		elements?: Array<{
+			id: number;
+			text: string;
+			center: [number, number];
+			mouseCenter: [number, number]; // 鼠标坐标系的中心点
+		}>;
+		elementsHelp?: string;
 	}> {
 		const options: { format?: string; screen?: number } = { format: 'png' };
 		if (screen !== undefined) {
@@ -233,10 +247,9 @@ export class ScreenshotTool extends BaseTool {
 		const coordinateHelp =
 			screenInfo.scale > 1.01
 				? `⚠️ 重要：屏幕有 ${Math.round(screenInfo.scale * 100)}% 缩放！
-在截图中看到的坐标需要除以 ${screenInfo.scale.toFixed(2)} 才能用于点击。
-例如：截图坐标 (1000, 800) → 点击坐标 (${Math.round(1000 / screenInfo.scale)}, ${Math.round(800 / screenInfo.scale)})
-任务栏图标 Y 坐标: ${screenInfo.mouseHeight - 24} (鼠标坐标系)`
-				: `截图坐标可直接用于点击。任务栏图标 Y 坐标: ${screenInfo.mouseHeight - 24}`;
+图片坐标需要除以 ${screenInfo.scale.toFixed(2)} 才能用于点击。
+例如：图片坐标 (1000, 800) → 点击坐标 (${Math.round(1000 / screenInfo.scale)}, ${Math.round(800 / screenInfo.scale)})`
+				: `图片坐标可直接用于点击`;
 
 		this.logger.info(
 			`截图完成: ${originalSize} -> ${compressedBuffer.length} 字节 (压缩 ${Math.round((1 - compressedBuffer.length / originalSize) * 100)}%), 保存: ${savedPath}`
@@ -245,7 +258,28 @@ export class ScreenshotTool extends BaseTool {
 			`截图尺寸: ${screenInfo.imageWidth}x${screenInfo.imageHeight}, 鼠标坐标系: ${screenInfo.mouseWidth}x${screenInfo.mouseHeight}, 缩放: ${screenInfo.scale.toFixed(2)}x`
 		);
 
-		return {
+		// 基础返回结果
+		const result: {
+			success: boolean;
+			base64: string;
+			format: string;
+			originalSize: number;
+			compressedSize: number;
+			savedPath: string;
+			imageSize: string;
+			mouseCoordSize: string;
+			scale: number;
+			coordinateHelp: string;
+			ocrEnabled?: boolean;
+			markedImage?: string;
+			elements?: Array<{
+				id: number;
+				text: string;
+				center: [number, number];
+				mouseCenter: [number, number];
+			}>;
+			elementsHelp?: string;
+		} = {
 			success: true,
 			base64,
 			format: 'jpeg',
@@ -257,6 +291,51 @@ export class ScreenshotTool extends BaseTool {
 			scale: screenInfo.scale,
 			coordinateHelp,
 		};
+
+		// 尝试调用 OCR-SoM
+		try {
+			const config = ConfigManager.getInstance();
+			const ocrEnabled = config.get<boolean>('ocr.enabled', true);
+			
+			if (ocrEnabled && ocrSomService.isConfigured()) {
+				this.logger.info('调用 OCR-SoM 识别屏幕元素...');
+				const somResult = await ocrSomService.analyze(base64, { returnImage: true });
+				
+				if (somResult.success && somResult.elements.length > 0) {
+					result.ocrEnabled = true;
+					result.markedImage = somResult.marked_image;
+					
+					// 转换元素列表，同时提供图片坐标和鼠标坐标
+					result.elements = somResult.elements.map(el => {
+						const [x1, y1, x2, y2] = el.box;
+						const centerX = Math.round((x1 + x2) / 2);
+						const centerY = Math.round((y1 + y2) / 2);
+						return {
+							id: el.id,
+							text: el.text || `[${el.type}]`,
+							center: [centerX, centerY] as [number, number],
+							mouseCenter: [
+								Math.round(centerX / screenInfo.scale),
+								Math.round(centerY / screenInfo.scale),
+							] as [number, number],
+						};
+					});
+					
+					// 生成元素使用帮助
+					result.elementsHelp = `
+📋 识别到 ${result.elements.length} 个可点击元素（见标注图中的编号）
+⭐ 使用方法：找到目标元素的编号，使用其 mouseCenter 坐标点击
+例如：要点击 [搜索] 按钮（id=5, mouseCenter=[720, 45]）
+→ computer left_click coordinate:[720, 45]`;
+
+					this.logger.info(`OCR-SoM 识别到 ${result.elements.length} 个元素`);
+				}
+			}
+		} catch (e) {
+			this.logger.warn('OCR-SoM 调用失败:', (e as Error).message);
+		}
+
+		return result;
 	}
 
 	/**

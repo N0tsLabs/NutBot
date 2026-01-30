@@ -613,29 +613,24 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 						this.logger.info(`│  结果: ${resultStr}${resultStr.length >= 300 ? '...' : ''}`);
 						this.logger.info(`└─ 完成 (${toolDuration}ms)`);
 
-						// 调试模式：如果是截图工具，缓存截图并调用 OCR-SoM
+						// 调试模式：如果是截图工具，缓存截图（OCR-SoM 结果已由 screenshot 工具返回）
 						if (debugMode && toolName === 'screenshot') {
-							const screenshotResult = result as { success?: boolean; base64?: string };
+							const screenshotResult = result as { 
+								success?: boolean; 
+								base64?: string;
+								markedImage?: string;
+								elements?: DebugElement[];
+							};
 							if (screenshotResult.success && screenshotResult.base64) {
-								this.logger.info(`│  [调试模式] 截图完成，调用 OCR-SoM...`);
 								debugCache.lastScreenshot = screenshotResult.base64;
-
-								// 调用 OCR-SoM 获取标注图
-								try {
-									const ocrEnabled = this.gateway.config.get<boolean>('ocr.enabled', true);
-									if (ocrEnabled) {
-										const somResult = await ocrSomService.analyze(screenshotResult.base64, {
-											returnImage: true,
-										});
-										if (somResult.success) {
-											debugCache.lastMarkedImage = somResult.marked_image;
-											debugCache.lastElements = somResult.elements as DebugElement[];
-											this.logger.info(`│  [调试模式] OCR-SoM 识别到 ${somResult.count} 个元素`);
-										}
-									}
-								} catch (e) {
-									this.logger.warn('OCR-SoM 调用失败:', (e as Error).message);
+								// 使用 screenshot 工具返回的 OCR-SoM 结果
+								if (screenshotResult.markedImage) {
+									debugCache.lastMarkedImage = screenshotResult.markedImage;
 								}
+								if (screenshotResult.elements) {
+									debugCache.lastElements = screenshotResult.elements;
+								}
+								this.logger.info(`│  [调试模式] 截图已缓存${screenshotResult.elements ? `，包含 ${screenshotResult.elements.length} 个元素` : ''}`);
 							}
 						}
 
@@ -814,23 +809,78 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 				base64?: string;
 				path?: string;
 				screens?: unknown[];
+				// OCR-SoM 相关
+				ocrEnabled?: boolean;
+				markedImage?: string;
+				elements?: Array<{
+					id: number;
+					text: string;
+					center: [number, number];
+					mouseCenter: [number, number];
+				}>;
+				elementsHelp?: string;
+				scale?: number;
+				coordinateHelp?: string;
 			};
 
 			if (screenshotResult.base64) {
 				const sizeKB = Math.round((screenshotResult.base64.length * 0.75) / 1024);
 
 				if (hasVision) {
-					// Vision 模式：返回多模态内容，AI 可以直接看到图片
-					return {
-						content: [
-							{ type: 'text', text: `截图成功 (${sizeKB}KB)，请分析图片内容：` },
-							{
-								type: 'image_url',
-								image_url: { url: `data:image/png;base64,${screenshotResult.base64}` },
-							},
-						],
-						isMultimodal: true,
-					};
+					// Vision 模式：返回多模态内容
+					const content: ContentBlock[] = [];
+					
+					// 如果有 OCR-SoM 结果，包含标注图和元素列表
+					if (screenshotResult.ocrEnabled && screenshotResult.elements && screenshotResult.markedImage) {
+						// 格式化元素列表（只显示前30个）
+						const elementsText = screenshotResult.elements.slice(0, 30).map(el => 
+							`[${el.id}] "${el.text}" → mouseCenter: [${el.mouseCenter.join(', ')}]`
+						).join('\n');
+						
+						content.push({
+							type: 'text',
+							text: `截图成功 (${sizeKB}KB)。OCR-SoM 识别到 ${screenshotResult.elements.length} 个元素。
+
+📷 原始截图（下图）：`,
+						});
+						content.push({
+							type: 'image_url',
+							image_url: { url: `data:image/jpeg;base64,${screenshotResult.base64}` },
+						});
+						content.push({
+							type: 'text', 
+							text: `\n🏷️ 标注截图（元素编号标记）：`,
+						});
+						content.push({
+							type: 'image_url',
+							image_url: { url: `data:image/png;base64,${screenshotResult.markedImage}` },
+						});
+						content.push({
+							type: 'text',
+							text: `
+📋 元素列表（共 ${screenshotResult.elements.length} 个，显示前30个）：
+${elementsText}
+${screenshotResult.elements.length > 30 ? `... 还有 ${screenshotResult.elements.length - 30} 个元素` : ''}
+
+${screenshotResult.coordinateHelp || ''}
+
+⭐ 使用方法：从标注图找到目标元素编号，使用其 mouseCenter 坐标点击
+例如：要点击编号 [5] 的元素 → computer left_click coordinate:[其mouseCenter坐标]`,
+						});
+					} else {
+						// 没有 OCR-SoM，只返回原始截图
+						content.push({ 
+							type: 'text', 
+							text: `截图成功 (${sizeKB}KB)。${screenshotResult.coordinateHelp || ''}
+请分析图片内容：` 
+						});
+						content.push({
+							type: 'image_url',
+							image_url: { url: `data:image/jpeg;base64,${screenshotResult.base64}` },
+						});
+					}
+					
+					return { content, isMultimodal: true };
 				} else {
 					// 非 Vision 模式：不应该走到这里（工具已被过滤），但以防万一
 					return {
