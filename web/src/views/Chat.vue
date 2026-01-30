@@ -208,6 +208,75 @@
 				<img :src="'data:image/jpeg;base64,' + imageModal.base64" class="image-modal-img" />
 			</div>
 		</div>
+
+		<!-- 调试确认模态框 -->
+		<div v-if="store.debugConfirm" class="debug-modal-overlay">
+			<div class="debug-modal">
+				<div class="debug-modal-header">
+					<h3>🔍 调试模式 - 确认操作</h3>
+					<p class="debug-modal-thinking" v-if="store.debugConfirm.thinking">
+						💭 {{ store.debugConfirm.thinking }}
+					</p>
+				</div>
+				
+				<div class="debug-modal-body">
+					<!-- 三张图片对比 -->
+					<div class="debug-images">
+						<div class="debug-image-item" v-if="store.debugConfirm.debug?.originalImage">
+							<div class="debug-image-label">📸 原始截图</div>
+							<img 
+								:src="'data:image/png;base64,' + store.debugConfirm.debug.originalImage" 
+								class="debug-image"
+								@click="openImageModal(store.debugConfirm.debug.originalImage)"
+							/>
+						</div>
+						
+						<div class="debug-image-item" v-if="store.debugConfirm.debug?.markedImage">
+							<div class="debug-image-label">🏷️ OCR-SoM 标注</div>
+							<img 
+								:src="'data:image/png;base64,' + store.debugConfirm.debug.markedImage" 
+								class="debug-image"
+								@click="openImageModal(store.debugConfirm.debug.markedImage)"
+							/>
+						</div>
+						
+						<div class="debug-image-item" v-if="store.debugConfirm.debug?.clickImage">
+							<div class="debug-image-label">🎯 AI 点击位置</div>
+							<img 
+								:src="'data:image/png;base64,' + store.debugConfirm.debug.clickImage" 
+								class="debug-image"
+								@click="openImageModal(store.debugConfirm.debug.clickImage)"
+							/>
+						</div>
+					</div>
+					
+					<!-- 操作信息 -->
+					<div class="debug-info">
+						<div class="debug-info-item">
+							<span class="debug-info-label">操作:</span>
+							<span class="debug-info-value">{{ store.debugConfirm.debug?.action }}</span>
+						</div>
+						<div class="debug-info-item" v-if="store.debugConfirm.debug?.coordinate">
+							<span class="debug-info-label">坐标:</span>
+							<span class="debug-info-value">({{ store.debugConfirm.debug.coordinate[0] }}, {{ store.debugConfirm.debug.coordinate[1] }})</span>
+						</div>
+						<div class="debug-info-item" v-if="store.debugConfirm.debug?.elements?.length">
+							<span class="debug-info-label">识别元素:</span>
+							<span class="debug-info-value">{{ store.debugConfirm.debug.elements.length }} 个</span>
+						</div>
+					</div>
+				</div>
+				
+				<div class="debug-modal-footer">
+					<button class="btn btn-secondary" @click="store.sendDebugResponse(false)">
+						❌ 取消操作
+					</button>
+					<button class="btn btn-primary" @click="store.sendDebugResponse(true)">
+						✅ 确认执行
+					</button>
+				</div>
+			</div>
+		</div>
 	</div>
 </template>
 
@@ -626,5 +695,81 @@ onMounted(() => {
 	.input-form .btn {
 		@apply w-full;
 	}
+}
+
+/* 调试模态框 */
+.debug-modal-overlay {
+	@apply fixed inset-0 z-50 flex items-center justify-center;
+	background-color: rgba(0, 0, 0, 0.8);
+}
+
+.debug-modal {
+	@apply rounded-xl shadow-2xl w-full max-w-5xl mx-4 max-h-[90vh] flex flex-col;
+	background-color: var(--bg-secondary);
+}
+
+.debug-modal-header {
+	@apply p-4 border-b;
+	border-color: var(--border-color);
+}
+
+.debug-modal-header h3 {
+	@apply text-lg font-bold;
+	color: var(--text-primary);
+}
+
+.debug-modal-thinking {
+	@apply text-sm mt-2 p-3 rounded-lg;
+	background-color: var(--bg-tertiary);
+	color: var(--text-secondary);
+}
+
+.debug-modal-body {
+	@apply flex-1 overflow-y-auto p-4;
+}
+
+.debug-images {
+	@apply grid grid-cols-1 md:grid-cols-3 gap-4 mb-4;
+}
+
+.debug-image-item {
+	@apply flex flex-col;
+}
+
+.debug-image-label {
+	@apply text-sm font-medium mb-2 text-center;
+	color: var(--text-secondary);
+}
+
+.debug-image {
+	@apply w-full rounded-lg cursor-pointer transition-transform hover:scale-[1.02];
+	border: 2px solid var(--border-color);
+	max-height: 300px;
+	object-fit: contain;
+	background-color: #000;
+}
+
+.debug-info {
+	@apply p-4 rounded-lg space-y-2;
+	background-color: var(--bg-tertiary);
+}
+
+.debug-info-item {
+	@apply flex items-center gap-2;
+}
+
+.debug-info-label {
+	@apply text-sm font-medium;
+	color: var(--text-muted);
+}
+
+.debug-info-value {
+	@apply text-sm;
+	color: var(--text-primary);
+}
+
+.debug-modal-footer {
+	@apply p-4 border-t flex justify-end gap-3;
+	border-color: var(--border-color);
 }
 </style>

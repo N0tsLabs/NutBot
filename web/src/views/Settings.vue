@@ -301,6 +301,28 @@
 			</div>
 		</section>
 
+		<!-- 调试模式设置 -->
+		<section class="card mb-6">
+			<h3 class="text-lg font-medium mb-4 flex items-center gap-2">
+				<span>🔍</span>
+				调试模式
+			</h3>
+			<p class="text-sm text-muted mb-4">
+				开启后，AI 执行每个点击操作前都需要你确认。可以查看原图、OCR 标注图、AI 计划点击的位置。
+			</p>
+			
+			<div class="flex items-center justify-between">
+				<div>
+					<div class="font-medium">启用调试模式</div>
+					<div class="text-sm text-muted">每步操作需要确认，方便排查问题</div>
+				</div>
+				<label class="switch">
+					<input type="checkbox" v-model="debugMode" @change="saveDebugMode" />
+					<span class="slider"></span>
+				</label>
+			</div>
+		</section>
+
 		<!-- 沙盒设置 -->
 		<section class="card">
 			<h3 class="text-lg font-medium mb-4 flex items-center gap-2">
@@ -524,6 +546,7 @@ const modelVisionSupport = reactive({});
 // 配置
 const defaultModel = ref('');
 const sandboxMode = ref('permissive');
+const debugMode = ref(false);
 const config = reactive({
 	server: { host: '127.0.0.1', port: 18800 },
 });
@@ -780,6 +803,14 @@ const saveSandboxMode = async () => {
 	}
 };
 
+const saveDebugMode = async () => {
+	try {
+		await api.put('/api/config', { 'agent.debugMode': debugMode.value });
+	} catch (error) {
+		console.error('Save debug mode failed:', error);
+	}
+};
+
 // ========== OCR-SoM 设置 ==========
 
 const loadOcrConfig = async () => {
@@ -920,6 +951,7 @@ onMounted(async () => {
 
 	defaultModel.value = store.config.agent?.defaultModel || '';
 	sandboxMode.value = store.config.sandbox?.mode || 'permissive';
+	debugMode.value = store.config.agent?.debugMode || false;
 	Object.assign(config.server, store.config.server || {});
 
 	// 加载已保存的 Vision 支持状态（从 visionModels）

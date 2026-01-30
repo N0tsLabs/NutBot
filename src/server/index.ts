@@ -33,6 +33,43 @@ interface WebSocketClient {
 	connectedAt: Date;
 }
 
+// 调试确认等待机制
+interface PendingConfirmation {
+	resolve: (approved: boolean) => void;
+	reject: (error: Error) => void;
+	timeout: NodeJS.Timeout;
+}
+
+const pendingConfirmations = new Map<string, PendingConfirmation>();
+
+/**
+ * 等待用户确认（调试模式用）
+ */
+export function waitForConfirmation(confirmId: string, timeoutMs: number = 300000): Promise<boolean> {
+	return new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			pendingConfirmations.delete(confirmId);
+			reject(new Error('确认超时'));
+		}, timeoutMs);
+
+		pendingConfirmations.set(confirmId, { resolve, reject, timeout });
+	});
+}
+
+/**
+ * 响应用户确认
+ */
+export function respondToConfirmation(confirmId: string, approved: boolean): boolean {
+	const pending = pendingConfirmations.get(confirmId);
+	if (pending) {
+		clearTimeout(pending.timeout);
+		pending.resolve(approved);
+		pendingConfirmations.delete(confirmId);
+		return true;
+	}
+	return false;
+}
+
 export class Server {
 	private app: FastifyInstance;
 	private gateway: Gateway;
@@ -185,6 +222,21 @@ export class Server {
 
 			case 'chat':
 				await this.handleChatMessage(clientId, id, payload);
+				break;
+
+			case 'debug_response':
+				// 处理调试确认响应
+				const confirmId = payload?.confirmId as string;
+				const approved = payload?.approved as boolean;
+				if (confirmId) {
+					const handled = respondToConfirmation(confirmId, approved ?? false);
+					this.sendToClient(clientId, {
+						type: 'debug_response_ack',
+						id,
+						confirmId,
+						handled,
+					});
+				}
 				break;
 
 			default:

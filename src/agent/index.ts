@@ -8,13 +8,24 @@ import { generateId, safeParseJSON, getLocationByIP, type UserLocation } from '.
 import { getSystemDescription } from '../tools/exec.js';
 import { memoryManager } from '../memory/index.js';
 import type { Gateway } from '../gateway/index.js';
-import type { AgentChunk, ChatChunk, ToolCall, ToolUse, ContentBlock } from '../types/index.js';
+import type { AgentChunk, ChatChunk, ToolCall, ToolUse, ContentBlock, DebugData, DebugElement } from '../types/index.js';
 import { SessionManager } from './session.js';
+import { waitForConfirmation } from '../server/index.js';
+import { ocrSomService } from '../services/ocr-som.js';
+import { drawClickPosition } from '../services/debug-visualizer.js';
 
 interface AgentRunOptions {
 	model?: string;
 	systemPrompt?: string;
 	maxIterations?: number;
+	debugMode?: boolean;
+}
+
+// 缓存最近的截图和 OCR 结果（调试模式用）
+interface DebugCache {
+	lastScreenshot?: string; // 最近的截图 base64
+	lastMarkedImage?: string; // 最近的 OCR-SoM 标注图 base64
+	lastElements?: DebugElement[]; // 最近的 OCR-SoM 元素列表
 }
 
 // 需要 Vision 能力的工具
@@ -457,6 +468,10 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 					this.logger.info(`AI 思考: ${thinking.substring(0, 100)}${thinking.length > 100 ? '...' : ''}`);
 				}
 
+				// 调试模式设置
+				const debugMode = options.debugMode ?? this.gateway.config.get<boolean>('agent.debugMode', false);
+				const debugCache: DebugCache = {};
+
 				for (const toolCall of toolCalls) {
 					const toolName = this.getToolName(toolCall);
 					const toolArgs = this.parseToolArgs(toolCall);
@@ -466,6 +481,68 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 					this.logger.info(`│  参数: ${JSON.stringify(toolArgs).substring(0, 200)}`);
 					// 附带 AI 的思考内容
 					yield { type: 'tool_start', tool: toolName, args: toolArgs, thinking };
+
+					// 调试模式：如果是点击操作，先生成预览图并等待确认
+					if (debugMode && toolName === 'computer') {
+						const action = toolArgs.action as string;
+						const coordinate = toolArgs.coordinate as [number, number] | undefined;
+						const isClickAction = ['left_click', 'right_click', 'double_click'].includes(action);
+
+						if (isClickAction && coordinate) {
+							this.logger.info(`│  [调试模式] 点击操作，生成预览...`);
+
+							// 生成点击位置预览图
+							const debugData: DebugData = {
+								action: `${action} at (${coordinate[0]}, ${coordinate[1]})`,
+								coordinate,
+								thinking,
+							};
+
+							// 如果有缓存的截图，使用它生成点击位置图
+							if (debugCache.lastScreenshot) {
+								debugData.originalImage = debugCache.lastScreenshot;
+								debugData.markedImage = debugCache.lastMarkedImage;
+								debugData.elements = debugCache.lastElements;
+
+								try {
+									debugData.clickImage = await drawClickPosition(
+										debugCache.lastScreenshot,
+										coordinate,
+										`点击 (${coordinate[0]}, ${coordinate[1]})`
+									);
+								} catch (e) {
+									this.logger.warn('生成点击预览图失败:', (e as Error).message);
+								}
+							}
+
+							// 发送调试确认请求
+							const confirmId = generateId('debug');
+							yield {
+								type: 'debug_confirm',
+								tool: toolName,
+								args: toolArgs,
+								debug: debugData,
+								confirmId,
+								thinking,
+							};
+
+							// 等待用户确认
+							this.logger.info(`│  [调试模式] 等待用户确认...`);
+							try {
+								const approved = await waitForConfirmation(confirmId);
+								if (!approved) {
+									this.logger.info(`│  [调试模式] 用户取消操作`);
+									yield { type: 'tool_result', tool: toolName, result: { cancelled: true, message: '用户取消了操作' } };
+									continue; // 跳过这个工具，继续下一个
+								}
+								this.logger.info(`│  [调试模式] 用户确认，继续执行`);
+							} catch (e) {
+								this.logger.warn(`│  [调试模式] 确认超时或失败:`, (e as Error).message);
+								yield { type: 'tool_error', tool: toolName, error: '调试确认超时' };
+								continue;
+							}
+						}
+					}
 
 					const toolStartTime = Date.now();
 					try {
@@ -479,6 +556,32 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 								: JSON.stringify(result).substring(0, 300);
 						this.logger.info(`│  结果: ${resultStr}${resultStr.length >= 300 ? '...' : ''}`);
 						this.logger.info(`└─ 完成 (${toolDuration}ms)`);
+
+						// 调试模式：如果是截图工具，缓存截图并调用 OCR-SoM
+						if (debugMode && toolName === 'screenshot') {
+							const screenshotResult = result as { success?: boolean; base64?: string };
+							if (screenshotResult.success && screenshotResult.base64) {
+								this.logger.info(`│  [调试模式] 截图完成，调用 OCR-SoM...`);
+								debugCache.lastScreenshot = screenshotResult.base64;
+
+								// 调用 OCR-SoM 获取标注图
+								try {
+									const ocrEnabled = this.gateway.config.get<boolean>('ocr.enabled', true);
+									if (ocrEnabled) {
+										const somResult = await ocrSomService.analyze(screenshotResult.base64, {
+											returnImage: true,
+										});
+										if (somResult.success) {
+											debugCache.lastMarkedImage = somResult.marked_image;
+											debugCache.lastElements = somResult.elements as DebugElement[];
+											this.logger.info(`│  [调试模式] OCR-SoM 识别到 ${somResult.count} 个元素`);
+										}
+									}
+								} catch (e) {
+									this.logger.warn('OCR-SoM 调用失败:', (e as Error).message);
+								}
+							}
+						}
 
 						yield { type: 'tool_result', tool: toolName, result };
 

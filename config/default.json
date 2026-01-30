@@ -17,7 +17,8 @@
 		"defaultModel": null,
 		"maxIterations": 20,
 		"timeout": 300000,
-		"systemPrompt": null
+		"systemPrompt": null,
+		"debugMode": false
 	},
 	"providers": {},
 	"tools": {

@@ -16,6 +16,9 @@ export const useAppStore = defineStore('app', () => {
 	// 实时状态
 	const currentStatus = ref(null); // 当前执行状态
 	const toolExecutions = ref([]); // 工具执行历史
+	
+	// 调试模式
+	const debugConfirm = ref(null); // 当前等待确认的调试数据
 
 	// 计算属性
 	const currentSession = computed(() => {
@@ -198,6 +201,23 @@ export const useAppStore = defineStore('app', () => {
 				// 清理工具执行状态
 				toolExecutions.value = [];
 				break;
+
+			case 'debug_confirm':
+				// 调试模式：等待用户确认
+				currentStatus.value = {
+					type: 'debug_confirm',
+					tool: chunk.tool,
+					args: chunk.args,
+					thinking: chunk.thinking,
+				};
+				debugConfirm.value = {
+					confirmId: chunk.confirmId,
+					tool: chunk.tool,
+					args: chunk.args,
+					debug: chunk.debug,
+					thinking: chunk.thinking,
+				};
+				break;
 		}
 	};
 
@@ -364,6 +384,27 @@ export const useAppStore = defineStore('app', () => {
 		}
 	};
 
+	// 发送调试确认响应
+	const sendDebugResponse = (approved) => {
+		if (!debugConfirm.value) return;
+		
+		const confirmId = debugConfirm.value.confirmId;
+		
+		if (ws.value && ws.value.readyState === 1) {
+			ws.value.send(JSON.stringify({
+				type: 'debug_response',
+				payload: {
+					confirmId,
+					approved,
+				},
+			}));
+		}
+		
+		// 清除调试状态
+		debugConfirm.value = null;
+		currentStatus.value = approved ? { type: 'tool_running', tool: 'computer' } : null;
+	};
+
 	return {
 		// 状态
 		connected,
@@ -376,6 +417,7 @@ export const useAppStore = defineStore('app', () => {
 		config,
 		currentStatus,
 		toolExecutions,
+		debugConfirm,
 
 		// 方法
 		setConnected,
@@ -388,5 +430,6 @@ export const useAppStore = defineStore('app', () => {
 		loadConfig,
 		createSession,
 		selectSession,
+		sendDebugResponse,
 	};
 });

@@ -73,11 +73,11 @@ class OcrSomService {
                 };
             }
 
-            const health = await response.json();
+            const health = await response.json() as Record<string, unknown>;
 
             // 获取更多信息
             const infoResponse = await fetch(`${baseUrl}/info`);
-            const info = await infoResponse.json();
+            const info = await infoResponse.json() as Record<string, unknown>;
 
             return {
                 connected: true,

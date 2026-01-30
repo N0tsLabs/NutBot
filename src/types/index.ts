@@ -169,7 +169,8 @@ export interface AgentChunk {
 		| 'tool_error'
 		| 'max_iterations'
 		| 'terminated'
-		| 'error';
+		| 'error'
+		| 'debug_confirm'; // 调试模式：等待用户确认
 	iteration?: number;
 	content?: string;
 	count?: number;
@@ -180,6 +181,26 @@ export interface AgentChunk {
 	iterations?: number;
 	reason?: string; // 终止原因
 	thinking?: string; // AI 思考内容
+	// 调试模式数据
+	debug?: DebugData;
+	confirmId?: string; // 确认 ID，用于关联响应
+}
+
+export interface DebugData {
+	originalImage?: string; // 原始截图 base64
+	markedImage?: string; // OCR-SoM 标注图 base64
+	clickImage?: string; // 点击位置预览图 base64
+	elements?: DebugElement[]; // OCR-SoM 识别的元素列表
+	action?: string; // AI 计划执行的操作
+	coordinate?: [number, number]; // 点击坐标
+	thinking?: string; // AI 思考内容
+}
+
+export interface DebugElement {
+	id: number;
+	type: 'text' | 'ui';
+	text: string;
+	box: [number, number, number, number];
 }
 
 export interface AgentOptions {
