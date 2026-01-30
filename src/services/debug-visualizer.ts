@@ -23,7 +23,31 @@ function ensureDebugDir(): string {
 }
 
 /**
- * 保存调试图片到文件夹
+ * 调试信息接口
+ */
+export interface DebugInfo {
+    action?: string;           // 操作描述
+    thinking?: string;         // AI 思考过程
+    toolName?: string;         // 工具名称
+    toolArgs?: Record<string, unknown>;  // 工具参数
+    coordinate?: [number, number];  // 点击坐标
+    elements?: Array<{         // OCR-SoM 元素列表
+        id: number;
+        type?: string;
+        text?: string;
+        box?: [number, number, number, number];
+        center?: [number, number];
+        mouseCenter?: [number, number];
+    }>;
+    screenInfo?: {             // 屏幕信息
+        imageSize?: string;
+        mouseCoordSize?: string;
+        scale?: number;
+    };
+}
+
+/**
+ * 保存调试图片和详细信息到文件夹
  */
 export async function saveDebugImages(
     step: number,
@@ -32,7 +56,7 @@ export async function saveDebugImages(
         marked?: string;    // base64
         click?: string;     // base64
     },
-    actionDescription?: string
+    debugInfo?: DebugInfo
 ): Promise<{ dir: string; files: string[] }> {
     const debugDir = ensureDebugDir();
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -69,11 +93,11 @@ export async function saveDebugImages(
             log.info(`保存点击图: ${filePath}`);
         }
         
-        // 保存操作描述到 info.txt
-        if (actionDescription) {
-            const infoPath = path.join(stepDir, 'info.txt');
-            fs.writeFileSync(infoPath, `操作: ${actionDescription}\n时间: ${new Date().toLocaleString('zh-CN')}\n`);
-        }
+        // 保存详细调试信息到 info.txt
+        const infoPath = path.join(stepDir, 'info.txt');
+        const infoContent = formatDebugInfo(step, debugInfo);
+        fs.writeFileSync(infoPath, infoContent);
+        savedFiles.push(infoPath);
         
         log.info(`调试图片已保存到: ${stepDir}`);
         return { dir: stepDir, files: savedFiles };
@@ -81,6 +105,97 @@ export async function saveDebugImages(
         log.error('保存调试图片失败:', error);
         return { dir: stepDir, files: savedFiles };
     }
+}
+
+/**
+ * 格式化调试信息为可读文本
+ */
+function formatDebugInfo(step: number, info?: DebugInfo): string {
+    const lines: string[] = [];
+    const divider = '═'.repeat(60);
+    const subDivider = '─'.repeat(40);
+    
+    lines.push(divider);
+    lines.push(`  调试步骤 #${step}`);
+    lines.push(`  时间: ${new Date().toLocaleString('zh-CN')}`);
+    lines.push(divider);
+    
+    if (!info) {
+        lines.push('(无调试信息)');
+        return lines.join('\n');
+    }
+    
+    // 操作信息
+    lines.push('');
+    lines.push('【操作信息】');
+    lines.push(subDivider);
+    if (info.action) {
+        lines.push(`操作: ${info.action}`);
+    }
+    if (info.toolName) {
+        lines.push(`工具: ${info.toolName}`);
+    }
+    if (info.toolArgs) {
+        lines.push(`参数: ${JSON.stringify(info.toolArgs, null, 2)}`);
+    }
+    if (info.coordinate) {
+        lines.push(`点击坐标: (${info.coordinate[0]}, ${info.coordinate[1]})`);
+    }
+    
+    // 屏幕信息
+    if (info.screenInfo) {
+        lines.push('');
+        lines.push('【屏幕信息】');
+        lines.push(subDivider);
+        if (info.screenInfo.imageSize) {
+            lines.push(`截图尺寸: ${info.screenInfo.imageSize}`);
+        }
+        if (info.screenInfo.mouseCoordSize) {
+            lines.push(`鼠标坐标系: ${info.screenInfo.mouseCoordSize}`);
+        }
+        if (info.screenInfo.scale) {
+            lines.push(`缩放比例: ${info.screenInfo.scale.toFixed(2)}x`);
+        }
+    }
+    
+    // AI 思考过程
+    if (info.thinking) {
+        lines.push('');
+        lines.push('【AI 思考过程】');
+        lines.push(subDivider);
+        lines.push(info.thinking);
+    }
+    
+    // OCR-SoM 元素列表
+    if (info.elements && info.elements.length > 0) {
+        lines.push('');
+        lines.push(`【OCR-SoM 元素列表】(共 ${info.elements.length} 个)`);
+        lines.push(subDivider);
+        
+        for (const el of info.elements) {
+            const text = el.text || `[${el.type || 'unknown'}]`;
+            const truncatedText = text.length > 30 ? text.substring(0, 30) + '...' : text;
+            
+            let line = `[${el.id}] "${truncatedText}"`;
+            
+            if (el.mouseCenter) {
+                line += ` → mouseCenter: (${el.mouseCenter[0]}, ${el.mouseCenter[1]})`;
+            } else if (el.center) {
+                line += ` → center: (${el.center[0]}, ${el.center[1]})`;
+            }
+            
+            if (el.box) {
+                line += ` | box: [${el.box.join(', ')}]`;
+            }
+            
+            lines.push(line);
+        }
+    }
+    
+    lines.push('');
+    lines.push(divider);
+    
+    return lines.join('\n');
 }
 
 /**

@@ -12,7 +12,7 @@ import type { AgentChunk, ChatChunk, ToolCall, ToolUse, ContentBlock, DebugData,
 import { SessionManager } from './session.js';
 import { waitForConfirmation } from '../server/index.js';
 import { ocrSomService } from '../services/ocr-som.js';
-import { drawClickPosition, saveDebugImages, cleanupOldDebugImages } from '../services/debug-visualizer.js';
+import { drawClickPosition, saveDebugImages, cleanupOldDebugImages, type DebugInfo } from '../services/debug-visualizer.js';
 
 interface AgentRunOptions {
 	model?: string;
@@ -26,6 +26,11 @@ interface DebugCache {
 	lastScreenshot?: string; // 最近的截图 base64
 	lastMarkedImage?: string; // 最近的 OCR-SoM 标注图 base64
 	lastElements?: DebugElement[]; // 最近的 OCR-SoM 元素列表
+	lastScreenInfo?: {  // 屏幕信息
+		imageSize?: string;
+		mouseCoordSize?: string;
+		scale?: number;
+	};
 	stepCount: number; // 调试步骤计数器
 }
 
@@ -544,9 +549,29 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 									}
 								}
 								
-								// 保存调试图片到文件夹
+								// 保存调试图片和详细信息到文件夹
 								debugCache.stepCount++;
 								try {
+									// 构建详细调试信息
+									const fullDebugInfo: DebugInfo = {
+										action: debugData.action,
+										thinking,
+										toolName,
+										toolArgs: toolArgs as Record<string, unknown>,
+										coordinate,
+										elements: debugCache.lastElements?.map(el => ({
+											id: el.id,
+											type: el.type,
+											text: el.text,
+											box: el.box,
+											center: el.box ? [
+												Math.round((el.box[0] + el.box[2]) / 2),
+												Math.round((el.box[1] + el.box[3]) / 2),
+											] as [number, number] : undefined,
+										})),
+										screenInfo: debugCache.lastScreenInfo,
+									};
+									
 									await saveDebugImages(
 										debugCache.stepCount,
 										{
@@ -554,7 +579,7 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 											marked: debugCache.lastMarkedImage,
 											click: debugData.clickImage,
 										},
-										debugData.action
+										fullDebugInfo
 									);
 								} catch (e) {
 									this.logger.warn('保存调试图片失败:', (e as Error).message);
@@ -620,6 +645,9 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 								base64?: string;
 								markedImage?: string;
 								elements?: DebugElement[];
+								imageSize?: string;
+								mouseCoordSize?: string;
+								scale?: number;
 							};
 							if (screenshotResult.success && screenshotResult.base64) {
 								debugCache.lastScreenshot = screenshotResult.base64;
@@ -630,6 +658,12 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 								if (screenshotResult.elements) {
 									debugCache.lastElements = screenshotResult.elements;
 								}
+								// 保存屏幕信息
+								debugCache.lastScreenInfo = {
+									imageSize: screenshotResult.imageSize,
+									mouseCoordSize: screenshotResult.mouseCoordSize,
+									scale: screenshotResult.scale,
+								};
 								this.logger.info(`│  [调试模式] 截图已缓存${screenshotResult.elements ? `，包含 ${screenshotResult.elements.length} 个元素` : ''}`);
 							}
 						}
