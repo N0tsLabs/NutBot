@@ -403,6 +403,13 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 			// 最大迭代次数（用于工具调用循环）
 			const maxIterations = options.maxIterations || this.gateway.config.get<number>('agent.maxIterations', 20);
 
+			// 调试模式设置（移到循环外，保持状态跨迭代）
+			const debugMode = options.debugMode ?? this.gateway.config.get<boolean>('agent.debugMode', false);
+			const debugCache: DebugCache = {};
+			if (debugMode) {
+				this.logger.info('🔍 调试模式已启用');
+			}
+
 			let iteration = 0;
 
 			while (iteration < maxIterations) {
@@ -468,10 +475,6 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 					this.logger.info(`AI 思考: ${thinking.substring(0, 100)}${thinking.length > 100 ? '...' : ''}`);
 				}
 
-				// 调试模式设置
-				const debugMode = options.debugMode ?? this.gateway.config.get<boolean>('agent.debugMode', false);
-				const debugCache: DebugCache = {};
-
 				for (const toolCall of toolCalls) {
 					const toolName = this.getToolName(toolCall);
 					const toolArgs = this.parseToolArgs(toolCall);
@@ -486,32 +489,56 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 					if (debugMode && toolName === 'computer') {
 						const action = toolArgs.action as string;
 						const coordinate = toolArgs.coordinate as [number, number] | undefined;
+						const elementName = toolArgs.element_name as string | undefined;
+						
+						// 需要调试的操作类型
 						const isClickAction = ['left_click', 'right_click', 'double_click'].includes(action);
+						const isClickElement = action === 'click_element' && elementName;
+						const isTypeAction = action === 'type' && toolArgs.text;
+						const isKeyAction = action === 'key' || action === 'hotkey';
+						
+						// 任何可能影响状态的操作都需要确认
+						const needsConfirmation = isClickAction || isClickElement || isTypeAction || isKeyAction;
 
-						if (isClickAction && coordinate) {
-							this.logger.info(`│  [调试模式] 点击操作，生成预览...`);
+						if (needsConfirmation) {
+							this.logger.info(`│  [调试模式] ${action} 操作，等待确认...`);
 
-							// 生成点击位置预览图
+							// 生成调试数据
 							const debugData: DebugData = {
-								action: `${action} at (${coordinate[0]}, ${coordinate[1]})`,
-								coordinate,
 								thinking,
 							};
+							
+							// 构建操作描述
+							if (isClickAction && coordinate) {
+								debugData.action = `${action} at (${coordinate[0]}, ${coordinate[1]})`;
+								debugData.coordinate = coordinate;
+							} else if (isClickElement) {
+								debugData.action = `click_element: "${elementName}"`;
+							} else if (isTypeAction) {
+								debugData.action = `type: "${(toolArgs.text as string).substring(0, 50)}"`;
+							} else if (action === 'key') {
+								debugData.action = `key: ${toolArgs.key}`;
+							} else if (action === 'hotkey') {
+								debugData.action = `hotkey: ${(toolArgs.keys as string[])?.join('+')}`;
+							}
 
-							// 如果有缓存的截图，使用它生成点击位置图
+							// 如果有缓存的截图，使用它
 							if (debugCache.lastScreenshot) {
 								debugData.originalImage = debugCache.lastScreenshot;
 								debugData.markedImage = debugCache.lastMarkedImage;
 								debugData.elements = debugCache.lastElements;
 
-								try {
-									debugData.clickImage = await drawClickPosition(
-										debugCache.lastScreenshot,
-										coordinate,
-										`点击 (${coordinate[0]}, ${coordinate[1]})`
-									);
-								} catch (e) {
-									this.logger.warn('生成点击预览图失败:', (e as Error).message);
+								// 如果有坐标，生成点击位置预览图
+								if (coordinate) {
+									try {
+										debugData.clickImage = await drawClickPosition(
+											debugCache.lastScreenshot,
+											coordinate,
+											`点击 (${coordinate[0]}, ${coordinate[1]})`
+										);
+									} catch (e) {
+										this.logger.warn('生成点击预览图失败:', (e as Error).message);
+									}
 								}
 							}
 

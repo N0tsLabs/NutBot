@@ -114,9 +114,9 @@ class OcrSomService {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-            // 构建请求体
+            // 构建请求体（注意：服务端期望的字段名是 'image'，不是 'image_base64'）
             const requestBody: Record<string, unknown> = {
-                image_base64: imageBase64,
+                image: imageBase64,
                 return_image: options.returnImage ?? true,
                 ocr_only: options.ocrOnly ?? false,
                 detect_contours: options.detectContours ?? true,
