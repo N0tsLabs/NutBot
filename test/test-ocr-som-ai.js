@@ -6,6 +6,7 @@
  * 2. 调用 OCR-SoM API 获取元素标注
  * 3. 把原图 + 标注图 + 元素列表发给 AI
  * 4. AI 决定应该点击哪里来完成任务
+ * 5. 生成点击位置可视化图片
  * 
  * 使用前需要：
  * 1. 启动 OCR-SoM 服务：cd ../ocr-som && python server.py
@@ -16,6 +17,16 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
+
+// ============================================================
+// 🎯 修改这里来测试不同的任务
+// ============================================================
+const TASK = '在QQ中搜索"坚果小栈"';
+// const TASK = '点击QQ的设置按钮';
+// const TASK = '打开GitHub上的Set-of-Mark项目';
+// const TASK = '在QQ中给"坚果小栈"群发送消息"你好"';
+// ============================================================
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -125,6 +136,29 @@ async function callAI(config, messages) {
 }
 
 /**
+ * 生成点击位置可视化图片（调用 Python 脚本）
+ */
+async function generateClickVisualization(imagePath, coordinate, elementText, steps) {
+    console.log('\n🎨 生成点击位置可视化图片...');
+    
+    const [x, y] = coordinate;
+    const outputPath = path.join(__dirname, 'demo-click.png');
+    const scriptPath = path.join(__dirname, 'draw-click.py');
+    
+    try {
+        // Windows 用 py，其他系统用 python3
+        const pythonCmd = process.platform === 'win32' ? 'py' : 'python3';
+        execSync(`${pythonCmd} "${scriptPath}" "${imagePath}" ${x} ${y} "${elementText}" "${outputPath}"`, {
+            encoding: 'utf-8',
+            stdio: 'pipe'
+        });
+        console.log(`✅ 点击位置图已保存: ${outputPath}`);
+    } catch (error) {
+        console.error('⚠️ 生成点击图失败:', error.message);
+    }
+}
+
+/**
  * 格式化元素列表（简化显示）
  */
 function formatElements(elements) {
@@ -180,28 +214,37 @@ async function main() {
     }
     
     // 4. 构建 AI 消息
-    const task = '在QQ中搜索"坚果小栈"';
-    
-    const systemPrompt = `你是一个桌面自动化助手。你的任务是分析屏幕截图和 OCR 识别结果，告诉用户应该点击哪里来完成任务。
+    const systemPrompt = `你是一个桌面自动化助手。分析屏幕截图和 OCR 识别结果，告诉用户应该点击哪里来完成任务。
 
-## 输入信息
+## 输入
 1. **原始截图** - 用户屏幕的原始图像
 2. **标注截图** - 每个可交互元素都被框出并标上了编号 [0] [1] [2]...
 3. **元素列表** - 所有识别到的元素，包含编号、类型、文字内容、坐标
 
 ## 输出格式
-请分析后给出：
-1. 当前屏幕状态描述
-2. 要完成任务需要的操作步骤
-3. 每一步应该点击哪个编号的元素，以及它的坐标
+请先用自然语言分析，然后在最后输出一个 JSON 代码块，格式如下：
 
-## 注意
-- 编号对应标注图上的数字
-- 坐标是 [x, y]，表示元素中心点
-- 如果需要输入文字，说明在哪个元素输入什么内容`;
+\`\`\`json
+{
+  "first_click": {
+    "element_id": 10,
+    "element_text": "搜索",
+    "coordinate": [1305, 181],
+    "action": "click",
+    "description": "点击搜索框"
+  },
+  "steps": [
+    { "action": "click", "element_id": 10, "coordinate": [1305, 181], "description": "点击搜索框" },
+    { "action": "type", "text": "要输入的内容", "description": "输入搜索内容" },
+    { "action": "click", "element_id": 22, "coordinate": [1391, 265], "description": "点击搜索结果" }
+  ]
+}
+\`\`\`
+
+**first_click** 是第一步要点击的位置（最重要），**steps** 是完整操作步骤。`;
 
     const userMessage = `## 任务
-${task}
+${TASK}
 
 ## 元素列表
 共 ${elements.length} 个元素：
@@ -215,28 +258,16 @@ ${JSON.stringify(elements, null, 2)}
             role: 'user',
             content: [
                 { type: 'text', text: userMessage },
-                { 
-                    type: 'text', 
-                    text: '\n\n## 原始截图（未标注）' 
-                },
-                {
-                    type: 'image_url',
-                    image_url: { url: `data:image/png;base64,${imageBase64}` }
-                },
-                { 
-                    type: 'text', 
-                    text: '\n\n## 标注截图（带编号）' 
-                },
-                {
-                    type: 'image_url',
-                    image_url: { url: `data:image/png;base64,${somResult.marked_image}` }
-                },
+                { type: 'text', text: '\n\n## 原始截图（未标注）' },
+                { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
+                { type: 'text', text: '\n\n## 标注截图（带编号）' },
+                { type: 'image_url', image_url: { url: `data:image/png;base64,${somResult.marked_image}` } },
             ]
         }
     ];
     
     // 5. 调用 AI
-    console.log(`\n🎯 任务: ${task}`);
+    console.log(`\n🎯 任务: ${TASK}`);
     console.log('\n⏳ AI 正在分析...\n');
     
     try {
@@ -248,10 +279,31 @@ ${JSON.stringify(elements, null, 2)}
         console.log(aiResponse);
         console.log('─'.repeat(60));
         
-        // 保存标注图供查看
+        // 保存标注图
         const markedImagePath = path.join(__dirname, 'demo-marked.png');
         fs.writeFileSync(markedImagePath, Buffer.from(somResult.marked_image, 'base64'));
         console.log(`\n📁 标注图已保存: ${markedImagePath}`);
+        
+        // 解析 AI 返回的 JSON，提取点击位置
+        const jsonMatch = aiResponse.match(/```json\s*([\s\S]*?)\s*```/);
+        if (jsonMatch) {
+            const clickData = JSON.parse(jsonMatch[1]);
+            const firstClick = clickData.first_click;
+            
+            if (firstClick && firstClick.coordinate) {
+                console.log(`\n🎯 AI 决定点击: [${firstClick.element_id}] "${firstClick.element_text}" @ (${firstClick.coordinate.join(', ')})`);
+                
+                // 生成点击位置可视化图片
+                await generateClickVisualization(
+                    imagePath,
+                    firstClick.coordinate,
+                    firstClick.element_text || `元素 ${firstClick.element_id}`,
+                    clickData.steps || []
+                );
+            }
+        } else {
+            console.log('\n⚠️ 未能解析 AI 返回的点击位置 JSON');
+        }
         
     } catch (error) {
         console.error('❌ AI 调用失败:', error.message);
