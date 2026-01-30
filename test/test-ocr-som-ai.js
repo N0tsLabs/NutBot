@@ -17,7 +17,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
+import sharp from 'sharp';
 
 // ============================================================
 // 🎯 修改这里来测试不同的任务
@@ -136,22 +136,69 @@ async function callAI(config, messages) {
 }
 
 /**
- * 生成点击位置可视化图片（调用 Python 脚本）
+ * 生成点击位置可视化图片（纯 JS，使用 sharp）
  */
 async function generateClickVisualization(imagePath, coordinate, elementText, steps) {
     console.log('\n🎨 生成点击位置可视化图片...');
     
     const [x, y] = coordinate;
     const outputPath = path.join(__dirname, 'demo-click.png');
-    const scriptPath = path.join(__dirname, 'draw-click.py');
     
     try {
-        // Windows 用 py，其他系统用 python3
-        const pythonCmd = process.platform === 'win32' ? 'py' : 'python3';
-        execSync(`${pythonCmd} "${scriptPath}" "${imagePath}" ${x} ${y} "${elementText}" "${outputPath}"`, {
-            encoding: 'utf-8',
-            stdio: 'pipe'
-        });
+        // 获取原图信息
+        const metadata = await sharp(imagePath).metadata();
+        const { width, height } = metadata;
+        
+        // 创建 SVG 叠加层
+        const svg = `
+        <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+            <!-- 半透明遮罩 -->
+            <rect width="100%" height="100%" fill="rgba(0,0,0,0.35)"/>
+            
+            <!-- 点击位置亮区（圆形） -->
+            <defs>
+                <mask id="spotlight">
+                    <rect width="100%" height="100%" fill="white"/>
+                    <circle cx="${x}" cy="${y}" r="100" fill="black"/>
+                </mask>
+            </defs>
+            <rect width="100%" height="100%" fill="rgba(0,0,0,0.35)" mask="url(#spotlight)"/>
+            
+            <!-- 红色十字准星 -->
+            <line x1="${x - 40}" y1="${y}" x2="${x + 40}" y2="${y}" stroke="#ff0000" stroke-width="4"/>
+            <line x1="${x}" y1="${y - 40}" x2="${x}" y2="${y + 40}" stroke="#ff0000" stroke-width="4"/>
+            
+            <!-- 红色圆圈 -->
+            <circle cx="${x}" cy="${y}" r="35" fill="none" stroke="#ff0000" stroke-width="4"/>
+            <circle cx="${x}" cy="${y}" r="55" fill="none" stroke="rgba(255,0,0,0.5)" stroke-width="2"/>
+            
+            <!-- 标签背景 -->
+            <rect x="${Math.min(x + 70, width - 250)}" y="${Math.max(y - 55, 10)}" 
+                  width="220" height="35" rx="4" fill="rgba(220,0,0,0.95)"/>
+            
+            <!-- 标签文字 -->
+            <text x="${Math.min(x + 80, width - 240)}" y="${Math.max(y - 28, 35)}" 
+                  font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="white">
+                Click: ${elementText.substring(0, 20)}
+            </text>
+            
+            <!-- 坐标显示 -->
+            <rect x="${x - 45}" y="${y + 65}" width="90" height="26" rx="3" fill="rgba(0,0,0,0.8)"/>
+            <text x="${x}" y="${y + 84}" text-anchor="middle" 
+                  font-family="Arial, sans-serif" font-size="14" fill="white">
+                (${x}, ${y})
+            </text>
+        </svg>`;
+        
+        // 合成图片
+        await sharp(imagePath)
+            .composite([{
+                input: Buffer.from(svg),
+                top: 0,
+                left: 0,
+            }])
+            .toFile(outputPath);
+        
         console.log(`✅ 点击位置图已保存: ${outputPath}`);
     } catch (error) {
         console.error('⚠️ 生成点击图失败:', error.message);
