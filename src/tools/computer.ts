@@ -422,8 +422,16 @@ type ControlLib = {
 	};
 };
 
-// 全局缩放比例缓存
+// 全局缩放比例缓存（由 screenshot 工具设置，基于压缩后图片）
 let globalScale: number | null = null;
+
+/**
+ * 设置全局缩放比例（由 screenshot 工具调用）
+ * 这个值是压缩后图片到鼠标坐标系的比例
+ */
+export function setGlobalScale(scale: number): void {
+	globalScale = scale;
+}
 
 export class ComputerTool extends BaseTool {
 	private lib: ControlLib | null = null;
@@ -665,28 +673,37 @@ export class ComputerTool extends BaseTool {
 
 	/**
 	 * 获取屏幕缩放比例
+	 * 优先使用由 screenshot 工具设置的缩放比例（基于压缩后图片）
 	 */
 	private async getScale(): Promise<number> {
-		// 使用缓存
+		// 优先使用由 screenshot 工具设置的缓存值
 		if (globalScale !== null) {
+			this.logger.debug(`使用缓存的缩放比例: ${globalScale.toFixed(2)}x`);
 			return globalScale;
 		}
 
+		// 如果没有缓存，自己计算（基于压缩后图片的默认尺寸）
 		try {
 			// 获取鼠标坐标系尺寸
 			const screenSize = await this.lib!.getScreenSize();
 
-			// 获取截图尺寸
+			// 假设截图会被压缩到最大 1920 宽度
+			const qualityConfig = { maxWidth: 1920 };
+
+			// 获取实际截图尺寸
 			const screenshotDesktop = (await import('screenshot-desktop')).default;
 			const sharp = (await import('sharp')).default;
 
 			const buffer = await screenshotDesktop({ format: 'png' });
 			const metadata = await sharp(buffer).metadata();
-			const imageWidth = metadata.width || screenSize.width;
+			const originalWidth = metadata.width || screenSize.width;
 
-			globalScale = imageWidth / screenSize.width;
+			// 计算压缩后的宽度
+			const compressedWidth = Math.min(originalWidth, qualityConfig.maxWidth);
+
+			globalScale = compressedWidth / screenSize.width;
 			this.logger.info(
-				`屏幕缩放比例: ${globalScale.toFixed(2)}x (截图: ${imageWidth}px, 鼠标系: ${screenSize.width}px)`
+				`计算缩放比例: ${globalScale.toFixed(2)}x (压缩后图片: ${compressedWidth}px, 鼠标系: ${screenSize.width}px)`
 			);
 
 			return globalScale;
