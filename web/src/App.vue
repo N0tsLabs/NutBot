@@ -156,7 +156,7 @@ onUnmounted(() => {
 
 <style scoped>
 .app-container {
-	@apply min-h-screen flex;
+	@apply h-screen flex overflow-hidden;
 	background-color: var(--bg-primary);
 }
 
@@ -295,6 +295,7 @@ onUnmounted(() => {
 .main-content {
 	@apply flex-1 flex flex-col;
 	padding-top: 0;
+	overflow: hidden; /* 防止全局滚动，让子组件自己滚动 */
 }
 
 @media (max-width: 767px) {

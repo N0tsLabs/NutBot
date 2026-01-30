@@ -12,7 +12,7 @@ import type { AgentChunk, ChatChunk, ToolCall, ToolUse, ContentBlock, DebugData,
 import { SessionManager } from './session.js';
 import { waitForConfirmation } from '../server/index.js';
 import { ocrSomService } from '../services/ocr-som.js';
-import { drawClickPosition } from '../services/debug-visualizer.js';
+import { drawClickPosition, saveDebugImages, cleanupOldDebugImages } from '../services/debug-visualizer.js';
 
 interface AgentRunOptions {
 	model?: string;
@@ -26,6 +26,7 @@ interface DebugCache {
 	lastScreenshot?: string; // 最近的截图 base64
 	lastMarkedImage?: string; // 最近的 OCR-SoM 标注图 base64
 	lastElements?: DebugElement[]; // 最近的 OCR-SoM 元素列表
+	stepCount: number; // 调试步骤计数器
 }
 
 // 需要 Vision 能力的工具
@@ -405,9 +406,11 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 
 			// 调试模式设置（移到循环外，保持状态跨迭代）
 			const debugMode = options.debugMode ?? this.gateway.config.get<boolean>('agent.debugMode', false);
-			const debugCache: DebugCache = {};
+			const debugCache: DebugCache = { stepCount: 0 };
 			if (debugMode) {
 				this.logger.info('🔍 调试模式已启用');
+				// 清理旧的调试图片，保留最近 50 个
+				cleanupOldDebugImages(50);
 			}
 
 			let iteration = 0;
@@ -539,6 +542,22 @@ ${hasVision ? '🟢 Vision 模式已启用，支持截图分析和桌面操作' 
 									} catch (e) {
 										this.logger.warn('生成点击预览图失败:', (e as Error).message);
 									}
+								}
+								
+								// 保存调试图片到文件夹
+								debugCache.stepCount++;
+								try {
+									await saveDebugImages(
+										debugCache.stepCount,
+										{
+											original: debugCache.lastScreenshot,
+											marked: debugCache.lastMarkedImage,
+											click: debugData.clickImage,
+										},
+										debugData.action
+									);
+								} catch (e) {
+									this.logger.warn('保存调试图片失败:', (e as Error).message);
 								}
 							}
 

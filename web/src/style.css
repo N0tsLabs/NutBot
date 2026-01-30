@@ -453,10 +453,11 @@ body {
 	@apply text-white text-sm font-medium;
 }
 
-/* 图片预览模态框 */
+/* 图片预览模态框 - z-index 100 确保在所有模态框之上 */
 .image-modal {
-	@apply fixed inset-0 flex items-center justify-center z-50;
-	background-color: rgba(0, 0, 0, 0.85);
+	@apply fixed inset-0 flex items-center justify-center;
+	z-index: 100;
+	background-color: rgba(0, 0, 0, 0.9);
 	animation: fadeIn 0.2s ease-out;
 }
 

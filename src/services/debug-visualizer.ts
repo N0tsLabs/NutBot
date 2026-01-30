@@ -5,8 +5,112 @@
 
 import sharp from 'sharp';
 import { logger } from '../utils/logger.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 const log = logger.child('DebugVisualizer');
+
+// 调试图片保存目录
+const DEBUG_DIR = path.join(os.homedir(), '.nutbot', 'debug');
+
+// 确保调试目录存在
+function ensureDebugDir(): string {
+    if (!fs.existsSync(DEBUG_DIR)) {
+        fs.mkdirSync(DEBUG_DIR, { recursive: true });
+    }
+    return DEBUG_DIR;
+}
+
+/**
+ * 保存调试图片到文件夹
+ */
+export async function saveDebugImages(
+    step: number,
+    images: {
+        original?: string;  // base64
+        marked?: string;    // base64
+        click?: string;     // base64
+    },
+    actionDescription?: string
+): Promise<{ dir: string; files: string[] }> {
+    const debugDir = ensureDebugDir();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const stepDir = path.join(debugDir, `${timestamp}_step${step}`);
+    
+    if (!fs.existsSync(stepDir)) {
+        fs.mkdirSync(stepDir, { recursive: true });
+    }
+    
+    const savedFiles: string[] = [];
+    
+    try {
+        // 保存原始截图
+        if (images.original) {
+            const filePath = path.join(stepDir, '1_original.png');
+            fs.writeFileSync(filePath, Buffer.from(images.original, 'base64'));
+            savedFiles.push(filePath);
+            log.info(`保存原图: ${filePath}`);
+        }
+        
+        // 保存 OCR-SoM 标注图
+        if (images.marked) {
+            const filePath = path.join(stepDir, '2_marked.png');
+            fs.writeFileSync(filePath, Buffer.from(images.marked, 'base64'));
+            savedFiles.push(filePath);
+            log.info(`保存标注图: ${filePath}`);
+        }
+        
+        // 保存点击位置图
+        if (images.click) {
+            const filePath = path.join(stepDir, '3_click.png');
+            fs.writeFileSync(filePath, Buffer.from(images.click, 'base64'));
+            savedFiles.push(filePath);
+            log.info(`保存点击图: ${filePath}`);
+        }
+        
+        // 保存操作描述到 info.txt
+        if (actionDescription) {
+            const infoPath = path.join(stepDir, 'info.txt');
+            fs.writeFileSync(infoPath, `操作: ${actionDescription}\n时间: ${new Date().toLocaleString('zh-CN')}\n`);
+        }
+        
+        log.info(`调试图片已保存到: ${stepDir}`);
+        return { dir: stepDir, files: savedFiles };
+    } catch (error) {
+        log.error('保存调试图片失败:', error);
+        return { dir: stepDir, files: savedFiles };
+    }
+}
+
+/**
+ * 获取调试图片目录
+ */
+export function getDebugDir(): string {
+    return ensureDebugDir();
+}
+
+/**
+ * 清理旧的调试图片（保留最近 N 个）
+ */
+export function cleanupOldDebugImages(keepCount: number = 50): void {
+    try {
+        const debugDir = ensureDebugDir();
+        const dirs = fs.readdirSync(debugDir)
+            .filter(f => fs.statSync(path.join(debugDir, f)).isDirectory())
+            .sort()
+            .reverse();
+        
+        // 删除超出保留数量的目录
+        for (let i = keepCount; i < dirs.length; i++) {
+            const dirPath = path.join(debugDir, dirs[i]);
+            fs.rmSync(dirPath, { recursive: true, force: true });
+            log.debug(`清理旧调试目录: ${dirs[i]}`);
+        }
+    } catch (error) {
+        log.warn('清理旧调试图片失败:', error);
+    }
+}
 
 export interface ClickVisualization {
     originalImage: string;  // base64

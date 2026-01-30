@@ -1,530 +1,400 @@
 <template>
-	<div class="settings-container">
-		<h2 class="settings-title">设置</h2>
+	<div class="settings-page">
+		<!-- 左侧分类导航 -->
+		<aside class="settings-sidebar">
+			<nav class="settings-nav">
+				<button
+					v-for="category in categories"
+					:key="category.id"
+					class="nav-btn"
+					:class="{ active: activeCategory === category.id }"
+					@click="scrollToCategory(category.id)"
+				>
+					<span class="nav-icon">{{ category.icon }}</span>
+					<span class="nav-label">{{ category.label }}</span>
+				</button>
+			</nav>
+		</aside>
 
-		<!-- AI Provider 设置 -->
-		<section class="card mb-6">
-			<h3 class="text-lg font-medium mb-4 flex items-center gap-2">
-				<span>🤖</span>
-				AI Provider
-			</h3>
-
-			<!-- Provider 列表 -->
-			<div class="space-y-4 mb-6">
-				<div v-for="provider in store.providers" :key="provider.id" class="provider-card">
-					<!-- Provider 头部 -->
-					<div class="flex items-center justify-between">
-						<div class="flex-1 min-w-0">
-							<div class="font-medium text-lg">{{ provider.name || provider.id }}</div>
-							<div class="text-sm text-zinc-400 truncate">{{ provider.baseUrl }}</div>
+		<!-- 右侧内容区 -->
+		<main class="settings-content" ref="contentRef">
+			<!-- 快速设置 -->
+			<section id="quick" class="settings-section">
+				<h2 class="section-title">
+					<span>⚡</span>
+					快速设置
+				</h2>
+				<div class="settings-grid">
+					<!-- 默认模型 -->
+					<div class="setting-item">
+						<div class="setting-header">
+							<span class="setting-label">默认模型</span>
+							<span class="setting-value">{{ defaultModel || '未设置' }}</span>
 						</div>
-						<div class="flex items-center gap-2">
-							<button @click="editProvider(provider)" class="btn btn-secondary text-sm">编辑</button>
-							<button @click="removeProvider(provider.id)" class="text-red-400 hover:text-red-300 px-2">
-								删除
-							</button>
-						</div>
+						<p class="setting-desc">在 AI Provider 中选择模型并点击"设为默认"</p>
 					</div>
-
-					<!-- 模型管理区域 -->
-					<div class="mt-4 pt-4 border-t border-zinc-600">
-						<div class="flex items-center justify-between mb-3">
-							<span class="text-sm font-medium">模型列表 ({{ provider.models?.length || 0 }})</span>
-							<button
-								@click="fetchModels(provider)"
-								:disabled="loadingStates[`fetch-${provider.id}`]"
-								class="btn btn-secondary text-xs btn-loading"
-								:class="{ loading: loadingStates[`fetch-${provider.id}`] }"
-							>
-								<span v-if="loadingStates[`fetch-${provider.id}`]" class="spinner"></span>
-								{{ loadingStates[`fetch-${provider.id}`] ? '获取中...' : '获取模型列表' }}
-							</button>
+					
+					<!-- 调试模式 -->
+					<div class="setting-item">
+						<div class="setting-header">
+							<span class="setting-label">调试模式</span>
+							<label class="switch">
+								<input type="checkbox" v-model="debugMode" @change="saveDebugMode" />
+								<span class="slider"></span>
+							</label>
 						</div>
-
-						<!-- 搜索和添加模型 -->
-						<div class="flex gap-2 mb-3">
-							<input
-								v-model="modelSearchQuery[provider.id]"
-								placeholder="搜索或添加模型..."
-								class="input text-sm flex-1"
-								@keyup.enter="addModel(provider.id)"
-							/>
-							<button
-								@click="addModel(provider.id)"
-								class="btn btn-secondary text-sm"
-								:disabled="!modelSearchQuery[provider.id]?.trim()"
-							>
-								添加
-							</button>
-						</div>
-
-						<!-- 模型列表（带搜索过滤和滚动） -->
-						<div v-if="provider.models?.length" class="model-list-container">
-							<div
-								v-for="model in filterModels(provider)"
-								:key="model"
-								class="model-item"
-								:class="{
-									'is-default': isDefaultModel(provider.id, model),
-									'is-vision': isVisionModel(provider.id, model),
-								}"
-							>
-								<div class="flex items-center gap-2 flex-1 min-w-0">
-									<span class="text-sm truncate" :title="model">{{ model }}</span>
-									<span v-if="isDefaultModel(provider.id, model)" class="badge badge-primary"
-										>默认</span
-									>
-									<span v-if="modelVisionSupport[`${provider.id}/${model}`]" class="badge badge-green"
-										>图像</span
-									>
-								</div>
-								<div class="model-actions">
-									<!-- 测试连接 -->
-									<button
-										@click="testModel(provider.id, model)"
-										:disabled="loadingStates[`test-${provider.id}/${model}`]"
-										class="btn-text"
-										:class="{ loading: loadingStates[`test-${provider.id}/${model}`] }"
-									>
-										{{ loadingStates[`test-${provider.id}/${model}`] ? '测试中' : '测试' }}
-									</button>
-									<!-- 测试 Vision -->
-									<button
-										@click="testVision(provider.id, model)"
-										:disabled="loadingStates[`vision-${provider.id}/${model}`]"
-										class="btn-text"
-										:class="{ loading: loadingStates[`vision-${provider.id}/${model}`] }"
-									>
-										{{ loadingStates[`vision-${provider.id}/${model}`] ? '检测中' : '检测图像' }}
-									</button>
-									<!-- 设为默认模型 -->
-									<button
-										v-if="!isDefaultModel(provider.id, model)"
-										@click="setDefaultModel(provider.id, model)"
-										class="btn-text btn-blue"
-									>
-										设为默认
-									</button>
-									<!-- 删除模型 -->
-									<button @click="removeModel(provider.id, model)" class="btn-text btn-red">
-										删除
-									</button>
-								</div>
-							</div>
-							<!-- 搜索无结果 -->
-							<div
-								v-if="filterModels(provider).length === 0"
-								class="text-sm text-zinc-500 py-4 text-center"
-							>
-								没有匹配 "{{ modelSearchQuery[provider.id] }}" 的模型
-							</div>
-						</div>
-						<div v-else class="text-sm text-zinc-500 py-4 text-center">
-							暂无模型，点击"获取模型列表"或手动添加
-						</div>
+						<p class="setting-desc">开启后每步操作需确认，图片保存到 ~/.nutbot/debug</p>
 					</div>
-				</div>
-
-				<div v-if="store.providers.length === 0" class="text-zinc-500 text-sm text-center py-8">
-					还没有配置 AI Provider，请在下方添加
-				</div>
-			</div>
-
-			<!-- 添加/编辑 Provider 表单 -->
-			<div class="border-t border-zinc-700 pt-4">
-				<h4 class="text-sm font-medium mb-3">
-					{{ editingProvider ? '编辑 Provider' : '添加 Provider' }}
-				</h4>
-				<form @submit.prevent="saveProvider" class="space-y-3">
-					<div class="grid grid-cols-2 gap-3">
-						<div>
-							<label class="block text-xs text-zinc-400 mb-1">ID</label>
-							<input
-								v-model="providerForm.id"
-								placeholder="如: openai"
-								class="input"
-								:disabled="!!editingProvider"
-							/>
-						</div>
-						<div>
-							<label class="block text-xs text-zinc-400 mb-1">类型</label>
-							<select v-model="providerForm.type" class="input">
-								<option value="openai">OpenAI 兼容</option>
-								<option value="anthropic">Anthropic</option>
+					
+					<!-- 沙盒模式 -->
+					<div class="setting-item">
+						<div class="setting-header">
+							<span class="setting-label">沙盒模式</span>
+							<select v-model="sandboxMode" class="input-sm" @change="saveSandboxMode">
+								<option value="off">关闭</option>
+								<option value="permissive">宽松</option>
+								<option value="strict">严格</option>
 							</select>
 						</div>
-					</div>
-					<div>
-						<label class="block text-xs text-zinc-400 mb-1">名称</label>
-						<input v-model="providerForm.name" placeholder="显示名称（可选）" class="input" />
-					</div>
-					<div>
-						<label class="block text-xs text-zinc-400 mb-1">API 地址</label>
-						<input v-model="providerForm.baseUrl" placeholder="https://api.openai.com/v1" class="input" />
-					</div>
-					<div>
-						<label class="block text-xs text-zinc-400 mb-1">API Key</label>
-						<input
-							v-model="providerForm.apiKey"
-							type="password"
-							:placeholder="editingProvider ? '留空则不修改' : 'sk-...'"
-							class="input"
-						/>
-					</div>
-					<div class="flex gap-2 justify-end">
-						<button v-if="editingProvider" type="button" @click="cancelEdit" class="btn btn-secondary">
-							取消
-						</button>
-						<button
-							type="submit"
-							:disabled="loadingStates['save-provider']"
-							class="btn btn-primary btn-loading"
-							:class="{ loading: loadingStates['save-provider'] }"
-						>
-							<span v-if="loadingStates['save-provider']" class="spinner"></span>
-							{{ editingProvider ? '保存修改' : '添加' }}
-						</button>
-					</div>
-				</form>
-			</div>
-		</section>
-
-		<!-- 当前默认模型 -->
-		<section class="card mb-6">
-			<h3 class="text-lg font-medium mb-4 flex items-center gap-2">
-				<span>🎯</span>
-				默认模型
-			</h3>
-			<div class="flex items-center justify-between p-4 bg-zinc-700/30 rounded-lg">
-				<div>
-					<div class="font-medium">{{ defaultModel || '未设置' }}</div>
-					<div v-if="defaultModel" class="text-sm text-zinc-400 mt-1">
-						{{ modelVisionSupport[defaultModel] ? '🟢 支持图像理解' : '🔴 不支持图像理解' }}
+						<p class="setting-desc">控制 AI 执行危险操作的权限</p>
 					</div>
 				</div>
-				<div v-if="defaultModel" class="text-sm text-zinc-500">点击模型列表中的"设为默认"切换</div>
-			</div>
-		</section>
+			</section>
 
-		<!-- OCR-SoM 设置 -->
-		<section class="card mb-6">
-			<h3 class="text-lg font-medium mb-4 flex items-center gap-2">
-				<span>👁️</span>
-				OCR-SoM 视觉识别
-			</h3>
-			<p class="text-sm text-muted mb-4">
-				OCR-SoM 用于识别屏幕上的文字和 UI 元素，为 AI 提供精确的点击坐标。
-				<a href="https://github.com/N0tsLabs/Set-of-Mark" target="_blank" class="text-blue-400 hover:underline">了解更多</a>
-			</p>
-			
-			<div class="space-y-4">
-				<!-- 启用开关 -->
-				<div class="flex items-center justify-between">
-					<div>
-						<div class="font-medium">启用 OCR-SoM</div>
-						<div class="text-sm text-muted">用于桌面自动化的视觉识别</div>
-					</div>
-					<label class="switch">
-						<input type="checkbox" v-model="ocrConfig.enabled" @change="saveOcrConfig" />
-						<span class="slider"></span>
-					</label>
-				</div>
+			<!-- AI Provider -->
+			<section id="provider" class="settings-section">
+				<h2 class="section-title">
+					<span>🤖</span>
+					AI Provider
+				</h2>
 				
-				<!-- 服务地址 -->
-				<div>
-					<label class="block text-sm text-muted mb-1">服务地址</label>
-					<div class="flex gap-2">
-						<input
-							v-model="ocrConfig.baseUrl"
-							placeholder="http://localhost:5000"
-							class="input flex-1"
-							@blur="saveOcrConfig"
-						/>
-						<button
-							@click="testOcrConnection"
-							:disabled="loadingStates['ocr-test']"
-							class="btn btn-secondary btn-loading"
-							:class="{ loading: loadingStates['ocr-test'] }"
-						>
-							<span v-if="loadingStates['ocr-test']" class="spinner"></span>
-							{{ loadingStates['ocr-test'] ? '检测中' : '测试连接' }}
-						</button>
+				<!-- Provider 列表 -->
+				<div class="provider-list">
+					<div v-for="provider in store.providers" :key="provider.id" class="provider-card">
+						<div class="provider-header">
+							<div class="provider-info">
+								<span class="provider-name">{{ provider.name || provider.id }}</span>
+								<span class="provider-url">{{ provider.baseUrl }}</span>
+							</div>
+							<div class="provider-actions">
+								<button @click="editProvider(provider)" class="btn-sm">编辑</button>
+								<button @click="removeProvider(provider.id)" class="btn-sm btn-danger">删除</button>
+							</div>
+						</div>
+						
+						<!-- 模型列表 -->
+						<div class="models-section">
+							<div class="models-header">
+								<span>模型 ({{ provider.models?.length || 0 }})</span>
+								<div class="models-actions">
+									<input
+										v-model="modelSearchQuery[provider.id]"
+										placeholder="搜索/添加..."
+										class="input-xs"
+										@keyup.enter="addModel(provider.id)"
+									/>
+									<button
+										@click="fetchModels(provider)"
+										:disabled="loadingStates[`fetch-${provider.id}`]"
+										class="btn-xs"
+									>
+										{{ loadingStates[`fetch-${provider.id}`] ? '获取中' : '获取' }}
+									</button>
+								</div>
+							</div>
+							
+							<div v-if="provider.models?.length" class="model-list">
+								<div
+									v-for="model in filterModels(provider)"
+									:key="model"
+									class="model-item"
+									:class="{ 'is-default': isDefaultModel(provider.id, model) }"
+								>
+									<span class="model-name" :title="model">{{ model }}</span>
+									<div class="model-badges">
+										<span v-if="isDefaultModel(provider.id, model)" class="badge badge-blue">默认</span>
+										<span v-if="modelVisionSupport[`${provider.id}/${model}`]" class="badge badge-green">图像</span>
+									</div>
+									<div class="model-actions">
+										<button @click="testModel(provider.id, model)" :disabled="loadingStates[`test-${provider.id}/${model}`]" class="btn-xs">
+											{{ loadingStates[`test-${provider.id}/${model}`] ? '...' : '测试' }}
+										</button>
+										<button @click="testVision(provider.id, model)" :disabled="loadingStates[`vision-${provider.id}/${model}`]" class="btn-xs">
+											{{ loadingStates[`vision-${provider.id}/${model}`] ? '...' : '图像' }}
+										</button>
+										<button v-if="!isDefaultModel(provider.id, model)" @click="setDefaultModel(provider.id, model)" class="btn-xs btn-primary">默认</button>
+										<button @click="removeModel(provider.id, model)" class="btn-xs btn-danger">×</button>
+									</div>
+								</div>
+							</div>
+							<div v-else class="models-empty">暂无模型</div>
+						</div>
+					</div>
+					
+					<div v-if="store.providers.length === 0" class="empty-state">
+						还没有配置 AI Provider
 					</div>
 				</div>
 				
-				<!-- 连接状态 -->
-				<div v-if="ocrStatus" class="p-3 rounded-lg" :class="ocrStatus.connected ? 'bg-green-900/20' : 'bg-red-900/20'">
-					<div class="flex items-center gap-2">
-						<span>{{ ocrStatus.connected ? '🟢' : '🔴' }}</span>
-						<span class="font-medium">{{ ocrStatus.message }}</span>
+				<!-- 添加/编辑 Provider -->
+				<div class="provider-form">
+					<h3>{{ editingProvider ? '编辑 Provider' : '添加 Provider' }}</h3>
+					<form @submit.prevent="saveProvider" class="form-grid">
+						<div class="form-row">
+							<div class="form-group">
+								<label>ID</label>
+								<input v-model="providerForm.id" placeholder="如: openai" class="input-sm" :disabled="!!editingProvider" />
+							</div>
+							<div class="form-group">
+								<label>类型</label>
+								<select v-model="providerForm.type" class="input-sm">
+									<option value="openai">OpenAI 兼容</option>
+									<option value="anthropic">Anthropic</option>
+								</select>
+							</div>
+						</div>
+						<div class="form-group">
+							<label>名称</label>
+							<input v-model="providerForm.name" placeholder="显示名称（可选）" class="input-sm" />
+						</div>
+						<div class="form-group">
+							<label>API 地址</label>
+							<input v-model="providerForm.baseUrl" placeholder="https://api.openai.com/v1" class="input-sm" />
+						</div>
+						<div class="form-group">
+							<label>API Key</label>
+							<input v-model="providerForm.apiKey" type="password" :placeholder="editingProvider ? '留空不修改' : 'sk-...'" class="input-sm" />
+						</div>
+						<div class="form-actions">
+							<button v-if="editingProvider" type="button" @click="cancelEdit" class="btn-sm">取消</button>
+							<button type="submit" :disabled="loadingStates['save-provider']" class="btn-sm btn-primary">
+								{{ editingProvider ? '保存' : '添加' }}
+							</button>
+						</div>
+					</form>
+				</div>
+			</section>
+
+			<!-- OCR-SoM -->
+			<section id="ocr" class="settings-section">
+				<h2 class="section-title">
+					<span>👁️</span>
+					OCR-SoM 视觉识别
+				</h2>
+				<p class="section-desc">识别屏幕上的文字和 UI 元素，为 AI 提供精确点击坐标</p>
+				
+				<div class="settings-grid cols-2">
+					<div class="setting-item">
+						<div class="setting-header">
+							<span class="setting-label">启用 OCR-SoM</span>
+							<label class="switch">
+								<input type="checkbox" v-model="ocrConfig.enabled" @change="saveOcrConfig" />
+								<span class="slider"></span>
+							</label>
+						</div>
 					</div>
-					<div v-if="ocrStatus.info" class="text-sm text-muted mt-2">
-						<div>设备: {{ ocrStatus.info.device || 'N/A' }}</div>
-						<div>版本: {{ ocrStatus.info.version || 'N/A' }}</div>
-					</div>
-					<div v-if="!ocrStatus.connected" class="text-sm text-muted mt-2">
-						请确保 OCR-SoM 服务正在运行：<code class="bg-zinc-700 px-1 rounded">python server.py</code>
+					
+					<div class="setting-item">
+						<div class="setting-header">
+							<span class="setting-label">超时 (ms)</span>
+							<input v-model.number="ocrConfig.timeout" type="number" min="5000" max="120000" step="1000" class="input-xs w-24" @blur="saveOcrConfig" />
+						</div>
 					</div>
 				</div>
 				
-				<!-- 超时设置 -->
-				<div>
-					<label class="block text-sm text-muted mb-1">超时时间 (毫秒)</label>
-					<input
-						v-model.number="ocrConfig.timeout"
-						type="number"
-						min="5000"
-						max="120000"
-						step="1000"
-						class="input w-32"
-						@blur="saveOcrConfig"
-					/>
-				</div>
-			</div>
-		</section>
-
-		<!-- 服务器设置 -->
-		<section class="card mb-6">
-			<h3 class="text-lg font-medium mb-4 flex items-center gap-2">
-				<span>🖥️</span>
-				服务器
-			</h3>
-			<div class="grid grid-cols-2 gap-3">
-				<div>
-					<label class="block text-sm text-zinc-400 mb-1">地址</label>
-					<input v-model="config.server.host" class="input" disabled />
-				</div>
-				<div>
-					<label class="block text-sm text-zinc-400 mb-1">端口</label>
-					<input v-model="config.server.port" class="input" disabled />
-				</div>
-			</div>
-		</section>
-
-		<!-- 调试模式设置 -->
-		<section class="card mb-6">
-			<h3 class="text-lg font-medium mb-4 flex items-center gap-2">
-				<span>🔍</span>
-				调试模式
-			</h3>
-			<p class="text-sm text-muted mb-4">
-				开启后，AI 执行每个点击操作前都需要你确认。可以查看原图、OCR 标注图、AI 计划点击的位置。
-			</p>
-			
-			<div class="flex items-center justify-between">
-				<div>
-					<div class="font-medium">启用调试模式</div>
-					<div class="text-sm text-muted">每步操作需要确认，方便排查问题</div>
-				</div>
-				<label class="switch">
-					<input type="checkbox" v-model="debugMode" @change="saveDebugMode" />
-					<span class="slider"></span>
-				</label>
-			</div>
-		</section>
-
-		<!-- 沙盒设置 -->
-		<section class="card">
-			<h3 class="text-lg font-medium mb-4 flex items-center gap-2">
-				<span>🔒</span>
-				安全沙盒
-			</h3>
-
-			<div class="sandbox-setting">
-				<div class="sandbox-header">
-					<div>
-						<div class="font-medium">沙盒模式</div>
-						<div class="text-sm text-muted">控制 AI 执行危险操作的权限</div>
-					</div>
-					<select v-model="sandboxMode" class="input w-40" @change="saveSandboxMode">
-						<option value="off">关闭</option>
-						<option value="permissive">宽松</option>
-						<option value="strict">严格</option>
-					</select>
-				</div>
-
-				<!-- 沙盒模式详细说明 -->
-				<div class="sandbox-explanation">
-					<div class="sandbox-mode-info" :class="{ active: sandboxMode === 'off' }">
-						<div class="mode-badge danger">关闭</div>
-						<div class="mode-desc">
-							<strong>完全信任模式</strong> - AI 可以执行任何操作，包括：
-							<ul>
-								<li>删除文件和文件夹</li>
-								<li>修改系统设置</li>
-								<li>执行任意命令</li>
-								<li>访问敏感数据</li>
-							</ul>
-							<span class="mode-warning">⚠️ 仅在完全信任 AI 时使用</span>
+				<div class="setting-item full-width">
+					<div class="setting-header">
+						<span class="setting-label">服务地址</span>
+						<div class="flex gap-2 items-center">
+							<input v-model="ocrConfig.baseUrl" placeholder="http://localhost:5000" class="input-sm w-64" @blur="saveOcrConfig" />
+							<button @click="testOcrConnection" :disabled="loadingStates['ocr-test']" class="btn-sm">
+								{{ loadingStates['ocr-test'] ? '检测中' : '测试' }}
+							</button>
 						</div>
 					</div>
-
-					<div class="sandbox-mode-info" :class="{ active: sandboxMode === 'permissive' }">
-						<div class="mode-badge warning">宽松</div>
-						<div class="mode-desc">
-							<strong>平衡模式（推荐）</strong> - AI 会在执行以下操作前请求确认：
-							<ul>
-								<li>删除重要文件</li>
-								<li>执行系统级命令 (如 sudo、rm -rf)</li>
-								<li>修改配置文件</li>
-								<li>发送敏感信息</li>
-							</ul>
-							<span class="mode-tip">💡 适合日常使用，兼顾效率和安全</span>
-						</div>
-					</div>
-
-					<div class="sandbox-mode-info" :class="{ active: sandboxMode === 'strict' }">
-						<div class="mode-badge success">严格</div>
-						<div class="mode-desc">
-							<strong>最高安全模式</strong> - AI 的所有写入操作都需要确认：
-							<ul>
-								<li>创建、修改、删除任何文件</li>
-								<li>执行任何命令</li>
-								<li>发送网络请求</li>
-								<li>鼠标键盘操作</li>
-							</ul>
-							<span class="mode-tip">🔒 每一步操作都需要你的批准</span>
-						</div>
+					<div v-if="ocrStatus" class="ocr-status" :class="ocrStatus.connected ? 'connected' : 'disconnected'">
+						<span>{{ ocrStatus.connected ? '🟢' : '🔴' }} {{ ocrStatus.message }}</span>
+						<span v-if="ocrStatus.info" class="ocr-info">设备: {{ ocrStatus.info.device }}</span>
 					</div>
 				</div>
-			</div>
-		</section>
+			</section>
 
-		<!-- 个人设置 -->
-		<section class="card mb-6">
-			<h3 class="text-lg font-medium mb-4 flex items-center gap-2">
-				<span>👤</span>
-				个人设置
-			</h3>
-			<div class="space-y-4">
-				<div class="grid grid-cols-2 gap-4">
-					<div>
-						<label class="block text-sm text-muted mb-1">昵称</label>
-						<input
-							v-model="userSettings.name"
-							placeholder="AI 会用这个名字称呼你"
-							class="input"
-							@blur="saveUserSettings"
-						/>
+			<!-- 个人设置 -->
+			<section id="user" class="settings-section">
+				<h2 class="section-title">
+					<span>👤</span>
+					个人设置
+				</h2>
+				
+				<div class="settings-grid cols-3">
+					<div class="setting-item">
+						<label class="setting-label">昵称</label>
+						<input v-model="userSettings.name" placeholder="AI 称呼你的名字" class="input-sm" @blur="saveUserSettings" />
 					</div>
-					<div>
-						<label class="block text-sm text-muted mb-1">位置</label>
-						<input
-							v-model="userSettings.location"
-							placeholder="城市，如：上海"
-							class="input"
-							@blur="saveUserSettings"
-						/>
+					<div class="setting-item">
+						<label class="setting-label">位置</label>
+						<input v-model="userSettings.location" placeholder="城市" class="input-sm" @blur="saveUserSettings" />
+					</div>
+					<div class="setting-item">
+						<label class="setting-label">语言</label>
+						<select v-model="userSettings.language" class="input-sm" @change="saveUserSettings">
+							<option value="">自动</option>
+							<option value="中文">中文</option>
+							<option value="English">English</option>
+							<option value="日本語">日本語</option>
+						</select>
 					</div>
 				</div>
-				<div>
-					<label class="block text-sm text-muted mb-1">偏好语言</label>
-					<select v-model="userSettings.language" class="input" @change="saveUserSettings">
-						<option value="">自动</option>
-						<option value="中文">中文</option>
-						<option value="English">English</option>
-						<option value="日本語">日本語</option>
-					</select>
+				
+				<div class="setting-item full-width">
+					<label class="setting-label">自定义 Prompt</label>
+					<textarea v-model="userSettings.customPrompt" placeholder="添加自定义指令..." class="input-sm h-20 resize-none" @blur="saveUserSettings"></textarea>
+					<p class="setting-hint">这些指令会添加到 AI 的系统提示中</p>
 				</div>
-				<div>
-					<label class="block text-sm text-muted mb-1">自定义 Prompt</label>
-					<textarea
-						v-model="userSettings.customPrompt"
-						placeholder="添加自定义指令，AI 会在每次对话时遵循（如：回复时更简洁、使用特定格式等）"
-						class="input h-24 resize-none"
-						@blur="saveUserSettings"
-					></textarea>
-					<div class="text-xs text-muted mt-1">这些指令会添加到 AI 的系统提示中</div>
-				</div>
-			</div>
-		</section>
+			</section>
 
-		<!-- 记忆管理 -->
-		<section class="card">
-			<h3 class="text-lg font-medium mb-4 flex items-center justify-between">
-				<div class="flex items-center gap-2">
+			<!-- 记忆管理 -->
+			<section id="memory" class="settings-section">
+				<h2 class="section-title">
 					<span>🧠</span>
 					AI 记忆
+					<button @click="showAddMemory = true" class="btn-sm ml-auto">+ 添加</button>
+				</h2>
+				<p class="section-desc">AI 会记住这些信息。也可以在聊天中说"记住这个"来添加。</p>
+				
+				<div v-if="memories.length" class="memory-list">
+					<div v-for="memory in memories" :key="memory.id" class="memory-item">
+						<span class="memory-category" :class="memory.category">{{ categoryLabels[memory.category] }}</span>
+						<span class="memory-content">{{ memory.content }}</span>
+						<div class="memory-actions">
+							<button @click="startEditMemory(memory)" class="btn-icon">✏️</button>
+							<button @click="deleteMemory(memory.id)" class="btn-icon text-red-400">🗑️</button>
+						</div>
+					</div>
 				</div>
-				<button @click="showAddMemory = true" class="btn btn-secondary text-sm">+ 添加记忆</button>
-			</h3>
-			<p class="text-sm text-muted mb-4">
-				AI 会记住这些信息，在对话中使用。你也可以在聊天中告诉 AI"记住这个"来添加新记忆。
-			</p>
+				<div v-else class="empty-state">还没有记忆</div>
+			</section>
 
-			<!-- 记忆列表 -->
-			<div v-if="memories.length" class="space-y-2">
-				<div v-for="memory in memories" :key="memory.id" class="memory-item">
-					<div class="flex-1 min-w-0">
-						<div class="flex items-center gap-2 mb-1">
-							<span class="memory-category" :class="memory.category">
-								{{ categoryLabels[memory.category] || memory.category }}
-							</span>
-							<span class="text-xs text-muted">{{ formatDate(memory.createdAt) }}</span>
-						</div>
-						<div v-if="editingMemory === memory.id" class="flex gap-2">
-							<input
-								v-model="editMemoryContent"
-								class="input flex-1 text-sm"
-								@keyup.enter="saveMemoryEdit(memory.id)"
-							/>
-							<button @click="saveMemoryEdit(memory.id)" class="btn btn-primary text-sm">保存</button>
-							<button @click="editingMemory = null" class="btn btn-secondary text-sm">取消</button>
-						</div>
-						<div v-else class="text-sm">{{ memory.content }}</div>
+			<!-- 服务器 -->
+			<section id="server" class="settings-section">
+				<h2 class="section-title">
+					<span>🖥️</span>
+					服务器
+				</h2>
+				<div class="settings-grid cols-2">
+					<div class="setting-item">
+						<label class="setting-label">地址</label>
+						<input v-model="config.server.host" class="input-sm" disabled />
 					</div>
-					<div v-if="editingMemory !== memory.id" class="flex items-center gap-1 ml-2">
-						<button @click="startEditMemory(memory)" class="btn-icon" title="编辑">✏️</button>
-						<button @click="deleteMemory(memory.id)" class="btn-icon text-red-400" title="删除">🗑️</button>
+					<div class="setting-item">
+						<label class="setting-label">端口</label>
+						<input v-model="config.server.port" class="input-sm" disabled />
 					</div>
 				</div>
-			</div>
-			<div v-else class="text-center text-muted py-8">
-				还没有记忆。在聊天中告诉 AI"记住这个"，或点击上方按钮手动添加。
-			</div>
+			</section>
 
-			<!-- 添加记忆弹窗 -->
-			<div v-if="showAddMemory" class="modal-overlay" @click.self="showAddMemory = false">
-				<div class="modal-content">
-					<h4 class="text-lg font-medium mb-4">添加记忆</h4>
-					<div class="space-y-3">
-						<div>
-							<label class="block text-sm text-muted mb-1">类型</label>
-							<select v-model="newMemory.category" class="input">
-								<option value="preference">偏好</option>
-								<option value="habit">习惯</option>
-								<option value="fact">事实</option>
-								<option value="instruction">指令</option>
-								<option value="other">其他</option>
-							</select>
-						</div>
-						<div>
-							<label class="block text-sm text-muted mb-1">内容</label>
-							<textarea
-								v-model="newMemory.content"
-								placeholder="如：喜欢用英文交流、是一名程序员、每天早上9点提醒我开会..."
-								class="input h-24 resize-none"
-							></textarea>
+			<!-- 沙盒详情 -->
+			<section id="sandbox" class="settings-section">
+				<h2 class="section-title">
+					<span>🔒</span>
+					安全沙盒
+				</h2>
+				
+				<div class="sandbox-modes">
+					<div class="sandbox-mode" :class="{ active: sandboxMode === 'off' }">
+						<span class="mode-badge danger">关闭</span>
+						<div class="mode-info">
+							<strong>完全信任</strong> - AI 可执行任何操作
+							<span class="mode-warning">⚠️ 仅在完全信任时使用</span>
 						</div>
 					</div>
-					<div class="flex justify-end gap-2 mt-4">
-						<button @click="showAddMemory = false" class="btn btn-secondary">取消</button>
-						<button @click="addMemory" class="btn btn-primary" :disabled="!newMemory.content.trim()">
-							添加
-						</button>
+					<div class="sandbox-mode" :class="{ active: sandboxMode === 'permissive' }">
+						<span class="mode-badge warning">宽松</span>
+						<div class="mode-info">
+							<strong>平衡模式</strong> - 危险操作需确认
+							<span class="mode-tip">💡 推荐日常使用</span>
+						</div>
+					</div>
+					<div class="sandbox-mode" :class="{ active: sandboxMode === 'strict' }">
+						<span class="mode-badge success">严格</span>
+						<div class="mode-info">
+							<strong>最高安全</strong> - 所有写操作需确认
+							<span class="mode-tip">🔒 每步都需批准</span>
+						</div>
 					</div>
 				</div>
+			</section>
+		</main>
+
+		<!-- 添加记忆弹窗 -->
+		<div v-if="showAddMemory" class="modal-overlay" @click.self="showAddMemory = false">
+			<div class="modal-content">
+				<h4>添加记忆</h4>
+				<div class="form-group">
+					<label>类型</label>
+					<select v-model="newMemory.category" class="input-sm">
+						<option value="preference">偏好</option>
+						<option value="habit">习惯</option>
+						<option value="fact">事实</option>
+						<option value="instruction">指令</option>
+						<option value="other">其他</option>
+					</select>
+				</div>
+				<div class="form-group">
+					<label>内容</label>
+					<textarea v-model="newMemory.content" placeholder="如：喜欢用英文交流" class="input-sm h-20 resize-none"></textarea>
+				</div>
+				<div class="form-actions">
+					<button @click="showAddMemory = false" class="btn-sm">取消</button>
+					<button @click="addMemory" class="btn-sm btn-primary" :disabled="!newMemory.content.trim()">添加</button>
+				</div>
 			</div>
-		</section>
+		</div>
+
+		<!-- 编辑记忆弹窗 -->
+		<div v-if="editingMemory" class="modal-overlay" @click.self="editingMemory = null">
+			<div class="modal-content">
+				<h4>编辑记忆</h4>
+				<div class="form-group">
+					<label>内容</label>
+					<textarea v-model="editMemoryContent" class="input-sm h-20 resize-none"></textarea>
+				</div>
+				<div class="form-actions">
+					<button @click="editingMemory = null" class="btn-sm">取消</button>
+					<button @click="saveMemoryEdit(editingMemory)" class="btn-sm btn-primary">保存</button>
+				</div>
+			</div>
+		</div>
 	</div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, onMounted, nextTick } from 'vue';
 import { useAppStore } from '../stores/app';
 import api from '../utils/api';
 
 const store = useAppStore();
+const contentRef = ref(null);
+const activeCategory = ref('quick');
+
+// 分类导航
+const categories = [
+	{ id: 'quick', icon: '⚡', label: '快速设置' },
+	{ id: 'provider', icon: '🤖', label: 'AI Provider' },
+	{ id: 'ocr', icon: '👁️', label: 'OCR-SoM' },
+	{ id: 'user', icon: '👤', label: '个人设置' },
+	{ id: 'memory', icon: '🧠', label: 'AI 记忆' },
+	{ id: 'server', icon: '🖥️', label: '服务器' },
+	{ id: 'sandbox', icon: '🔒', label: '安全沙盒' },
+];
+
+const scrollToCategory = (id) => {
+	activeCategory.value = id;
+	const el = document.getElementById(id);
+	if (el && contentRef.value) {
+		el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	}
+};
 
 // 表单状态
 const providerForm = reactive({
@@ -535,12 +405,8 @@ const providerForm = reactive({
 	apiKey: '',
 });
 const editingProvider = ref(null);
-const modelSearchQuery = reactive({}); // 用于搜索和添加模型
-
-// 加载状态（统一管理）
+const modelSearchQuery = reactive({});
 const loadingStates = reactive({});
-
-// 模型 Vision 支持状态
 const modelVisionSupport = reactive({});
 
 // 配置
@@ -619,7 +485,6 @@ const saveProvider = async () => {
 
 	try {
 		if (editingProvider.value) {
-			// 编辑
 			const updateData = {
 				name: providerForm.name,
 				type: providerForm.type,
@@ -630,7 +495,6 @@ const saveProvider = async () => {
 			}
 			await api.put(`/api/providers/${editingProvider.value}`, updateData);
 		} else {
-			// 添加
 			if (!providerForm.id || !providerForm.apiKey) {
 				alert('请填写 ID 和 API Key');
 				return;
@@ -666,16 +530,14 @@ const fetchModels = async (provider) => {
 
 	loadingStates[key] = true;
 	try {
-		// 添加 refresh=true 强制从 API 获取
 		const result = await api.get(`/api/providers/${provider.id}/models?refresh=true`);
 		if (result.models?.length) {
-			// 合并现有模型和新获取的模型
 			const existingModels = provider.models || [];
 			const newModels = [...new Set([...existingModels, ...result.models])];
 			await api.put(`/api/providers/${provider.id}/models`, { models: newModels });
 			await store.loadProviders();
 		} else {
-			alert('未获取到模型列表，请手动添加');
+			alert('未获取到模型列表');
 		}
 	} catch (error) {
 		alert('获取失败: ' + error.message);
@@ -701,12 +563,9 @@ const addModel = async (providerId) => {
 		} catch (error) {
 			alert('添加失败: ' + error.message);
 		}
-	} else {
-		alert('模型已存在');
 	}
 };
 
-// 过滤模型列表（搜索功能）
 const filterModels = (provider) => {
 	const query = (modelSearchQuery[provider.id] || '').toLowerCase().trim();
 	if (!query) return provider.models || [];
@@ -733,9 +592,9 @@ const testModel = async (providerId, model) => {
 	loadingStates[key] = true;
 	try {
 		const result = await api.get(`/api/providers/${providerId}/test?model=${encodeURIComponent(model)}`);
-		alert(result.success ? `✅ 模型 ${model} 连接成功！` : `❌ 连接失败: ${result.message}`);
+		alert(result.success ? `✅ 连接成功` : `❌ ${result.message}`);
 	} catch (error) {
-		alert('❌ 测试失败: ' + error.message);
+		alert('❌ ' + error.message);
 	} finally {
 		loadingStates[key] = false;
 	}
@@ -752,23 +611,17 @@ const testVision = async (providerId, model) => {
 
 		if (result.supported) {
 			modelVisionSupport[modelKey] = true;
-			// 保存到配置（模型级别）
-			await api.patch(`/api/providers/${providerId}/models/${encodeURIComponent(model)}`, {
-				supportsVision: true,
-			});
+			await api.patch(`/api/providers/${providerId}/models/${encodeURIComponent(model)}`, { supportsVision: true });
 			await store.loadProviders();
-			alert(`✅ 模型 ${model} 支持图像理解！已保存。`);
+			alert(`✅ 支持图像理解`);
 		} else {
 			modelVisionSupport[modelKey] = false;
-			// 保存不支持状态
-			await api.patch(`/api/providers/${providerId}/models/${encodeURIComponent(model)}`, {
-				supportsVision: false,
-			});
+			await api.patch(`/api/providers/${providerId}/models/${encodeURIComponent(model)}`, { supportsVision: false });
 			await store.loadProviders();
-			alert(`❌ 模型 ${model} 不支持图像理解\n\n${result.message}`);
+			alert(`❌ 不支持图像理解`);
 		}
 	} catch (error) {
-		alert('❌ 测试失败: ' + error.message);
+		alert('❌ ' + error.message);
 	} finally {
 		loadingStates[key] = false;
 	}
@@ -787,10 +640,6 @@ const setDefaultModel = async (providerId, model) => {
 
 const isDefaultModel = (providerId, model) => {
 	return defaultModel.value === `${providerId}/${model}`;
-};
-
-const isVisionModel = (providerId, model) => {
-	return !!modelVisionSupport[`${providerId}/${model}`];
 };
 
 // ========== 其他设置 ==========
@@ -840,7 +689,7 @@ const testOcrConnection = async () => {
 	if (loadingStates['ocr-test']) return;
 	loadingStates['ocr-test'] = true;
 	ocrStatus.value = null;
-	
+
 	try {
 		const result = await api.get('/api/ocr/status');
 		ocrStatus.value = result;
@@ -926,18 +775,13 @@ const saveMemoryEdit = async (id) => {
 };
 
 const deleteMemory = async (id) => {
-	if (!confirm('确定删除这条记忆？')) return;
+	if (!confirm('确定删除？')) return;
 	try {
 		await api.del(`/api/memories/${id}`);
 		await loadMemories();
 	} catch (error) {
 		alert('删除失败: ' + error.message);
 	}
-};
-
-const formatDate = (dateStr) => {
-	const date = new Date(dateStr);
-	return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
 };
 
 // ========== 初始化 ==========
@@ -954,15 +798,13 @@ onMounted(async () => {
 	debugMode.value = store.config.agent?.debugMode || false;
 	Object.assign(config.server, store.config.server || {});
 
-	// 加载已保存的 Vision 支持状态（从 visionModels）
 	for (const provider of store.providers) {
 		const visionModels = provider.visionModels || [];
 		for (const model of visionModels) {
 			modelVisionSupport[`${provider.id}/${model}`] = true;
 		}
 	}
-	
-	// 自动检测 OCR-SoM 连接
+
 	if (ocrConfig.enabled) {
 		testOcrConnection();
 	}
@@ -970,194 +812,443 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.settings-container {
-	@apply flex-1 overflow-y-auto p-6;
+.settings-page {
+	display: flex;
+	height: 100vh;
 	background-color: var(--bg-primary);
 }
 
-.settings-title {
-	@apply text-2xl font-bold mb-6;
+/* 左侧导航 */
+.settings-sidebar {
+	width: 160px;
+	flex-shrink: 0;
+	background-color: var(--bg-secondary);
+	border-right: 1px solid var(--border-color);
+	padding: 16px 8px;
+}
+
+.settings-nav {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.nav-btn {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	border-radius: 6px;
+	background: none;
+	border: none;
+	cursor: pointer;
+	color: var(--text-secondary);
+	font-size: 13px;
+	text-align: left;
+	transition: all 0.15s;
+}
+
+.nav-btn:hover {
+	background-color: var(--bg-hover);
 	color: var(--text-primary);
 }
 
-.text-muted {
-	color: var(--text-muted);
-}
-
-.provider-card {
-	@apply p-4 rounded-lg;
-	background-color: var(--bg-tertiary);
-}
-
-/* 模型列表容器（限高+滚动） */
-.model-list-container {
-	@apply max-h-80 overflow-y-auto space-y-1 pr-1;
-	scrollbar-width: thin;
-	scrollbar-color: #52525b transparent;
-}
-
-.model-list-container::-webkit-scrollbar {
-	width: 6px;
-}
-
-.model-list-container::-webkit-scrollbar-track {
-	background: transparent;
-}
-
-.model-list-container::-webkit-scrollbar-thumb {
-	background-color: #52525b;
-	border-radius: 3px;
-}
-
-.model-item {
-	@apply flex items-center justify-between p-2 px-3 bg-zinc-600/30 rounded-lg gap-2;
-}
-
-.model-item:hover {
-	@apply bg-zinc-600/50;
-}
-
-.model-item.is-default {
-	@apply bg-blue-900/30 border border-blue-500/30;
-}
-
-/* 模型操作按钮组 */
-.model-actions {
-	@apply flex items-center gap-1 flex-shrink-0;
-}
-
-.badge {
-	@apply text-xs px-1.5 py-0.5 rounded flex-shrink-0;
-}
-
-.badge-primary {
-	@apply bg-blue-500/30 text-blue-300;
-}
-
-.badge-green {
-	@apply bg-green-500/30 text-green-300;
-}
-
-/* 文字按钮 */
-.btn-text {
-	@apply text-xs px-2 py-1 rounded hover:bg-zinc-600 transition-colors text-zinc-400 hover:text-zinc-200 whitespace-nowrap;
-}
-
-.btn-text.loading {
-	@apply pointer-events-none opacity-70;
-}
-
-.btn-text.btn-blue {
-	color: #60a5fa;
-}
-.btn-text.btn-blue:hover {
-	color: #93c5fd;
-}
-
-.btn-text.btn-red {
-	color: #f87171;
-}
-.btn-text.btn-red:hover {
-	color: #fca5a5;
-}
-
-/* 按钮加载状态 */
-.btn-loading {
-	@apply relative;
-}
-
-.btn-loading.loading {
-	@apply pointer-events-none opacity-70;
-}
-
-.spinner {
-	@apply inline-block w-3 h-3 mr-1 border-2 border-white/30 border-t-white rounded-full animate-spin;
-}
-
-/* 沙盒设置样式 */
-.sandbox-setting {
-	@apply space-y-4;
-}
-
-.sandbox-header {
-	@apply flex items-center justify-between;
-}
-
-.sandbox-explanation {
-	@apply space-y-3 pt-4;
-	border-top: 1px solid var(--border-color);
-}
-
-.sandbox-mode-info {
-	@apply p-4 rounded-lg transition-all;
-	background-color: var(--bg-tertiary);
-	border: 1px solid transparent;
-	opacity: 0.6;
-}
-
-.sandbox-mode-info.active {
-	opacity: 1;
-	border-color: var(--accent);
+.nav-btn.active {
 	background-color: var(--accent-subtle);
+	color: var(--accent);
 }
 
-.mode-badge {
-	@apply inline-block px-2 py-0.5 rounded text-xs font-medium mb-2;
+.nav-icon {
+	font-size: 14px;
 }
 
-.mode-badge.danger {
-	background-color: rgba(244, 67, 54, 0.2);
-	color: #f44336;
+/* 右侧内容 */
+.settings-content {
+	flex: 1;
+	overflow-y: auto;
+	padding: 24px 32px;
+	max-width: 900px;
 }
 
-.mode-badge.warning {
-	background-color: rgba(255, 152, 0, 0.2);
-	color: #ff9800;
+.settings-section {
+	margin-bottom: 32px;
+	padding-bottom: 24px;
+	border-bottom: 1px solid var(--border-color);
 }
 
-.mode-badge.success {
-	background-color: rgba(76, 175, 80, 0.2);
-	color: #4caf50;
+.settings-section:last-child {
+	border-bottom: none;
 }
 
-.mode-desc {
-	@apply text-sm;
+.section-title {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 16px;
+	font-weight: 600;
+	color: var(--text-primary);
+	margin-bottom: 12px;
+}
+
+.section-desc {
+	font-size: 13px;
+	color: var(--text-muted);
+	margin-bottom: 16px;
+}
+
+/* 设置网格 */
+.settings-grid {
+	display: grid;
+	gap: 12px;
+}
+
+.settings-grid.cols-2 {
+	grid-template-columns: repeat(2, 1fr);
+}
+
+.settings-grid.cols-3 {
+	grid-template-columns: repeat(3, 1fr);
+}
+
+.setting-item {
+	padding: 12px;
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+}
+
+.setting-item.full-width {
+	grid-column: 1 / -1;
+}
+
+.setting-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.setting-label {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--text-primary);
+}
+
+.setting-value {
+	font-size: 13px;
 	color: var(--text-secondary);
 }
 
-.mode-desc strong {
-	color: var(--text-primary);
-}
-
-.mode-desc ul {
-	@apply mt-2 ml-4 space-y-1;
-	list-style-type: disc;
-}
-
-.mode-desc li {
+.setting-desc {
+	font-size: 12px;
 	color: var(--text-muted);
+	margin-top: 6px;
 }
 
-.mode-warning {
-	@apply block mt-2 text-xs;
+.setting-hint {
+	font-size: 11px;
+	color: var(--text-muted);
+	margin-top: 4px;
+}
+
+/* 输入框尺寸 */
+.input-xs {
+	padding: 4px 8px;
+	font-size: 12px;
+	background-color: var(--bg-input);
+	border: 1px solid var(--border-color);
+	border-radius: 4px;
+	color: var(--text-primary);
+	outline: none;
+}
+
+.input-sm {
+	width: 100%;
+	padding: 6px 10px;
+	font-size: 13px;
+	background-color: var(--bg-input);
+	border: 1px solid var(--border-color);
+	border-radius: 6px;
+	color: var(--text-primary);
+	outline: none;
+}
+
+.input-xs:focus, .input-sm:focus {
+	border-color: var(--accent);
+}
+
+/* 按钮尺寸 */
+.btn-xs {
+	padding: 2px 8px;
+	font-size: 11px;
+	background-color: var(--bg-input);
+	border: 1px solid var(--border-color);
+	border-radius: 4px;
+	color: var(--text-primary);
+	cursor: pointer;
+	transition: all 0.15s;
+}
+
+.btn-sm {
+	padding: 6px 12px;
+	font-size: 12px;
+	background-color: var(--bg-input);
+	border: 1px solid var(--border-color);
+	border-radius: 6px;
+	color: var(--text-primary);
+	cursor: pointer;
+	transition: all 0.15s;
+}
+
+.btn-xs:hover, .btn-sm:hover {
+	background-color: var(--bg-hover);
+}
+
+.btn-xs:disabled, .btn-sm:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.btn-primary {
+	background-color: var(--accent);
+	border-color: var(--accent);
+	color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+	background-color: var(--accent-hover);
+}
+
+.btn-danger {
 	color: var(--error);
 }
 
-.mode-tip {
-	@apply block mt-2 text-xs;
+.btn-danger:hover {
+	background-color: rgba(244, 67, 54, 0.1);
+}
+
+/* Provider */
+.provider-list {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	margin-bottom: 16px;
+}
+
+.provider-card {
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	padding: 12px;
+}
+
+.provider-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 12px;
+}
+
+.provider-info {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.provider-name {
+	font-size: 14px;
+	font-weight: 500;
+	color: var(--text-primary);
+}
+
+.provider-url {
+	font-size: 11px;
 	color: var(--text-muted);
 }
 
-/* 记忆管理样式 */
-.memory-item {
-	@apply flex items-start p-3 rounded-lg;
+.provider-actions {
+	display: flex;
+	gap: 6px;
+}
+
+.models-section {
+	border-top: 1px solid var(--border-color);
+	padding-top: 12px;
+}
+
+.models-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 8px;
+	font-size: 12px;
+	color: var(--text-secondary);
+}
+
+.models-actions {
+	display: flex;
+	gap: 6px;
+}
+
+.model-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	max-height: 200px;
+	overflow-y: auto;
+}
+
+.model-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
 	background-color: var(--bg-tertiary);
+	border-radius: 4px;
+	font-size: 12px;
+}
+
+.model-item.is-default {
+	background-color: var(--accent-subtle);
+	border: 1px solid var(--accent);
+}
+
+.model-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-primary);
+}
+
+.model-badges {
+	display: flex;
+	gap: 4px;
+}
+
+.model-actions {
+	display: flex;
+	gap: 4px;
+}
+
+.models-empty {
+	font-size: 12px;
+	color: var(--text-muted);
+	text-align: center;
+	padding: 12px;
+}
+
+/* Provider 表单 */
+.provider-form {
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	padding: 16px;
+}
+
+.provider-form h3 {
+	font-size: 14px;
+	font-weight: 500;
+	color: var(--text-primary);
+	margin-bottom: 12px;
+}
+
+.form-grid {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.form-row {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 10px;
+}
+
+.form-group {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.form-group label {
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.form-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 4px;
+}
+
+/* Badge */
+.badge {
+	padding: 2px 6px;
+	font-size: 10px;
+	border-radius: 4px;
+	font-weight: 500;
+}
+
+.badge-blue {
+	background-color: rgba(0, 122, 204, 0.2);
+	color: var(--accent);
+}
+
+.badge-green {
+	background-color: rgba(78, 201, 176, 0.2);
+	color: var(--success);
+}
+
+/* OCR 状态 */
+.ocr-status {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-top: 8px;
+	padding: 8px 12px;
+	border-radius: 6px;
+	font-size: 12px;
+}
+
+.ocr-status.connected {
+	background-color: rgba(78, 201, 176, 0.1);
+	color: var(--success);
+}
+
+.ocr-status.disconnected {
+	background-color: rgba(244, 67, 54, 0.1);
+	color: var(--error);
+}
+
+.ocr-info {
+	color: var(--text-muted);
+}
+
+/* 记忆列表 */
+.memory-list {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.memory-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 12px;
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	border-radius: 6px;
 }
 
 .memory-category {
-	@apply text-xs px-2 py-0.5 rounded;
-	background-color: var(--bg-secondary);
-	color: var(--text-muted);
+	padding: 2px 8px;
+	font-size: 11px;
+	border-radius: 4px;
+	flex-shrink: 0;
 }
 
 .memory-category.preference {
@@ -1180,28 +1271,121 @@ onMounted(async () => {
 	color: #ff9800;
 }
 
+.memory-category.other {
+	background-color: var(--bg-tertiary);
+	color: var(--text-muted);
+}
+
+.memory-content {
+	flex: 1;
+	font-size: 13px;
+	color: var(--text-primary);
+}
+
+.memory-actions {
+	display: flex;
+	gap: 4px;
+}
+
 .btn-icon {
-	@apply p-1 rounded hover:bg-white/10 transition-colors;
-	font-size: 14px;
+	padding: 4px;
+	background: none;
+	border: none;
+	cursor: pointer;
+	border-radius: 4px;
+	transition: background 0.15s;
 }
 
-/* 弹窗样式 */
-.modal-overlay {
-	@apply fixed inset-0 z-50 flex items-center justify-center;
-	background-color: rgba(0, 0, 0, 0.6);
+.btn-icon:hover {
+	background-color: var(--bg-hover);
 }
 
-.modal-content {
-	@apply p-6 rounded-xl shadow-xl w-full max-w-md mx-4;
+/* 沙盒模式 */
+.sandbox-modes {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.sandbox-mode {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 12px;
 	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	opacity: 0.6;
+	transition: all 0.15s;
 }
 
-/* Switch 开关 */
+.sandbox-mode.active {
+	opacity: 1;
+	border-color: var(--accent);
+	background-color: var(--accent-subtle);
+}
+
+.mode-badge {
+	padding: 4px 10px;
+	font-size: 11px;
+	font-weight: 600;
+	border-radius: 4px;
+	flex-shrink: 0;
+}
+
+.mode-badge.danger {
+	background-color: rgba(244, 67, 54, 0.2);
+	color: #f44336;
+}
+
+.mode-badge.warning {
+	background-color: rgba(255, 152, 0, 0.2);
+	color: #ff9800;
+}
+
+.mode-badge.success {
+	background-color: rgba(76, 175, 80, 0.2);
+	color: #4caf50;
+}
+
+.mode-info {
+	font-size: 13px;
+	color: var(--text-secondary);
+}
+
+.mode-info strong {
+	color: var(--text-primary);
+}
+
+.mode-warning {
+	display: block;
+	margin-top: 4px;
+	font-size: 11px;
+	color: var(--error);
+}
+
+.mode-tip {
+	display: block;
+	margin-top: 4px;
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+/* 空状态 */
+.empty-state {
+	text-align: center;
+	padding: 24px;
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+/* Switch */
 .switch {
 	position: relative;
 	display: inline-block;
-	width: 44px;
-	height: 24px;
+	width: 36px;
+	height: 20px;
+	flex-shrink: 0;
 }
 
 .switch input {
@@ -1219,14 +1403,14 @@ onMounted(async () => {
 	bottom: 0;
 	background-color: #52525b;
 	transition: 0.3s;
-	border-radius: 24px;
+	border-radius: 20px;
 }
 
 .slider:before {
 	position: absolute;
 	content: "";
-	height: 18px;
-	width: 18px;
+	height: 14px;
+	width: 14px;
 	left: 3px;
 	bottom: 3px;
 	background-color: white;
@@ -1239,6 +1423,65 @@ input:checked + .slider {
 }
 
 input:checked + .slider:before {
-	transform: translateX(20px);
+	transform: translateX(16px);
 }
+
+/* 弹窗 */
+.modal-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 50;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: rgba(0, 0, 0, 0.6);
+}
+
+.modal-content {
+	width: 100%;
+	max-width: 400px;
+	margin: 16px;
+	padding: 20px;
+	background-color: var(--bg-secondary);
+	border-radius: 12px;
+	box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+}
+
+.modal-content h4 {
+	font-size: 16px;
+	font-weight: 600;
+	color: var(--text-primary);
+	margin-bottom: 16px;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+	.settings-sidebar {
+		display: none;
+	}
+	
+	.settings-content {
+		padding: 16px;
+	}
+	
+	.settings-grid.cols-2,
+	.settings-grid.cols-3 {
+		grid-template-columns: 1fr;
+	}
+	
+	.form-row {
+		grid-template-columns: 1fr;
+	}
+}
+
+/* 工具类 */
+.flex { display: flex; }
+.gap-2 { gap: 8px; }
+.items-center { align-items: center; }
+.ml-auto { margin-left: auto; }
+.w-24 { width: 96px; }
+.w-64 { width: 256px; }
+.h-20 { height: 80px; }
+.resize-none { resize: none; }
+.text-red-400 { color: #f87171; }
 </style>
