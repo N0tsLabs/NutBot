@@ -48,6 +48,8 @@ export class BrowserTool extends BaseTool {
 	private cdpRelayPort = 18801; // CDP Relay 服务端口
 	private managedPages: Set<Page> = new Set(); // NutBot 管理的页面，close 时需要关闭
 	private initialPageUrl: string | null = null; // 记录打开时的初始页面 URL
+	private browserOpenedByNutBot = false; // 浏览器是否由 NutBot 启动的
+	private initialTabCount = 0; // 连接时浏览器已有的标签页数量
 
 	constructor(config: Record<string, unknown> = {}) {
 		super({
@@ -84,7 +86,9 @@ export class BrowserTool extends BaseTool {
 						'wait', // 等待（页面加载/网络空闲/元素出现）
 						'evaluate', // 执行 JavaScript
 						'tabs', // 列出标签页
-						'close', // 关闭浏览器
+						'close_tab', // 关闭当前标签页（任务完成后使用）
+						'close', // 关闭浏览器连接
+						'notify', // 发送浏览器通知（任务完成后通知用户）
 					],
 				},
 				url: {
@@ -130,6 +134,14 @@ export class BrowserTool extends BaseTool {
 					type: 'string',
 					description: 'wait 操作等待的元素选择器（waitFor=selector 时使用）',
 				},
+				notifyTitle: {
+					type: 'string',
+					description: 'notify 操作的通知标题',
+				},
+				notifyMessage: {
+					type: 'string',
+					description: 'notify 操作的通知内容（任务完成的总结）',
+				},
 			},
 			...config,
 		});
@@ -168,6 +180,8 @@ export class BrowserTool extends BaseTool {
 			timeout?: number;
 			waitFor?: string;
 			selector?: string;
+			notifyTitle?: string;
+			notifyMessage?: string;
 		},
 		context: Record<string, unknown> = {}
 	): Promise<unknown> {
@@ -224,8 +238,12 @@ export class BrowserTool extends BaseTool {
 				return await this.evaluate(script);
 			case 'tabs':
 				return await this.listTabs();
+			case 'close_tab':
+				return await this.closeCurrentTab();
 			case 'close':
 				return await this.closeBrowser();
+			case 'notify':
+				return await this.sendNotification(params.notifyTitle, params.notifyMessage);
 			default:
 				throw new Error(`未知操作: ${action}`);
 		}
@@ -270,32 +288,69 @@ export class BrowserTool extends BaseTool {
 					// 忽略
 				}
 
-				// 如果扩展未连接，立即打开浏览器（不要空等），然后轮询
-				// 注意：不要在这里打开 about:blank 页面，让扩展通过 createInitialTab 统一创建
-				// 这样可以避免出现两个 about:blank 标签页
-				if (!status.connected) {
+				// 如果扩展已连接，说明浏览器已经打开（用户手动打开的）
+				if (status.connected) {
+					this.browserOpenedByNutBot = false;
+					this.initialTabCount = status.activeTargets;
+					this.logger.info(`浏览器已在运行（${status.activeTargets} 个标签页）`);
+				} else {
+					// 扩展未连接，先检查浏览器进程是否已经在运行
+					const { execSync } = await import('child_process');
+					const isWindows = process.platform === 'win32';
+					
+					let browserAlreadyRunning = false;
 					try {
-						const { execSync } = await import('child_process');
-						const isWindows = process.platform === 'win32';
-						this.logger.info('扩展未连接，正在打开浏览器...');
-						// 只打开浏览器，不指定 URL，扩展会自动创建标签页
 						if (isWindows) {
-							// Windows: 打开 Edge，不指定 URL（会打开新标签页或恢复上次会话）
-							execSync(`start msedge`, { stdio: 'ignore' });
+							// Windows: 检查 Edge 或 Chrome 进程
+							const result = execSync('tasklist /FI "IMAGENAME eq msedge.exe" /NH', { encoding: 'utf8' });
+							browserAlreadyRunning = result.includes('msedge.exe');
+							if (!browserAlreadyRunning) {
+								const chromeResult = execSync('tasklist /FI "IMAGENAME eq chrome.exe" /NH', { encoding: 'utf8' });
+								browserAlreadyRunning = chromeResult.includes('chrome.exe');
+							}
 						} else if (process.platform === 'darwin') {
-							execSync(`open -a "Google Chrome" || open -a "Microsoft Edge"`, { stdio: 'ignore' });
+							// macOS: 检查浏览器进程
+							const result = execSync('pgrep -x "Google Chrome" || pgrep -x "Microsoft Edge" || true', { encoding: 'utf8' });
+							browserAlreadyRunning = result.trim().length > 0;
 						} else {
-							// Linux: 打开默认浏览器
-							execSync(`xdg-open "http://127.0.0.1:${this.cdpRelayPort}"`, { stdio: 'ignore' });
+							// Linux: 检查浏览器进程
+							const result = execSync('pgrep -x chrome || pgrep -x chromium || pgrep -x microsoft-edge || true', { encoding: 'utf8' });
+							browserAlreadyRunning = result.trim().length > 0;
 						}
 					} catch {
-						// 可能浏览器已打开但扩展未连接
-						this.logger.info('浏览器可能已打开，等待扩展连接...');
+						// 检查失败，假设浏览器未运行
 					}
 
-					// 轮询等待扩展连接（每 1 秒检查，最多 10 秒）
+					if (browserAlreadyRunning) {
+						// 浏览器已在运行，但扩展未连接
+						this.browserOpenedByNutBot = false;
+						this.logger.info('浏览器已在运行但扩展未连接，等待用户点击扩展图标...');
+					} else {
+						// 浏览器未运行，需要打开
+						this.logger.info('扩展未连接，正在打开浏览器...');
+						this.browserOpenedByNutBot = true; // 标记浏览器是由 NutBot 打开的
+						
+						try {
+							// 只打开浏览器，不指定 URL，扩展会自动创建标签页
+							if (isWindows) {
+								// Windows: 打开 Edge
+								execSync(`start msedge`, { stdio: 'ignore' });
+							} else if (process.platform === 'darwin') {
+								execSync(`open -a "Google Chrome" || open -a "Microsoft Edge"`, { stdio: 'ignore' });
+							} else {
+								// Linux: 打开默认浏览器
+								execSync(`xdg-open "http://127.0.0.1:${this.cdpRelayPort}"`, { stdio: 'ignore' });
+							}
+						} catch {
+							// 打开失败
+							this.browserOpenedByNutBot = false;
+							this.logger.info('打开浏览器失败');
+						}
+					}
+
+					// 轮询等待扩展连接（每 1 秒检查，最多 15 秒）
 					const pollInterval = 1000;
-					const pollUntil = Date.now() + 10000;
+					const pollUntil = Date.now() + 15000;
 					while (Date.now() < pollUntil && !status.connected) {
 						await new Promise((r) => setTimeout(r, pollInterval));
 						try {
@@ -307,6 +362,9 @@ export class BrowserTool extends BaseTool {
 							// 忽略
 						}
 					}
+					
+					// 记录连接时的初始标签页数量
+					this.initialTabCount = status.activeTargets;
 				}
 
 				if (!status.connected) {
@@ -939,72 +997,209 @@ export class BrowserTool extends BaseTool {
 		return { success: true, tabs };
 	}
 
+	/**
+	 * 发送浏览器通知（通过扩展）
+	 */
+	private async sendNotification(
+		title?: string,
+		message?: string
+	): Promise<{ success: boolean; message: string }> {
+		if (!message) {
+			return { success: false, message: 'notify 操作需要 notifyMessage 参数' };
+		}
+
+		// 只有扩展模式支持通知
+		if (this.mode !== 'extension') {
+			this.logger.warn('通知功能仅在扩展模式下可用');
+			return { success: false, message: '通知功能仅在扩展模式下可用' };
+		}
+
+		try {
+			const relayUrl = `http://127.0.0.1:${this.cdpRelayPort}`;
+			const response = await fetch(`${relayUrl}/notify`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					title: title || 'NutBot 任务完成',
+					message,
+				}),
+				signal: AbortSignal.timeout(5000),
+			});
+
+			if (response.ok) {
+				const result = await response.json() as { success?: boolean };
+				if (result.success) {
+					this.logger.info(`已发送通知: ${title || 'NutBot'}`);
+					return { success: true, message: '通知已发送' };
+				}
+			}
+
+			return { success: false, message: '发送通知失败' };
+		} catch (error) {
+			this.logger.warn(`发送通知失败: ${(error as Error).message}`);
+			return { success: false, message: `发送通知失败: ${(error as Error).message}` };
+		}
+	}
+
+	/**
+	 * 关闭当前标签页（不关闭整个浏览器）
+	 */
+	private async closeCurrentTab(): Promise<{ success: boolean; message: string }> {
+		if (!this.page || this.page.isClosed()) {
+			return { success: true, message: '没有需要关闭的标签页' };
+		}
+
+		const url = this.page.url();
+		this.logger.info(`关闭当前标签页: ${url}`);
+
+		// 扩展模式下通过 CDP 关闭标签页
+		if (this.mode === 'extension') {
+			try {
+				const browser = this.page.context().browser();
+				if (browser) {
+					const cdpSession = await browser.newBrowserCDPSession();
+					const { targetInfos } = (await cdpSession.send('Target.getTargets')) as {
+						targetInfos: Array<{ targetId: string; url: string; type: string }>;
+					};
+
+					const target = targetInfos.find((t) => t.url === url && t.type === 'page');
+					if (target) {
+						// 不带 closeBrowser 参数，只关闭标签页
+						await cdpSession.send('Target.closeTarget', {
+							targetId: target.targetId,
+						});
+						this.logger.info(`标签页已关闭: ${url}`);
+					}
+				}
+			} catch (e) {
+				this.logger.debug(`通过 CDP 关闭标签页失败: ${(e as Error).message}`);
+				// 尝试直接关闭
+				try {
+					await this.page.close();
+				} catch {
+					// 忽略
+				}
+			}
+		} else {
+			// 非扩展模式直接关闭页面
+			try {
+				await this.page.close();
+			} catch {
+				// 忽略
+			}
+		}
+
+		// 从 managedPages 移除
+		this.managedPages.delete(this.page);
+		
+		// 切换到其他标签页（如果有）
+		if (this.context) {
+			const pages = this.context.pages();
+			if (pages.length > 0) {
+				this.page = pages[pages.length - 1];
+				try {
+					await this.page.bringToFront();
+				} catch {
+					// 忽略
+				}
+			} else {
+				this.page = null;
+			}
+		} else {
+			this.page = null;
+		}
+
+		this.elementRefs.clear();
+		return { success: true, message: `已关闭标签页: ${url}` };
+	}
+
 	private async closeBrowser(): Promise<{ success: boolean; message: string }> {
 		let closedTabs = 0;
 		let closedWindow = false;
 
-		// 扩展模式下：关闭浏览器窗口
+		// 扩展模式下：根据情况决定关闭方式
 		if (this.mode === 'extension') {
-			// 通过 Target.closeTarget 关闭浏览器（让扩展调用 chrome.windows.remove）
-			const closeBrowserViaExtension = async (page: Page): Promise<boolean> => {
+			// 关闭单个标签页的辅助函数
+			const closeTabViaExtension = async (page: Page, closeBrowserWindow = false): Promise<boolean> => {
 				try {
 					const url = page.url();
-					this.logger.info(`正在关闭浏览器: ${url}`);
+					this.logger.info(`正在关闭标签页: ${url}`);
 
-					// 获取 browser 对象发送 Target.closeTarget
 					const browser = page.context().browser();
 					if (browser) {
 						try {
-							// 通过 browser CDP session 获取 targets 并关闭
 							const cdpSession = await browser.newBrowserCDPSession();
-
-							// 获取所有 targets
 							const { targetInfos } = (await cdpSession.send('Target.getTargets')) as {
 								targetInfos: Array<{ targetId: string; url: string; type: string }>;
 							};
 
-							// 找到匹配 URL 的 target
 							const target = targetInfos.find((t) => t.url === url && t.type === 'page');
 							if (target) {
-								// 发送关闭命令，带上 closeBrowser: true 来关闭整个窗口
 								await cdpSession.send('Target.closeTarget', {
 									targetId: target.targetId,
-									closeBrowser: true, // 告诉扩展关闭整个浏览器窗口
+									closeBrowser: closeBrowserWindow, // 只有需要关闭整个浏览器时才为 true
 								});
-								this.logger.info(`已通过扩展关闭浏览器窗口`);
+								this.logger.info(closeBrowserWindow ? `已关闭浏览器窗口` : `已关闭标签页: ${url}`);
 								return true;
-							} else {
-								this.logger.debug(`未找到匹配的 target: ${url}`);
 							}
 						} catch (cdpError) {
-							this.logger.debug(`关闭浏览器失败: ${(cdpError as Error).message}`);
+							this.logger.debug(`关闭失败: ${(cdpError as Error).message}`);
 						}
 					}
-
 					return false;
 				} catch (e) {
-					this.logger.debug(`关闭浏览器时出错: ${(e as Error).message}`);
+					this.logger.debug(`关闭时出错: ${(e as Error).message}`);
 					return false;
 				}
 			};
 
-			// 关闭当前正在操作的页面所在的浏览器窗口
-			if (this.page && !this.page.isClosed()) {
-				if (await closeBrowserViaExtension(this.page)) {
-					closedTabs++;
-					closedWindow = true;
+			// 决定关闭策略：恢复原状
+			if (this.browserOpenedByNutBot) {
+				// 浏览器是 NutBot 打开的 → 关闭整个浏览器
+				this.logger.info('浏览器由 NutBot 启动，将关闭整个浏览器');
+				if (this.page && !this.page.isClosed()) {
+					if (await closeTabViaExtension(this.page, true)) {
+						closedWindow = true;
+					}
+				}
+			} else {
+				// 浏览器是用户已经打开的 → 只关闭 NutBot 打开的标签页
+				this.logger.info(`浏览器已在运行，只关闭 NutBot 打开的 ${this.managedPages.size} 个标签页`);
+				
+				// 关闭所有 NutBot 管理的标签页
+				for (const page of this.managedPages) {
+					if (!page.isClosed()) {
+						if (await closeTabViaExtension(page, false)) {
+							closedTabs++;
+						}
+					}
+				}
+				
+				// 如果当前页面不在 managedPages 中但是是 about:blank，也关闭
+				if (this.page && !this.page.isClosed() && !this.managedPages.has(this.page)) {
+					const url = this.page.url();
+					if (url === 'about:blank' || url === '') {
+						if (await closeTabViaExtension(this.page, false)) {
+							closedTabs++;
+						}
+					}
 				}
 			}
 
 			this.managedPages.clear();
 		}
 
+		// 保存状态用于最后的消息
+		const wasOpenedByNutBot = this.browserOpenedByNutBot;
+		
 		// 清理状态
 		this.page = null;
 		this.elementRefs.clear();
 		this.initialPageUrl = null;
+		this.browserOpenedByNutBot = false;
+		this.initialTabCount = 0;
 
-		// 扩展模式下：优先通过 CDP 关闭，失败则用系统命令
+		// 扩展模式下：断开 CDP 连接
 		if (this.mode === 'extension') {
 			if (this.context) {
 				// 只断开 Playwright 连接，不调用 context.close()（那样会关闭所有页面）
@@ -1024,8 +1219,8 @@ export class BrowserTool extends BaseTool {
 				this.browser = null;
 			}
 
-			// 如果 CDP 关闭失败（closedTabs === 0），使用系统命令关闭浏览器
-			if (closedTabs === 0 && !closedWindow) {
+			// 只有在浏览器是 NutBot 打开的且 CDP 关闭失败时，才使用系统命令关闭浏览器
+			if (wasOpenedByNutBot && closedTabs === 0 && !closedWindow) {
 				this.logger.info('CDP 关闭失败，尝试使用系统命令关闭浏览器...');
 				const { exec } = await import('child_process');
 				const { promisify } = await import('util');
@@ -1048,7 +1243,6 @@ export class BrowserTool extends BaseTool {
 
 					if (process.platform === 'win32') {
 						// Windows: 尝试关闭所有常见浏览器进程
-						const processes = browsers.win.join(',');
 						await execAsync(
 							`powershell -Command "${browsers.win.map((b) => `Stop-Process -Name ${b} -Force -ErrorAction SilentlyContinue`).join('; ')}"`
 						);
@@ -1078,11 +1272,17 @@ export class BrowserTool extends BaseTool {
 				}
 			}
 
-			this.logger.info(`已关闭 ${closedTabs} 个标签页并断开连接`);
-			return {
-				success: true,
-				message: closedTabs > 0 ? `已关闭 ${closedTabs} 个标签页` : '浏览器连接已断开',
-			};
+			// 生成结果消息
+			if (closedWindow) {
+				this.logger.info('已关闭浏览器窗口');
+				return { success: true, message: '浏览器已关闭' };
+			} else if (closedTabs > 0) {
+				this.logger.info(`已关闭 ${closedTabs} 个标签页并断开连接`);
+				return { success: true, message: `已关闭 ${closedTabs} 个 NutBot 打开的标签页，浏览器保持运行` };
+			} else {
+				this.logger.info('已断开连接，浏览器保持运行');
+				return { success: true, message: '已断开连接，浏览器保持运行' };
+			}
 		}
 
 		// 非扩展模式：完全关闭浏览器

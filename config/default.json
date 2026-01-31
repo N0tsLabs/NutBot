@@ -18,7 +18,9 @@
 		"maxIterations": 20,
 		"timeout": 300000,
 		"systemPrompt": null,
-		"debugMode": false
+		"debugMode": false,
+		"temperature": null,
+		"maxTokens": null
 	},
 	"network": {
 		"timeout": 60000,
@@ -56,7 +58,7 @@
 	},
 	"mcp": {
 		"enabled": true,
-		"port": 18801
+		"servers": []
 	},
 	"ocr": {
 		"enabled": true,
@@ -74,7 +76,8 @@
 	"skills": {
 		"enabled": true,
 		"directory": "./skills",
-		"autoload": true
+		"autoload": true,
+		"includeInPrompt": true
 	},
 	"logging": {
 		"level": "info",

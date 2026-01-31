@@ -40,6 +40,35 @@ yarn dev
 
 配置文件位于 `~/.nutbot/config.json`。
 
+### MCP（Model Context Protocol）
+
+在 `config.json` 的 `mcp.servers` 中配置 MCP 服务端，NutBot 会连接并自动注册其工具（以 `mcp_<服务名>_<工具名>` 形式供 Agent 调用）。
+
+```json
+"mcp": {
+  "enabled": true,
+  "servers": [
+    { "name": "filesystem", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed"] },
+    { "name": "web", "url": "https://your-mcp-server.com/sse" }
+  ]
+}
+```
+
+- **stdio**：`command` + `args`（可选 `env`）
+- **HTTP/SSE**：`url`
+
+### Skills
+
+在 `config.json` 的 `skills.directory`（默认 `./skills`）下放置 `.md` 或 `.json` 技能文件，启动时自动加载并注入到 Agent 的 system prompt。
+
+- `.md`：文件名作为技能名，内容作为 prompt 片段
+- `.json`：`{ "name", "description?", "prompt" }` 或数组
+
+### Agent 配置
+
+`config.json` 的 `agent` 支持：`defaultModel`、`systemPrompt`、`maxIterations`、`timeout`、`debugMode`、`temperature`、`maxTokens`。  
+也可通过 API `GET/PUT /api/agent` 读写。
+
 ## 使用示例
 
 ```

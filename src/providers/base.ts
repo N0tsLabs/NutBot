@@ -230,6 +230,8 @@ export abstract class BaseProvider {
 	): Promise<T | ReadableStream<Uint8Array>> {
 		const url = `${this.baseUrl}${endpoint}`;
 		const { method = 'POST', stream = false } = options;
+		
+		this.logger.info(`[请求] ${method} ${url}`);
 
 		const headers: Record<string, string> = {
 			'Content-Type': 'application/json',

@@ -18,57 +18,52 @@
 
 		<!-- 右侧内容区 -->
 		<main class="settings-content" ref="contentRef">
-			<!-- 快速设置 -->
-			<section id="quick" class="settings-section">
+			<!-- Agent 配置（单独设置） -->
+			<section id="agent" class="settings-section">
 				<h2 class="section-title">
-					<span>⚡</span>
-					快速设置
+					<span>🎯</span>
+					Agent
 				</h2>
-				<div class="settings-grid">
-					<!-- 当前模型 -->
-					<div class="setting-item current-model-item">
-						<div class="setting-header">
-							<span class="setting-label">当前模型</span>
-							<select v-model="defaultModel" class="input-sm model-select" @change="onModelChange">
-								<option value="" disabled>选择模型</option>
-								<optgroup v-for="provider in store.providers" :key="provider.id" :label="provider.name || provider.id">
-									<option
-										v-for="model in provider.models"
-										:key="`${provider.id}/${model}`"
-										:value="`${provider.id}/${model}`"
-									>
-										{{ model }}{{ modelVisionSupport[`${provider.id}/${model}`] ? ' 👁️' : '' }}
-									</option>
-								</optgroup>
-							</select>
-						</div>
-						<p class="setting-desc">对话使用的 AI 模型，👁️ 表示支持图像</p>
+				<p class="section-desc">Agent 默认模型、系统提示、迭代与超时等</p>
+				<div class="settings-grid cols-2">
+					<div class="setting-item">
+						<label class="setting-label">默认模型</label>
+						<select v-model="agentConfig.defaultModel" class="input-sm" @change="saveAgentConfig">
+							<option value="">未设置（由对话选择）</option>
+							<option v-for="modelRef in enabledModelsList" :key="modelRef" :value="modelRef">
+								{{ getModelDisplayName(modelRef) }}{{ modelVisionSupport[modelRef] ? ' 👁️' : '' }}
+							</option>
+						</select>
 					</div>
-					
-					<!-- 调试模式 -->
+					<div class="setting-item">
+						<label class="setting-label">最大迭代次数</label>
+						<input v-model.number="agentConfig.maxIterations" type="number" min="1" max="100" class="input-sm" @blur="saveAgentConfig" />
+					</div>
+					<div class="setting-item">
+						<label class="setting-label">超时 (ms)</label>
+						<input v-model.number="agentConfig.timeout" type="number" min="60000" step="60000" class="input-sm" @blur="saveAgentConfig" />
+					</div>
+					<div class="setting-item">
+						<label class="setting-label">Temperature</label>
+						<input v-model.number="agentConfig.temperature" type="number" min="0" max="2" step="0.1" placeholder="未设置" class="input-sm" @blur="saveAgentConfig" />
+					</div>
+					<div class="setting-item">
+						<label class="setting-label">Max Tokens</label>
+						<input v-model.number="agentConfig.maxTokens" type="number" min="100" placeholder="未设置" class="input-sm" @blur="saveAgentConfig" />
+					</div>
 					<div class="setting-item">
 						<div class="setting-header">
 							<span class="setting-label">调试模式</span>
 							<label class="switch">
-								<input type="checkbox" v-model="debugMode" @change="saveDebugMode" />
+								<input type="checkbox" v-model="agentConfig.debugMode" @change="saveAgentConfig" />
 								<span class="slider"></span>
 							</label>
 						</div>
-						<p class="setting-desc">开启后每步操作需确认，图片保存到 ~/.nutbot/debug</p>
 					</div>
-					
-					<!-- 沙盒模式 -->
-					<div class="setting-item">
-						<div class="setting-header">
-							<span class="setting-label">沙盒模式</span>
-							<select v-model="sandboxMode" class="input-sm" @change="saveSandboxMode">
-								<option value="trust">🚀 信任</option>
-								<option value="standard">⚖️ 标准</option>
-								<option value="strict">🔒 严格</option>
-							</select>
-						</div>
-						<p class="setting-desc">控制 AI 执行敏感操作的权限</p>
-					</div>
+				</div>
+				<div class="setting-item full-width mt-3">
+					<label class="setting-label">系统提示覆盖 (可选)</label>
+					<textarea v-model="agentConfig.systemPrompt" placeholder="留空使用内置 prompt；填写则完全替换" class="input-sm h-24 resize-none font-mono" @blur="saveAgentConfig"></textarea>
 				</div>
 			</section>
 
@@ -121,11 +116,19 @@
 									v-for="model in filterModels(provider)"
 									:key="model"
 									class="model-item"
-									:class="{ 'is-default': isDefaultModel(provider.id, model) }"
+									:class="{ 'is-enabled': isModelEnabled(provider.id, model) }"
 								>
+									<label class="model-checkbox">
+										<input 
+											type="checkbox" 
+											:checked="isModelEnabled(provider.id, model)"
+											@change="toggleModelEnabled(provider.id, model)"
+										/>
+										<span class="checkmark"></span>
+									</label>
 									<span class="model-name" :title="model">{{ model }}</span>
 									<div class="model-badges">
-										<span v-if="isDefaultModel(provider.id, model)" class="badge badge-blue">默认</span>
+										<span v-if="isModelEnabled(provider.id, model)" class="badge badge-blue">已启用</span>
 										<span v-if="modelVisionSupport[`${provider.id}/${model}`]" class="badge badge-green">图像</span>
 									</div>
 									<div class="model-actions">
@@ -135,7 +138,6 @@
 										<button @click="testVision(provider.id, model)" :disabled="loadingStates[`vision-${provider.id}/${model}`]" class="btn-xs">
 											{{ loadingStates[`vision-${provider.id}/${model}`] ? '...' : '图像' }}
 										</button>
-										<button v-if="!isDefaultModel(provider.id, model)" @click="setDefaultModel(provider.id, model)" class="btn-xs btn-primary">默认</button>
 										<button @click="removeModel(provider.id, model)" class="btn-xs btn-danger">×</button>
 									</div>
 								</div>
@@ -149,6 +151,135 @@
 					<div v-if="store.providers.length === 0" class="empty-state">
 						<p>还没有配置 AI Provider</p>
 						<button @click="showProviderModal = true; resetProviderForm()" class="btn-sm btn-primary mt-3">+ 添加 Provider</button>
+					</div>
+				</div>
+			</section>
+
+			<!-- MCP（单独设置，支持 JSON 编辑） -->
+			<section id="mcp" class="settings-section">
+				<h2 class="section-title">
+					<span>🔌</span>
+					MCP (Model Context Protocol)
+				</h2>
+				<p class="section-desc">配置 MCP 服务端后，其工具会以 mcp_&lt;服务名&gt;_&lt;工具名&gt; 形式供 Agent 调用</p>
+				<div class="settings-grid">
+					<div class="setting-item">
+						<div class="setting-header">
+							<span class="setting-label">启用 MCP</span>
+							<label class="switch">
+								<input type="checkbox" v-model="mcpConfig.enabled" @change="saveMcpConfig" />
+								<span class="slider"></span>
+							</label>
+						</div>
+					</div>
+				</div>
+				<div class="setting-item full-width mt-3 mcp-json-block">
+					<div class="setting-header mb-2">
+						<label class="setting-label">Servers（JSON 编辑）</label>
+						<div class="flex gap-2 items-center">
+							<button type="button" @click="formatMcpJson" class="btn-sm">格式化 JSON</button>
+							<button type="button" @click="saveMcpServersJson" class="btn-sm btn-primary">保存</button>
+						</div>
+					</div>
+					<textarea
+						v-model="mcpServersJson"
+						placeholder='[{"name":"fs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/path"]}]'
+						class="input-sm mcp-json-textarea resize-y font-mono"
+						spellcheck="false"
+						@blur="saveMcpServersJson"
+					></textarea>
+					<p class="setting-hint">每项: name(必填), command+args(stdio) 或 url(HTTP/SSE)。失焦或点击保存写入配置。</p>
+					<p v-if="mcpJsonError" class="setting-hint text-red-400">{{ mcpJsonError }}</p>
+				</div>
+			</section>
+
+			<!-- Skills -->
+			<section id="skills" class="settings-section">
+				<h2 class="section-title">
+					<span>📚</span>
+					Skills
+				</h2>
+				<p class="section-desc">从目录加载 .md/.json 技能文件，并注入到 Agent 系统提示</p>
+				<div class="settings-grid cols-2">
+					<div class="setting-item">
+						<label class="setting-label">启用</label>
+						<label class="switch">
+							<input type="checkbox" v-model="skillsConfig.enabled" @change="saveSkillsConfig" />
+							<span class="slider"></span>
+						</label>
+					</div>
+					<div class="setting-item">
+						<label class="setting-label">注入到 Prompt</label>
+						<label class="switch">
+							<input type="checkbox" v-model="skillsConfig.includeInPrompt" @change="saveSkillsConfig" />
+							<span class="slider"></span>
+						</label>
+					</div>
+					<div class="setting-item full-width">
+						<label class="setting-label">技能目录</label>
+						<input v-model="skillsConfig.directory" placeholder="./skills" class="input-sm" @blur="saveSkillsConfig" />
+						<p class="setting-hint">相对配置目录，如 ./skills</p>
+					</div>
+				</div>
+				<div v-if="skillsLoaded.length" class="mt-3">
+					<span class="setting-label">已加载 ({{ skillsLoaded.length }})</span>
+					<ul class="skills-loaded-list">
+						<li v-for="s in skillsLoaded" :key="s.name">{{ s.name }}{{ s.description ? ` — ${s.description}` : '' }}</li>
+					</ul>
+				</div>
+			</section>
+
+			<!-- 快速设置 -->
+			<section id="quick" class="settings-section">
+				<h2 class="section-title">
+					<span>⚡</span>
+					快速设置
+				</h2>
+				<div class="settings-grid">
+					<!-- 当前模型 -->
+					<div class="setting-item current-model-item">
+						<div class="setting-header">
+							<span class="setting-label">当前模型</span>
+							<select v-model="defaultModel" class="input-sm model-select" @change="onModelChange">
+								<option value="" disabled>选择模型</option>
+								<template v-if="enabledModelsList.length > 0">
+									<option
+										v-for="modelRef in enabledModelsList"
+										:key="modelRef"
+										:value="modelRef"
+									>
+										{{ getModelDisplayName(modelRef) }}{{ modelVisionSupport[modelRef] ? ' 👁️' : '' }}
+									</option>
+								</template>
+								<option v-else value="" disabled>请先在下方启用模型</option>
+							</select>
+						</div>
+						<p class="setting-desc">对话使用的 AI 模型，👁️ 表示支持图像</p>
+					</div>
+					
+					<!-- 调试模式 -->
+					<div class="setting-item">
+						<div class="setting-header">
+							<span class="setting-label">调试模式</span>
+							<label class="switch">
+								<input type="checkbox" v-model="debugMode" @change="saveDebugMode" />
+								<span class="slider"></span>
+							</label>
+						</div>
+						<p class="setting-desc">开启后每步操作需确认，图片保存到 ~/.nutbot/debug</p>
+					</div>
+					
+					<!-- 沙盒模式 -->
+					<div class="setting-item">
+						<div class="setting-header">
+							<span class="setting-label">沙盒模式</span>
+							<select v-model="sandboxMode" class="input-sm" @change="saveSandboxMode">
+								<option value="trust">🚀 信任</option>
+								<option value="standard">⚖️ 标准</option>
+								<option value="strict">🔒 严格</option>
+							</select>
+						</div>
+						<p class="setting-desc">控制 AI 执行敏感操作的权限</p>
 					</div>
 				</div>
 			</section>
@@ -399,16 +530,19 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, nextTick } from 'vue';
+import { ref, reactive, computed, onMounted, nextTick } from 'vue';
 import { useAppStore } from '../stores/app';
 import api from '../utils/api';
 
 const store = useAppStore();
 const contentRef = ref(null);
-const activeCategory = ref('quick');
+const activeCategory = ref('agent');
 
-// 分类导航
+// 分类导航：Agent / MCP / Skills 单独放最前
 const categories = [
+	{ id: 'agent', icon: '🎯', label: 'Agent' },
+	{ id: 'mcp', icon: '🔌', label: 'MCP' },
+	{ id: 'skills', icon: '📚', label: 'Skills' },
 	{ id: 'quick', icon: '⚡', label: '快速设置' },
 	{ id: 'provider', icon: '🤖', label: 'AI Provider' },
 	{ id: 'ocr', icon: '👁️', label: 'OCR-SoM' },
@@ -442,11 +576,52 @@ const modelVisionSupport = reactive({});
 
 // 配置
 const defaultModel = ref('');
+const enabledModels = ref([]); // 启用的模型列表
 const sandboxMode = ref('standard');
 const debugMode = ref(false);
 const config = reactive({
 	server: { host: '127.0.0.1', port: 18800 },
 });
+
+// 计算启用的模型列表（用于下拉框）
+const enabledModelsList = computed(() => {
+	return enabledModels.value || [];
+});
+
+// 获取模型显示名称
+const getModelDisplayName = (modelRef) => {
+	if (!modelRef) return '';
+	const [providerId, ...modelParts] = modelRef.split('/');
+	const modelName = modelParts.join('/');
+	const provider = store.providers.find(p => p.id === providerId);
+	const providerName = provider?.name || providerId;
+	return `${modelName} (${providerName})`;
+};
+
+// Agent 配置
+const agentConfig = reactive({
+	defaultModel: null,
+	systemPrompt: '',
+	maxIterations: 20,
+	timeout: 300000,
+	debugMode: false,
+	temperature: null,
+	maxTokens: null,
+});
+
+// MCP 配置
+const mcpConfig = reactive({ enabled: true });
+const mcpServersJson = ref('[]');
+const mcpJsonError = ref('');
+
+// Skills 配置
+const skillsConfig = reactive({
+	enabled: true,
+	directory: './skills',
+	autoload: true,
+	includeInPrompt: true,
+});
+const skillsLoaded = ref([]);
 
 // OCR-SoM 配置
 const ocrConfig = reactive({
@@ -661,11 +836,35 @@ const testVision = async (providerId, model) => {
 	}
 };
 
-const setDefaultModel = async (providerId, model) => {
+// 检查模型是否启用
+const isModelEnabled = (providerId, model) => {
 	const modelRef = `${providerId}/${model}`;
+	return enabledModels.value.includes(modelRef);
+};
+
+// 切换模型启用状态
+const toggleModelEnabled = async (providerId, model) => {
+	const modelRef = `${providerId}/${model}`;
+	let newEnabledModels = [...enabledModels.value];
+	
+	if (newEnabledModels.includes(modelRef)) {
+		// 禁用模型
+		newEnabledModels = newEnabledModels.filter(m => m !== modelRef);
+		// 如果禁用的是当前选中的模型，清空选择或选择第一个可用的
+		if (defaultModel.value === modelRef) {
+			defaultModel.value = newEnabledModels[0] || '';
+		}
+	} else {
+		// 启用模型
+		newEnabledModels.push(modelRef);
+	}
+	
 	try {
-		await api.put('/api/config', { 'agent.defaultModel': modelRef });
-		defaultModel.value = modelRef;
+		await api.put('/api/config', { 
+			'agent.enabledModels': newEnabledModels,
+			'agent.defaultModel': defaultModel.value
+		});
+		enabledModels.value = newEnabledModels;
 		await store.loadConfig();
 	} catch (error) {
 		alert('设置失败: ' + error.message);
@@ -683,10 +882,6 @@ const onModelChange = async () => {
 	}
 };
 
-const isDefaultModel = (providerId, model) => {
-	return defaultModel.value === `${providerId}/${model}`;
-};
-
 // ========== 其他设置 ==========
 
 const saveSandboxMode = async () => {
@@ -702,6 +897,128 @@ const saveDebugMode = async () => {
 		await api.put('/api/config', { 'agent.debugMode': debugMode.value });
 	} catch (error) {
 		console.error('Save debug mode failed:', error);
+	}
+};
+
+// ========== Agent 设置 ==========
+
+const loadAgentConfig = async () => {
+	try {
+		const data = await api.get('/api/agent');
+		agentConfig.defaultModel = data.defaultModel ?? '';
+		agentConfig.systemPrompt = data.systemPrompt ?? '';
+		agentConfig.maxIterations = data.maxIterations ?? 20;
+		agentConfig.timeout = data.timeout ?? 300000;
+		agentConfig.debugMode = data.debugMode ?? false;
+		agentConfig.temperature = data.temperature ?? null;
+		agentConfig.maxTokens = data.maxTokens ?? null;
+	} catch (e) {
+		console.error('Load agent config failed:', e);
+	}
+};
+
+const saveAgentConfig = async () => {
+	try {
+		await api.put('/api/agent', {
+			defaultModel: (agentConfig.defaultModel && String(agentConfig.defaultModel).trim()) ? agentConfig.defaultModel : null,
+			systemPrompt: (agentConfig.systemPrompt && String(agentConfig.systemPrompt).trim()) ? agentConfig.systemPrompt : null,
+			maxIterations: agentConfig.maxIterations,
+			timeout: agentConfig.timeout,
+			debugMode: agentConfig.debugMode,
+			temperature: agentConfig.temperature ?? null,
+			maxTokens: agentConfig.maxTokens ?? null,
+		});
+		debugMode.value = agentConfig.debugMode;
+		defaultModel.value = agentConfig.defaultModel || '';
+		await store.loadConfig();
+	} catch (e) {
+		console.error('Save agent config failed:', e);
+	}
+};
+
+// ========== MCP 设置 ==========
+
+const loadMcpConfig = async () => {
+	try {
+		const data = await api.get('/api/mcp');
+		mcpConfig.enabled = data.enabled ?? true;
+		mcpServersJson.value = JSON.stringify(data.servers ?? [], null, 2);
+		mcpJsonError.value = '';
+	} catch (e) {
+		console.error('Load MCP config failed:', e);
+	}
+};
+
+const saveMcpConfig = async () => {
+	try {
+		await api.put('/api/mcp', { enabled: mcpConfig.enabled });
+	} catch (e) {
+		console.error('Save MCP config failed:', e);
+	}
+};
+
+const formatMcpJson = () => {
+	mcpJsonError.value = '';
+	try {
+		const parsed = JSON.parse(mcpServersJson.value || '[]');
+		if (!Array.isArray(parsed)) {
+			mcpJsonError.value = '必须是 JSON 数组';
+			return;
+		}
+		mcpServersJson.value = JSON.stringify(parsed, null, 2);
+	} catch (e) {
+		mcpJsonError.value = 'JSON 格式错误: ' + (e.message || '');
+	}
+};
+
+const saveMcpServersJson = async () => {
+	mcpJsonError.value = '';
+	let servers;
+	try {
+		servers = JSON.parse(mcpServersJson.value || '[]');
+	} catch (e) {
+		mcpJsonError.value = 'JSON 格式错误: ' + (e.message || '');
+		return;
+	}
+	if (!Array.isArray(servers)) {
+		mcpJsonError.value = '必须是 JSON 数组';
+		return;
+	}
+	try {
+		await api.put('/api/mcp', { servers });
+	} catch (e) {
+		mcpJsonError.value = '保存失败: ' + (e.message || '');
+	}
+};
+
+// ========== Skills 设置 ==========
+
+const loadSkillsConfig = async () => {
+	try {
+		const data = await api.get('/api/skills');
+		skillsConfig.enabled = data.enabled ?? true;
+		skillsConfig.directory = data.directory ?? './skills';
+		skillsConfig.autoload = data.autoload ?? true;
+		skillsConfig.includeInPrompt = data.includeInPrompt ?? true;
+		skillsLoaded.value = data.loaded ?? [];
+	} catch (e) {
+		console.error('Load skills config failed:', e);
+	}
+};
+
+const saveSkillsConfig = async () => {
+	try {
+		await api.put('/api/skills', {
+			enabled: skillsConfig.enabled,
+			directory: skillsConfig.directory,
+			autoload: skillsConfig.autoload,
+			includeInPrompt: skillsConfig.includeInPrompt,
+		});
+		// 重新拉取以更新 loaded 列表
+		const data = await api.get('/api/skills');
+		skillsLoaded.value = data.loaded ?? [];
+	} catch (e) {
+		console.error('Save skills config failed:', e);
 	}
 };
 
@@ -837,10 +1154,14 @@ onMounted(async () => {
 	await loadUserSettings();
 	await loadMemories();
 	await loadOcrConfig();
+	await loadAgentConfig();
+	await loadMcpConfig();
+	await loadSkillsConfig();
 
-	defaultModel.value = store.config.agent?.defaultModel || '';
+	defaultModel.value = agentConfig.defaultModel || store.config.agent?.defaultModel || '';
+	enabledModels.value = store.config.agent?.enabledModels || [];
 	sandboxMode.value = store.config.sandbox?.mode || 'permissive';
-	debugMode.value = store.config.agent?.debugMode || false;
+	debugMode.value = agentConfig.debugMode ?? store.config.agent?.debugMode ?? false;
 	Object.assign(config.server, store.config.server || {});
 
 	for (const provider of store.providers) {
@@ -848,6 +1169,11 @@ onMounted(async () => {
 		for (const model of visionModels) {
 			modelVisionSupport[`${provider.id}/${model}`] = true;
 		}
+	}
+
+	// 如果没有启用任何模型，但有默认模型，自动将默认模型加入启用列表
+	if (enabledModels.value.length === 0 && defaultModel.value) {
+		enabledModels.value = [defaultModel.value];
 	}
 
 	if (ocrConfig.enabled) {
@@ -1153,9 +1479,61 @@ onMounted(async () => {
 	font-size: 12px;
 }
 
-.model-item.is-default {
+.model-item.is-enabled {
 	background-color: var(--accent-subtle);
 	border: 1px solid var(--accent);
+}
+
+/* 模型复选框 */
+.model-checkbox {
+	position: relative;
+	display: flex;
+	align-items: center;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+
+.model-checkbox input {
+	position: absolute;
+	opacity: 0;
+	cursor: pointer;
+	height: 0;
+	width: 0;
+}
+
+.model-checkbox .checkmark {
+	height: 16px;
+	width: 16px;
+	background-color: var(--bg-input);
+	border: 1px solid var(--border-color);
+	border-radius: 4px;
+	transition: all 0.15s;
+}
+
+.model-checkbox:hover .checkmark {
+	border-color: var(--accent);
+}
+
+.model-checkbox input:checked ~ .checkmark {
+	background-color: var(--accent);
+	border-color: var(--accent);
+}
+
+.model-checkbox .checkmark:after {
+	content: "";
+	position: absolute;
+	display: none;
+	left: 5px;
+	top: 2px;
+	width: 4px;
+	height: 8px;
+	border: solid white;
+	border-width: 0 2px 2px 0;
+	transform: rotate(45deg);
+}
+
+.model-checkbox input:checked ~ .checkmark:after {
+	display: block;
 }
 
 .model-name {
@@ -1602,5 +1980,30 @@ input:checked + .slider:before {
 .model-select {
 	min-width: 200px;
 	font-weight: 500;
+}
+
+.skills-loaded-list {
+	margin: 8px 0 0;
+	padding-left: 20px;
+	font-size: 12px;
+	color: var(--text-secondary);
+}
+
+.skills-loaded-list li {
+	margin: 4px 0;
+}
+
+.font-mono {
+	font-family: ui-monospace, monospace;
+}
+
+.h-24 { height: 96px; }
+.h-40 { height: 160px; }
+.resize-y { resize: vertical; }
+
+.mb-2 { margin-bottom: 8px; }
+.mcp-json-block .mcp-json-textarea {
+	min-height: 200px;
+	height: 200px;
 }
 </style>

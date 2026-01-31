@@ -233,6 +233,35 @@ async function connect(): Promise<void> {
       }
     }
 
+    // 显示系统通知
+    if (message.method === 'showNotification' && typeof message.id === 'number') {
+      try {
+        const params = message.params as { title?: string; message?: string; iconUrl?: string };
+        const notificationId = `nutbot-${Date.now()}`;
+        
+        await chrome.notifications.create(notificationId, {
+          type: 'basic',
+          iconUrl: params.iconUrl || 'icons/icon-green-128.png',
+          title: params.title || 'NutBot',
+          message: params.message || '',
+          priority: 2,
+        });
+        
+        logger.info(`已显示通知: ${params.title}`);
+        sendMessage({
+          id: message.id,
+          result: { success: true, notificationId },
+        });
+      } catch (error) {
+        logger.error('显示通知失败:', error);
+        sendMessage({
+          id: message.id,
+          error: error instanceof Error ? error.message : '显示通知失败',
+        });
+      }
+      return;
+    }
+
     // 自动创建初始标签页：NutBot 需要浏览器时，无已附加标签页则自动创建
     if (message.method === 'createInitialTab' && typeof message.id === 'number') {
       try {

@@ -159,6 +159,7 @@ export class ToolRegistry {
 	private gateway: Gateway;
 	private tools: Map<string, BaseTool> = new Map();
 	private logger = logger.child('ToolRegistry');
+	private mcpManager: import('../services/mcp-client.js').McpClientManager | null = null;
 
 	constructor(gateway: Gateway) {
 		this.gateway = gateway;
@@ -171,7 +172,32 @@ export class ToolRegistry {
 		// 注册内置工具
 		await this.registerBuiltinTools();
 
+		// 注册 MCP 工具（若配置启用且有 servers）
+		await this.registerMcpTools();
+
 		this.logger.info(`已注册 ${this.tools.size} 个工具`);
+	}
+
+	/**
+	 * 注册 MCP 服务端暴露的工具
+	 */
+	private async registerMcpTools(): Promise<void> {
+		const enabled = this.gateway.config.get<boolean>('mcp.enabled', false);
+		const servers = this.gateway.config.get<Array<{ name: string; command?: string; args?: string[]; url?: string }>>('mcp.servers', []);
+		if (!enabled || !Array.isArray(servers) || servers.length === 0) return;
+
+		try {
+			const { McpClientManager } = await import('../services/mcp-client.js');
+			const { McpToolAdapter } = await import('./mcp-adapter.js');
+			this.mcpManager = new McpClientManager(this.gateway.config, this.logger);
+			const tools = await this.mcpManager.init();
+			for (const info of tools) {
+				const adapter = new McpToolAdapter(this.mcpManager, info, this.gateway);
+				this.register(adapter);
+			}
+		} catch (e) {
+			this.logger.warn('MCP 工具注册失败:', (e as Error).message);
+		}
 	}
 
 	/**
@@ -290,6 +316,10 @@ export class ToolRegistry {
 	 * 清理资源
 	 */
 	async cleanup(): Promise<void> {
+		if (this.mcpManager) {
+			await this.mcpManager.close();
+			this.mcpManager = null;
+		}
 		for (const tool of this.tools.values()) {
 			await tool.cleanup();
 		}

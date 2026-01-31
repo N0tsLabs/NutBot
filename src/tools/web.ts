@@ -13,13 +13,18 @@ export class WebTool extends BaseTool {
 			parameters: {
 				action: {
 					type: 'string',
-					description: '操作类型: fetch(获取网页), search(搜索)',
+					description: '操作类型: fetch(获取单个网页), batch_fetch(并发获取多个网页), search(搜索)',
 					required: true,
-					enum: ['fetch', 'search', 'extract'],
+					enum: ['fetch', 'batch_fetch', 'search', 'extract'],
 				},
 				url: {
 					type: 'string',
 					description: 'fetch 操作的目标网址',
+				},
+				urls: {
+					type: 'array',
+					description: 'batch_fetch 操作的多个网址数组，会并发获取所有网页内容',
+					items: { type: 'string' },
 				},
 				query: {
 					type: 'string',
@@ -42,18 +47,24 @@ export class WebTool extends BaseTool {
 		params: {
 			action: string;
 			url?: string;
+			urls?: string[];
 			query?: string;
 			selector?: string;
 			timeout?: number;
 		},
 		context: Record<string, unknown> = {}
 	): Promise<unknown> {
-		const { action, url, query, selector, timeout = 30000 } = params;
+		const { action, url, urls, query, selector, timeout = 30000 } = params;
 
 		switch (action) {
 			case 'fetch':
 				if (!url) throw new Error('fetch 操作需要 url 参数');
 				return await this.fetchPage(url, timeout);
+			case 'batch_fetch':
+				if (!urls || !Array.isArray(urls) || urls.length === 0) {
+					throw new Error('batch_fetch 操作需要 urls 数组参数');
+				}
+				return await this.batchFetch(urls, timeout);
 			case 'search':
 				if (!query) throw new Error('search 操作需要 query 参数');
 				return await this.search(query);
@@ -115,6 +126,65 @@ export class WebTool extends BaseTool {
 			}
 			throw error;
 		}
+	}
+
+	/**
+	 * 并发获取多个网页
+	 */
+	private async batchFetch(
+		urls: string[],
+		timeout: number
+	): Promise<{
+		success: boolean;
+		total: number;
+		succeeded: number;
+		failed: number;
+		results: Array<{
+			url: string;
+			success: boolean;
+			status?: number;
+			text?: string;
+			length?: number;
+			error?: string;
+		}>;
+	}> {
+		this.logger.info(`并发获取 ${urls.length} 个网页...`);
+		const startTime = Date.now();
+
+		// 并发获取所有网页
+		const promises = urls.map(async (url) => {
+			try {
+				const result = await this.fetchPage(url, timeout);
+				return {
+					url,
+					success: true,
+					status: result.status,
+					text: result.text,
+					length: result.length,
+				};
+			} catch (error) {
+				return {
+					url,
+					success: false,
+					error: (error as Error).message,
+				};
+			}
+		});
+
+		const results = await Promise.all(promises);
+		const succeeded = results.filter((r) => r.success).length;
+		const failed = results.length - succeeded;
+		const duration = Date.now() - startTime;
+
+		this.logger.info(`并发获取完成: ${succeeded}/${urls.length} 成功, 耗时 ${duration}ms`);
+
+		return {
+			success: succeeded > 0,
+			total: urls.length,
+			succeeded,
+			failed,
+			results,
+		};
 	}
 
 	private simplifyHtml(html: string): string {

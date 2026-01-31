@@ -339,8 +339,8 @@ export class Server {
 		this.logger.success(`服务器已启动: http://${this.host}:${this.port}`);
 		this.logger.info(`WebSocket 地址: ws://${this.host}:${this.port}/ws`);
 
-		// 默认自动打开浏览器
-		if (options.openBrowser !== false) {
+		// 只有明确指定 openBrowser: true 时才自动打开浏览器
+		if (options.openBrowser === true) {
 			this.openBrowser();
 		}
 	}

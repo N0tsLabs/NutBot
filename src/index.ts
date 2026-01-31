@@ -312,7 +312,7 @@ program
 	.option('-c, --config <path>', '配置文件路径')
 	.option('-p, --port <port>', '服务端口', '18800')
 	.option('-h, --host <host>', '服务地址', '127.0.0.1')
-	.option('--no-browser', '不自动打开浏览器')
+	.option('--open-browser', '启动时自动打开浏览器（默认不打开）')
 	.option('-v, --verbose', '显示详细日志')
 	.option('--no-interactive', '禁用交互式聊天')
 	.action(async (options) => {
@@ -342,8 +342,8 @@ program
 				gateway.logger.setConsoleEnabled(false);
 			}
 
-			// 启动服务（交互模式下不自动打开浏览器）
-			await gateway.start({ openBrowser: !useInteractive && options.browser !== false });
+			// 启动服务（默认不自动打开浏览器，需打开请加 --open-browser）
+			await gateway.start({ openBrowser: options.openBrowser === true });
 
 			// 交互式模式
 			if (useInteractive) {

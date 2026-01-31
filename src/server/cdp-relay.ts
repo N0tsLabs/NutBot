@@ -300,6 +300,32 @@ export async function startCDPRelayServer(options: CDPRelayOptions = {}): Promis
 			return;
 		}
 
+		// 发送通知（通过扩展）
+		if (pathname === '/notify' && req.method === 'POST') {
+			let body = '';
+			req.on('data', (chunk) => {
+				body += chunk.toString();
+			});
+			req.on('end', async () => {
+				try {
+					const { title, message } = JSON.parse(body) as { title?: string; message?: string };
+					if (!extensionWs || extensionWs.readyState !== WebSocket.OPEN) {
+						res.writeHead(503, { 'Content-Type': 'application/json' });
+						res.end(JSON.stringify({ success: false, error: '扩展未连接' }));
+						return;
+					}
+					
+					const result = await sendToExtension('showNotification', { title, message });
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ success: true, result }));
+				} catch (error) {
+					res.writeHead(500, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ success: false, error: (error as Error).message }));
+				}
+			});
+			return;
+		}
+
 		// CDP 发现端点
 		if (pathname === '/json/version' || pathname === '/json/version/') {
 			res.writeHead(200, { 'Content-Type': 'application/json' });

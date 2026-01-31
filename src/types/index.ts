@@ -129,9 +129,13 @@ export interface AppConfig {
 		port: number;
 	};
 	agent: {
-		defaultModel?: string; // 默认模型 (provider/model 格式)
-		systemPrompt?: string;
+		defaultModel?: string | null;
+		systemPrompt?: string | null;
 		maxIterations?: number;
+		timeout?: number;
+		debugMode?: boolean;
+		temperature?: number | null;
+		maxTokens?: number | null;
 	};
 	sandbox: {
 		mode: 'strict' | 'standard' | 'trust';
@@ -143,9 +147,32 @@ export interface AppConfig {
 		sessions: string;
 		logs: string;
 	};
-	skills: {
-		directory: string;
+	mcp?: {
+		enabled: boolean;
+		servers?: McpServerConfig[];
 	};
+	skills: {
+		enabled: boolean;
+		directory: string;
+		autoload?: boolean;
+		includeInPrompt?: boolean;
+	};
+}
+
+/** MCP 服务端配置：stdio 或 SSE */
+export interface McpServerConfig {
+	name: string;
+	command?: string;
+	args?: string[];
+	env?: Record<string, string>;
+	url?: string;
+}
+
+/** Skill 定义（从文件加载） */
+export interface SkillDefinition {
+	name: string;
+	description?: string;
+	prompt: string;
 }
 
 // 导出沙盒相关类型

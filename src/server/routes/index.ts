@@ -432,6 +432,96 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			return { success: true };
 		});
 
+		// ==================== Agent 配置 ====================
+
+		fastify.get('/agent', async () => {
+			return {
+				defaultModel: gateway.config.get<string | null>('agent.defaultModel'),
+				systemPrompt: gateway.config.get<string | null>('agent.systemPrompt'),
+				maxIterations: gateway.config.get<number>('agent.maxIterations', 20),
+				timeout: gateway.config.get<number>('agent.timeout', 300000),
+				debugMode: gateway.config.get<boolean>('agent.debugMode', false),
+				temperature: gateway.config.get<number | null>('agent.temperature'),
+				maxTokens: gateway.config.get<number | null>('agent.maxTokens'),
+			};
+		});
+
+		fastify.put<{
+			Body: {
+				defaultModel?: string | null;
+				systemPrompt?: string | null;
+				maxIterations?: number;
+				timeout?: number;
+				debugMode?: boolean;
+				temperature?: number | null;
+				maxTokens?: number | null;
+			};
+		}>('/agent', async (request) => {
+			const body = request.body;
+			if (body.defaultModel !== undefined) gateway.config.set('agent.defaultModel', body.defaultModel);
+			if (body.systemPrompt !== undefined) gateway.config.set('agent.systemPrompt', body.systemPrompt);
+			if (body.maxIterations !== undefined) gateway.config.set('agent.maxIterations', body.maxIterations);
+			if (body.timeout !== undefined) gateway.config.set('agent.timeout', body.timeout);
+			if (body.debugMode !== undefined) gateway.config.set('agent.debugMode', body.debugMode);
+			if (body.temperature !== undefined) gateway.config.set('agent.temperature', body.temperature);
+			if (body.maxTokens !== undefined) gateway.config.set('agent.maxTokens', body.maxTokens);
+			gateway.config.save();
+			return { success: true };
+		});
+
+		// ==================== MCP 配置 ====================
+
+		fastify.get('/mcp', async () => {
+			return {
+				enabled: gateway.config.get<boolean>('mcp.enabled', true),
+				servers: gateway.config.get<unknown[]>('mcp.servers', []),
+			};
+		});
+
+		fastify.put<{
+			Body: {
+				enabled?: boolean;
+				servers?: Array<{ name: string; command?: string; args?: string[]; env?: Record<string, string>; url?: string }>;
+			};
+		}>('/mcp', async (request) => {
+			const { enabled, servers } = request.body;
+			if (enabled !== undefined) gateway.config.set('mcp.enabled', enabled);
+			if (servers !== undefined) gateway.config.set('mcp.servers', servers);
+			gateway.config.save();
+			return { success: true };
+		});
+
+		// ==================== Skills 配置 ====================
+
+		fastify.get('/skills', async () => {
+			const { loadSkills } = await import('../../services/skills-loader.js');
+			const skills = loadSkills(gateway.config);
+			return {
+				enabled: gateway.config.get<boolean>('skills.enabled', true),
+				directory: gateway.config.get<string>('skills.directory', './skills'),
+				autoload: gateway.config.get<boolean>('skills.autoload', true),
+				includeInPrompt: gateway.config.get<boolean>('skills.includeInPrompt', true),
+				loaded: skills.map((s) => ({ name: s.name, description: s.description })),
+			};
+		});
+
+		fastify.put<{
+			Body: {
+				enabled?: boolean;
+				directory?: string;
+				autoload?: boolean;
+				includeInPrompt?: boolean;
+			};
+		}>('/skills', async (request) => {
+			const body = request.body;
+			if (body.enabled !== undefined) gateway.config.set('skills.enabled', body.enabled);
+			if (body.directory !== undefined) gateway.config.set('skills.directory', body.directory);
+			if (body.autoload !== undefined) gateway.config.set('skills.autoload', body.autoload);
+			if (body.includeInPrompt !== undefined) gateway.config.set('skills.includeInPrompt', body.includeInPrompt);
+			gateway.config.save();
+			return { success: true };
+		});
+
 		// ==================== 记忆管理 ====================
 
 		fastify.get('/memories', async () => {

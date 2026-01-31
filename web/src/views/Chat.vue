@@ -2,7 +2,12 @@
 	<div class="chat-container">
 		<!-- 头部 -->
 		<header class="chat-header">
-			<h2 class="chat-title">{{ store.currentSession?.title || '新对话' }}</h2>
+			<div class="chat-header-left">
+				<h2 class="chat-title">{{ store.currentSession?.title || '新对话' }}</h2>
+				<span v-if="currentModelDisplay" class="current-model-badge" :title="currentModelDisplay">
+					🤖 {{ currentModelShortName }}
+				</span>
+			</div>
 			<button @click="store.createSession()" class="btn btn-secondary">新对话</button>
 		</header>
 
@@ -322,11 +327,30 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick, onMounted } from 'vue';
+import { ref, watch, nextTick, onMounted, computed } from 'vue';
 import { marked } from 'marked';
 import { useAppStore } from '../stores/app';
 
 const store = useAppStore();
+
+// 当前模型显示
+const currentModelDisplay = computed(() => {
+	const modelRef = store.config?.agent?.defaultModel;
+	if (!modelRef) return '';
+	return modelRef;
+});
+
+const currentModelShortName = computed(() => {
+	const modelRef = store.config?.agent?.defaultModel;
+	if (!modelRef) return '';
+	const [providerId, ...modelParts] = modelRef.split('/');
+	const modelName = modelParts.join('/');
+	// 简化模型名称显示
+	if (modelName.length > 25) {
+		return modelName.substring(0, 22) + '...';
+	}
+	return modelName;
+});
 
 const input = ref('');
 const sending = ref(false);
@@ -361,7 +385,11 @@ const examples = ['打开 B 站搜索影视飓风', '截取当前屏幕', '执�
 
 const renderMarkdown = (text) => {
 	if (!text) return '';
-	return marked(text);
+	// 过滤掉 AI 的思考内容（<think>...</think> 标签）
+	let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+	// 如果过滤后为空，可能整段都是思考内容，返回原文
+	if (!cleaned) cleaned = text;
+	return marked(cleaned);
 };
 
 // 工具组展开/折叠
@@ -645,7 +673,8 @@ watch(
 	{ deep: true }
 );
 
-onMounted(() => {
+onMounted(async () => {
+	await store.loadConfig();
 	store.loadSessions();
 	if (!store.currentSessionId) {
 		store.createSession();
@@ -665,9 +694,24 @@ onMounted(() => {
 	border-bottom: 1px solid var(--border-color);
 }
 
+.chat-header-left {
+	@apply flex items-center gap-3;
+}
+
 .chat-title {
 	@apply font-medium;
 	color: var(--text-primary);
+}
+
+.current-model-badge {
+	@apply text-xs px-2 py-1 rounded-full;
+	background-color: var(--accent-subtle);
+	color: var(--accent);
+	border: 1px solid var(--accent);
+	max-width: 200px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .messages-container {
