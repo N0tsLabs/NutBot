@@ -4,9 +4,32 @@
 		<header class="chat-header">
 			<div class="chat-header-left">
 				<h2 class="chat-title">{{ store.currentSession?.title || '新对话' }}</h2>
-				<span v-if="currentModelDisplay" class="current-model-badge" :title="currentModelDisplay">
-					🤖 {{ currentModelShortName }}
-				</span>
+				<!-- Agent 选择器 -->
+				<div class="agent-selector">
+					<button class="agent-selector-btn" @click="showAgentDropdown = !showAgentDropdown">
+						<span class="agent-selector-icon">{{ currentAgent?.icon || '🤖' }}</span>
+						<span class="agent-selector-name">{{ currentAgent?.name || 'Agent' }}</span>
+						<span class="agent-selector-arrow">▼</span>
+					</button>
+					<div v-if="showAgentDropdown" class="agent-dropdown" @click.stop>
+						<div
+							v-for="agent in store.agents"
+							:key="agent.id"
+							class="agent-dropdown-item"
+							:class="{ active: store.currentAgentId === agent.id }"
+							@click="selectAgent(agent.id)"
+						>
+							<span class="agent-dropdown-icon">{{ agent.icon || '🤖' }}</span>
+							<span class="agent-dropdown-name">{{ agent.name }}</span>
+							<span v-if="store.currentAgentId === agent.id" class="agent-dropdown-check">✓</span>
+						</div>
+					</div>
+				</div>
+				<!-- 当前模型显示 -->
+				<div class="current-model" :title="currentModelDisplay">
+					<span class="model-icon">🧠</span>
+					<span class="model-name">{{ currentModelShortName }}</span>
+				</div>
 			</div>
 			<button @click="store.createSession()" class="btn btn-secondary">新对话</button>
 		</header>
@@ -27,175 +50,110 @@
 			</template>
 
 			<template v-else>
-				<div
-					v-for="msg in store.messages"
-					:key="msg.id"
-					class="message"
-					:class="msg.role === 'user' ? 'message-user' : 'message-assistant'"
-				>
-					<div class="flex items-start gap-3">
-						<span class="text-xl flex-shrink-0">{{ msg.role === 'user' ? '👤' : '🥜' }}</span>
-						<div class="flex-1 min-w-0">
-							<!-- 工具调用（GPT 风格：折叠成一行，点击展开）-->
-							<div v-if="msg.toolCalls && msg.toolCalls.length > 0" class="mb-3">
-								<div class="tools-summary" :class="{ expanded: isToolsExpanded(msg.id) }">
-									<!-- 折叠状态：显示步骤数 + 当前思考内容 -->
-									<div class="tools-header" @click="toggleTools(msg.id)">
-										<div class="tools-progress">
-											<span
-												v-for="(tool, idx) in msg.toolCalls"
-												:key="idx"
-												class="tool-dot"
-												:class="{
-													running: tool.status === 'running',
-													success: tool.status === 'success' || tool.result?.success,
-													error: tool.status === 'error' || tool.result?.error,
-												}"
-											></span>
-										</div>
-										<span class="tools-text">
-											{{ getToolsSummaryWithThinking(msg.toolCalls) }}
-										</span>
-										<span class="tools-toggle">{{ isToolsExpanded(msg.id) ? '▲' : '▼' }}</span>
-									</div>
-
-									<!-- 展开状态：显示详细工具调用，每个步骤带思考 -->
-									<div v-if="isToolsExpanded(msg.id)" class="tools-detail">
-										<div
+				<!-- 用户消息 -->
+				<template v-for="msg in store.messages" :key="msg.id">
+					<!-- 用户消息 -->
+					<div v-if="msg.role === 'user'" class="msg msg-user">
+						<div class="msg-content user-bubble">{{ msg.content }}</div>
+					</div>
+					
+					<!-- AI 消息 -->
+					<div v-else class="msg msg-ai">
+						<div class="msg-body">
+							<!-- AI 名称 + 实时状态 -->
+							<div class="ai-header">
+								<span class="ai-name">{{ aiName }}</span>
+								<span v-if="msg.streaming || hasRunningTools(msg)" class="ai-status">
+									<template v-if="hasRunningTools(msg)">
+										正在执行 {{ getRunningToolName(msg) }}...
+									</template>
+									<template v-else>
+										正在输入...
+									</template>
+								</span>
+							</div>
+							
+							<!-- 工具调用（简洁折叠式）-->
+							<div v-if="msg.toolCalls && msg.toolCalls.length > 0" class="tool-calls">
+								<div class="tool-calls-header" @click="toggleTools(msg.id)">
+									<div class="tool-calls-dots">
+										<span
 											v-for="(tool, idx) in msg.toolCalls"
 											:key="idx"
-											class="tool-item"
-											:class="{ expanded: isToolExpanded(msg.id, idx) }"
-										>
-											<!-- 思考内容（如果有）-->
-											<div v-if="tool.thinking" class="tool-thinking">💭 {{ tool.thinking }}</div>
-											<div class="tool-item-header" @click.stop="toggleToolDetail(msg.id, idx)">
-												<span class="tool-status-icon">
-													<span v-if="tool.status === 'running'" class="animate-spin"
-														>⚙️</span
-													>
-													<span v-else-if="tool.status === 'success' || tool.result?.success"
-														>✅</span
-													>
-													<span v-else-if="tool.status === 'error' || tool.result?.error"
-														>❌</span
-													>
-													<span v-else>🔧</span>
-												</span>
-												<span class="tool-name">{{ tool.name }}</span>
-												<span class="tool-action">{{ getToolAction(tool) }}</span>
-												<span class="tool-item-toggle">{{
-													isToolExpanded(msg.id, idx) ? '−' : '+'
-												}}</span>
+											class="dot"
+											:class="{
+												running: tool.status === 'running',
+												success: tool.status === 'success' || tool.result?.success,
+												error: tool.status === 'error' || tool.result?.error,
+											}"
+										></span>
+									</div>
+									<span class="tool-calls-text">{{ getToolsHeaderText(msg.toolCalls) }}</span>
+									<span class="tool-calls-toggle">{{ isToolsExpanded(msg.id) ? '收起' : '展开' }}</span>
+								</div>
+								
+								<div v-if="isToolsExpanded(msg.id)" class="tool-calls-list">
+									<div
+										v-for="(tool, idx) in msg.toolCalls"
+										:key="idx"
+										class="tool-call-item"
+									>
+										<div v-if="tool.thinking" class="tool-thinking">💭 {{ tool.thinking }}</div>
+										<div class="tool-call-row" @click.stop="toggleToolDetail(msg.id, idx)">
+											<span class="tool-icon">
+												<span v-if="tool.status === 'running'" class="spin">⚙️</span>
+												<span v-else-if="tool.status === 'success' || tool.result?.success">✅</span>
+												<span v-else-if="tool.status === 'error' || tool.result?.error">❌</span>
+												<span v-else>🔧</span>
+											</span>
+											<span class="tool-name">{{ tool.name }}</span>
+											<span class="tool-duration">{{ formatToolDuration(tool) }}</span>
+											<span class="tool-expand">{{ isToolExpanded(msg.id, idx) ? '−' : '+' }}</span>
+										</div>
+										<div v-if="isToolExpanded(msg.id, idx)" class="tool-detail">
+											<div class="tool-section">
+												<div class="tool-section-head">
+													<span>参数</span>
+													<button class="copy-btn" @click.stop="copyToClipboard(formatToolArgs(tool.arguments))">📋 复制</button>
+												</div>
+												<pre class="tool-code">{{ formatToolArgs(tool.arguments) }}</pre>
 											</div>
-											<div v-if="isToolExpanded(msg.id, idx)" class="tool-item-detail">
-												<div class="tool-section">
-													<div class="tool-section-header">
-														<span class="tool-label">参数:</span>
-														<button
-															class="copy-btn"
-															@click.stop="
-																copyToClipboard(formatToolArgs(tool.arguments))
-															"
-														>
-															📋 复制
-														</button>
-													</div>
-													<pre class="tool-code">{{ formatToolArgs(tool.arguments) }}</pre>
+											<div v-if="tool.name === 'screenshot' && tool.result?.base64" class="tool-section">
+												<div class="tool-section-head"><span>截图预览</span></div>
+												<div class="screenshot-box" @click="openImageModal(tool.result.base64)">
+													<img :src="'data:image/jpeg;base64,' + tool.result.base64" alt="截图" />
+													<div class="screenshot-hover">🔍 点击放大</div>
 												</div>
-												<!-- 截图预览 -->
-												<div
-													v-if="tool.name === 'screenshot' && tool.result?.base64"
-													class="tool-section"
-												>
-													<div class="tool-section-header">
-														<span class="tool-label">截图预览:</span>
-													</div>
-													<div
-														class="screenshot-preview"
-														@click="openImageModal(tool.result.base64)"
-													>
-														<img
-															:src="'data:image/jpeg;base64,' + tool.result.base64"
-															class="screenshot-thumbnail"
-															alt="截图"
-														/>
-														<div class="screenshot-overlay">
-															<span>🔍 点击放大</span>
-														</div>
-													</div>
+											</div>
+											<div v-if="tool.result" class="tool-section">
+												<div class="tool-section-head">
+													<span>结果</span>
+													<button class="copy-btn" @click.stop="copyToClipboard(getRawResult(tool.result))">📋 复制</button>
 												</div>
-												<div v-if="tool.result" class="tool-section">
-													<div class="tool-section-header">
-														<span class="tool-label">结果:</span>
-														<button
-															class="copy-btn"
-															@click.stop="copyToClipboard(getRawResult(tool.result))"
-														>
-															📋 复制
-														</button>
-													</div>
-													<pre
-														class="tool-code scrollable"
-														:class="{ error: tool.result?.error }"
-														>{{ formatToolResult(tool.result, false) }}</pre
-													>
-												</div>
+												<pre class="tool-code" :class="{ error: tool.result?.error }">{{ formatToolResult(tool.result, false) }}</pre>
 											</div>
 										</div>
 									</div>
 								</div>
 							</div>
-
-							<!-- 消息内容 -->
-							<div v-if="msg.streaming" class="markdown" v-html="renderMarkdown(msg.content + '▊')"></div>
-							<div v-else-if="msg.content" class="markdown" v-html="renderMarkdown(msg.content)"></div>
-							<div v-if="msg.error" class="text-red-400 text-sm mt-2">❌ {{ msg.error }}</div>
+							
+							<!-- 消息文本 -->
+							<div v-if="msg.streaming" class="msg-text markdown" v-html="renderMarkdown(msg.content + '▊')"></div>
+							<div v-else-if="msg.content" class="msg-text markdown" v-html="renderMarkdown(msg.content)"></div>
+							<div v-if="msg.error" class="msg-error">❌ {{ msg.error }}</div>
 						</div>
 					</div>
-				</div>
+				</template>
 			</template>
 
-			<!-- 实时执行状态（固定在底部）-->
-			<div
-				v-if="store.currentStatus && store.currentStatus.type !== 'sending'"
-				class="execution-status"
-				ref="executionStatus"
-			>
-				<div class="status-content">
-					<!-- 当前状态图标 -->
-					<span class="status-icon">
-						<span v-if="store.currentStatus.type === 'thinking'" class="animate-pulse">🤔</span>
-						<span v-else-if="store.currentStatus.type === 'generating'" class="animate-pulse">✍️</span>
-						<span v-else-if="store.currentStatus.type === 'tool_running'" class="animate-spin">⚙️</span>
-						<span v-else-if="store.currentStatus.type === 'tool_done'">✅</span>
-						<span v-else-if="store.currentStatus.type === 'tool_error'">❌</span>
-						<span v-else-if="store.currentStatus.type === 'status'" class="animate-pulse">⏳</span>
-					</span>
-
-					<!-- 状态文字 -->
-					<div class="status-text-wrapper">
-						<span class="status-text">
-							<template v-if="store.currentStatus.type === 'thinking'"> 正在分析任务... </template>
-							<template v-else-if="store.currentStatus.type === 'generating'"> 正在生成回复... </template>
-							<template v-else-if="store.currentStatus.type === 'status'">
-								{{ store.currentStatus.status }}
-							</template>
-							<template v-else-if="store.currentStatus.type === 'tool_running'">
-								正在{{ getToolDescription(store.currentStatus.tool, store.currentStatus.args) }}
-							</template>
-							<template v-else-if="store.currentStatus.type === 'tool_done'">
-								{{ getToolDescription(store.currentStatus.tool, {}) }} 完成
-							</template>
-						</span>
-						<!-- 显示详细参数 -->
-						<span
-							v-if="store.currentStatus.type === 'tool_running' && store.currentStatus.args"
-							class="status-detail"
-						>
-							{{ getStatusDetail(store.currentStatus.args) }}
-						</span>
+			<!-- 实时状态（简化版，当没有消息正在流式输出时显示）-->
+			<div v-if="store.currentStatus && store.currentStatus.type !== 'sending' && !hasStreamingMessage" class="msg msg-ai status-msg">
+				<div class="msg-body">
+					<div class="ai-header">
+						<span class="ai-name">{{ aiName }}</span>
+						<span class="ai-status">{{ getCurrentStatusText() }}</span>
 					</div>
+					<div class="status-cursor">▊</div>
 				</div>
 			</div>
 		</div>
@@ -327,30 +285,143 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick, onMounted, computed } from 'vue';
+import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue';
 import { marked } from 'marked';
 import { useAppStore } from '../stores/app';
 
 const store = useAppStore();
 
-// 当前模型显示
+// Agent 选择器
+const showAgentDropdown = ref(false);
+
+const currentAgent = computed(() => {
+	return store.agents.find(a => a.id === store.currentAgentId);
+});
+
+const selectAgent = async (id) => {
+	try {
+		await store.setCurrentAgent(id);
+	} catch (error) {
+		console.error('Failed to set agent:', error);
+	}
+	showAgentDropdown.value = false;
+};
+
+// 点击外部关闭下拉菜单
+const handleClickOutside = (event) => {
+	if (showAgentDropdown.value && !event.target.closest('.agent-selector')) {
+		showAgentDropdown.value = false;
+	}
+};
+
+onMounted(() => {
+	document.addEventListener('click', handleClickOutside);
+});
+
+onUnmounted(() => {
+	document.removeEventListener('click', handleClickOutside);
+});
+
+// 当前模型显示（优先使用 Agent 配置的模型，否则使用全局默认模型）
+const currentModelRef = computed(() => {
+	// 优先使用当前 Agent 配置的模型
+	if (currentAgent.value?.model) {
+		return currentAgent.value.model;
+	}
+	// 否则使用全局默认模型
+	return store.config?.agent?.defaultModel || '';
+});
+
 const currentModelDisplay = computed(() => {
-	const modelRef = store.config?.agent?.defaultModel;
-	if (!modelRef) return '';
-	return modelRef;
+	return currentModelRef.value;
 });
 
 const currentModelShortName = computed(() => {
-	const modelRef = store.config?.agent?.defaultModel;
-	if (!modelRef) return '';
+	const modelRef = currentModelRef.value;
+	if (!modelRef) return '未设置模型';
 	const [providerId, ...modelParts] = modelRef.split('/');
 	const modelName = modelParts.join('/');
 	// 简化模型名称显示
 	if (modelName.length > 25) {
 		return modelName.substring(0, 22) + '...';
 	}
-	return modelName;
+	return modelName || modelRef;
 });
+
+// AI 名称
+const aiName = computed(() => {
+	return store.config?.user?.aiName || 'NutBot';
+});
+
+// 格式化工具执行时间
+const formatToolDuration = (tool) => {
+	if (!tool.duration && tool.duration !== 0) {
+		if (tool.status === 'running') return '执行中...';
+		return '';
+	}
+	
+	const ms = tool.duration;
+	
+	if (ms < 1000) {
+		return `${ms}ms`;
+	} else if (ms < 60000) {
+		return `${(ms / 1000).toFixed(1)}s`;
+	} else {
+		const minutes = Math.floor(ms / 60000);
+		const seconds = Math.floor((ms % 60000) / 1000);
+		return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+	}
+};
+
+// 检查消息是否有正在运行的工具
+const hasRunningTools = (msg) => {
+	return msg.toolCalls?.some(t => t.status === 'running');
+};
+
+// 获取正在运行的工具名
+const getRunningToolName = (msg) => {
+	const runningTool = msg.toolCalls?.find(t => t.status === 'running');
+	return runningTool?.name || '';
+};
+
+// 检查是否有正在流式输出的消息
+const hasStreamingMessage = computed(() => {
+	return store.messages.some(m => m.streaming || hasRunningTools(m));
+});
+
+// 获取当前状态文本
+const getCurrentStatusText = () => {
+	if (!store.currentStatus) return '';
+	switch (store.currentStatus.type) {
+		case 'thinking': return '正在分析...';
+		case 'generating': return '正在输入...';
+		case 'status': return store.currentStatus.status;
+		case 'tool_running': 
+			return `正在执行 ${store.currentStatus.tool}...`;
+		case 'tool_done': return '执行完成';
+		case 'tool_error': return '执行出错';
+		default: return '';
+	}
+};
+
+// 工具栏头部文字
+const getToolsHeaderText = (toolCalls) => {
+	const total = toolCalls.length;
+	const completed = toolCalls.filter((t) => t.status === 'success' || t.result?.success).length;
+	const failed = toolCalls.filter((t) => t.status === 'error' || t.result?.error).length;
+	const running = toolCalls.filter((t) => t.status === 'running').length;
+
+	if (running > 0) {
+		const runningTool = toolCalls.find((t) => t.status === 'running');
+		return `执行中 ${completed + 1}/${total}: ${runningTool?.name || ''}`;
+	}
+
+	if (failed > 0) {
+		return `已完成 ${completed}/${total}，${failed} 失败`;
+	}
+
+	return `已完成 ${total} 步`;
+};
 
 const input = ref('');
 const sending = ref(false);
@@ -675,6 +746,7 @@ watch(
 
 onMounted(async () => {
 	await store.loadConfig();
+	await store.loadAgents(); // 加载 Agent Profiles
 	store.loadSessions();
 	if (!store.currentSessionId) {
 		store.createSession();
@@ -703,6 +775,119 @@ onMounted(async () => {
 	color: var(--text-primary);
 }
 
+/* Agent 选择器 */
+.agent-selector {
+	position: relative;
+}
+
+.agent-selector-btn {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	background-color: var(--bg-tertiary);
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	cursor: pointer;
+	transition: all 0.15s;
+}
+
+.agent-selector-btn:hover {
+	border-color: var(--accent);
+}
+
+.agent-selector-icon {
+	font-size: 14px;
+}
+
+.agent-selector-name {
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--text-primary);
+	max-width: 120px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.agent-selector-arrow {
+	font-size: 8px;
+	color: var(--text-muted);
+}
+
+/* 当前模型显示 */
+.current-model {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 12px;
+	background-color: var(--bg-tertiary);
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	cursor: default;
+}
+
+.current-model .model-icon {
+	font-size: 12px;
+}
+
+.current-model .model-name {
+	font-size: 12px;
+	color: var(--text-muted);
+	max-width: 200px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: ui-monospace, monospace;
+}
+
+.agent-dropdown {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	z-index: 50;
+	min-width: 180px;
+	margin-top: 4px;
+	padding: 6px;
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	border-radius: 10px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.agent-dropdown-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background 0.15s;
+}
+
+.agent-dropdown-item:hover {
+	background-color: var(--bg-hover);
+}
+
+.agent-dropdown-item.active {
+	background-color: var(--accent-subtle);
+}
+
+.agent-dropdown-icon {
+	font-size: 16px;
+}
+
+.agent-dropdown-name {
+	flex: 1;
+	font-size: 13px;
+	color: var(--text-primary);
+}
+
+.agent-dropdown-check {
+	font-size: 12px;
+	color: var(--accent);
+}
+
 .current-model-badge {
 	@apply text-xs px-2 py-1 rounded-full;
 	background-color: var(--accent-subtle);
@@ -715,54 +900,474 @@ onMounted(async () => {
 }
 
 .messages-container {
-	@apply flex-1 overflow-y-auto p-4 space-y-4;
+	flex: 1;
+	overflow-y: auto;
+	padding: 24px;
+	display: flex;
+	flex-direction: column;
+	gap: 24px;
+	max-width: 900px;
+	margin: 0 auto;
+	width: 100%;
 }
 
-/* 欢迎页面 */
-.welcome-screen {
-	@apply flex flex-col items-center justify-center h-full;
+/* ========== Gemini 风格消息 ========== */
+.msg {
+	display: flex;
+	gap: 12px;
+	animation: fadeIn 0.3s ease;
 }
 
-.welcome-logo {
-	@apply text-6xl mb-4;
+@keyframes fadeIn {
+	from { opacity: 0; transform: translateY(8px); }
+	to { opacity: 1; transform: translateY(0); }
 }
 
-.welcome-title {
-	@apply text-xl font-medium mb-2;
+.msg-user {
+	justify-content: flex-end;
+}
+
+.msg-ai {
+	align-items: flex-start;
+}
+
+.msg-body {
+	flex: 1;
+	min-width: 0;
+	max-width: 100%;
+}
+
+/* AI 名称 + 状态头部 */
+.ai-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.ai-name {
+	font-size: 14px;
+	font-weight: 600;
 	color: var(--text-primary);
 }
 
+.ai-status {
+	font-size: 12px;
+	color: var(--text-muted);
+	opacity: 0.8;
+}
+
+.status-cursor {
+	color: var(--text-muted);
+	animation: blink 1s infinite;
+}
+
+@keyframes blink {
+	0%, 50% { opacity: 1; }
+	51%, 100% { opacity: 0; }
+}
+
+.user-bubble {
+	display: inline-block;
+	max-width: 70%;
+	padding: 12px 18px;
+	background: linear-gradient(135deg, var(--accent) 0%, #6366f1 100%);
+	color: white;
+	border-radius: 20px 20px 4px 20px;
+	font-size: 14px;
+	line-height: 1.5;
+	word-break: break-word;
+}
+
+.msg-text {
+	font-size: 14px;
+	line-height: 1.7;
+	color: var(--text-primary);
+}
+
+.msg-error {
+	margin-top: 8px;
+	padding: 8px 12px;
+	background-color: rgba(239, 68, 68, 0.1);
+	border-radius: 8px;
+	color: #f87171;
+	font-size: 13px;
+}
+
+/* ========== 工具调用（简洁折叠式）========== */
+.tool-calls {
+	margin-bottom: 12px;
+}
+
+.tool-calls-header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 12px;
+	background-color: var(--bg-tertiary);
+	border-radius: 10px;
+	cursor: pointer;
+	transition: background 0.15s;
+}
+
+.tool-calls-header:hover {
+	background-color: var(--bg-hover);
+}
+
+.tool-calls-dots {
+	display: flex;
+	gap: 4px;
+}
+
+.dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background-color: var(--text-muted);
+	transition: all 0.3s;
+}
+
+.dot.running {
+	background-color: #f59e0b;
+	animation: dotPulse 1s infinite;
+}
+
+.dot.success {
+	background-color: #10b981;
+}
+
+.dot.error {
+	background-color: #ef4444;
+}
+
+@keyframes dotPulse {
+	0%, 100% { transform: scale(1); opacity: 1; }
+	50% { transform: scale(1.3); opacity: 0.7; }
+}
+
+.tool-calls-text {
+	flex: 1;
+	font-size: 13px;
+	color: var(--text-secondary);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tool-calls-toggle {
+	font-size: 12px;
+	color: var(--accent);
+	font-weight: 500;
+}
+
+.tool-calls-list {
+	margin-top: 8px;
+	padding-left: 12px;
+	border-left: 2px solid var(--border-color);
+}
+
+.tool-call-item {
+	margin-bottom: 8px;
+}
+
+.tool-thinking {
+	padding: 6px 10px;
+	margin-bottom: 4px;
+	font-size: 12px;
+	color: var(--text-muted);
+	font-style: italic;
+	background-color: var(--bg-tertiary);
+	border-radius: 6px;
+}
+
+.tool-call-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background 0.15s;
+}
+
+.tool-call-row:hover {
+	background-color: var(--bg-tertiary);
+}
+
+.tool-icon {
+	font-size: 14px;
+}
+
+.tool-name {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--accent);
+	font-family: ui-monospace, monospace;
+}
+
+.tool-duration {
+	font-size: 12px;
+	color: var(--text-muted);
+	margin-left: auto;
+	margin-right: 8px;
+	min-width: 60px;
+	text-align: right;
+}
+
+.tool-expand {
+	font-size: 14px;
+	color: var(--text-muted);
+	width: 20px;
+	text-align: center;
+}
+
+.tool-detail {
+	margin-top: 8px;
+	margin-left: 22px;
+	padding: 12px;
+	background-color: var(--bg-tertiary);
+	border-radius: 8px;
+}
+
+.tool-section {
+	margin-bottom: 12px;
+}
+
+.tool-section:last-child {
+	margin-bottom: 0;
+}
+
+.tool-section-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 6px;
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--text-muted);
+	text-transform: uppercase;
+}
+
+.copy-btn {
+	font-size: 11px;
+	padding: 2px 6px;
+	border-radius: 4px;
+	background-color: var(--bg-secondary);
+	color: var(--text-muted);
+	cursor: pointer;
+	transition: all 0.15s;
+}
+
+.copy-btn:hover {
+	background-color: var(--accent);
+	color: white;
+}
+
+.tool-code {
+	padding: 10px;
+	background-color: var(--bg-secondary);
+	border-radius: 6px;
+	font-size: 12px;
+	font-family: ui-monospace, monospace;
+	color: var(--text-primary);
+	overflow-x: auto;
+	max-height: 200px;
+	white-space: pre-wrap;
+	word-break: break-all;
+}
+
+.tool-code.error {
+	color: #f87171;
+}
+
+.screenshot-box {
+	position: relative;
+	border-radius: 8px;
+	overflow: hidden;
+	cursor: pointer;
+}
+
+.screenshot-box img {
+	width: 100%;
+	max-height: 200px;
+	object-fit: contain;
+	background-color: #000;
+}
+
+.screenshot-hover {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: rgba(0, 0, 0, 0.5);
+	color: white;
+	font-size: 14px;
+	opacity: 0;
+	transition: opacity 0.2s;
+}
+
+.screenshot-box:hover .screenshot-hover {
+	opacity: 1;
+}
+
+/* ========== 状态指示器 ========== */
+.status-msg {
+	opacity: 0.9;
+}
+
+.status-indicator {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 14px;
+	background-color: var(--bg-tertiary);
+	border-radius: 12px;
+	animation: statusFadeIn 0.3s ease;
+}
+
+@keyframes statusFadeIn {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
+.status-icon {
+	font-size: 16px;
+}
+
+.status-label {
+	font-size: 13px;
+	color: var(--text-secondary);
+}
+
+.status-detail {
+	font-size: 12px;
+	color: var(--text-muted);
+	margin-left: 4px;
+}
+
+/* 动画 */
+.spin {
+	display: inline-block;
+	animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
+.pulse {
+	animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.5; }
+}
+
+/* ========== 欢迎页面 ========== */
+.welcome-screen {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	height: 100%;
+	text-align: center;
+}
+
+.welcome-logo {
+	font-size: 64px;
+	margin-bottom: 16px;
+	animation: welcomeBounce 2s infinite;
+}
+
+@keyframes welcomeBounce {
+	0%, 100% { transform: translateY(0); }
+	50% { transform: translateY(-10px); }
+}
+
+.welcome-title {
+	font-size: 24px;
+	font-weight: 600;
+	color: var(--text-primary);
+	margin-bottom: 8px;
+}
+
 .welcome-desc {
-	@apply text-sm;
+	font-size: 14px;
 	color: var(--text-muted);
 }
 
 .welcome-examples {
-	@apply mt-6 flex flex-wrap gap-2 justify-center max-w-lg;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	justify-content: center;
+	margin-top: 32px;
+	max-width: 500px;
 }
 
 .example-btn {
-	@apply px-3 py-2 text-sm rounded-lg transition-colors;
+	padding: 10px 16px;
+	font-size: 13px;
 	background-color: var(--bg-secondary);
 	border: 1px solid var(--border-color);
+	border-radius: 20px;
 	color: var(--text-secondary);
+	cursor: pointer;
+	transition: all 0.2s;
 }
 
 .example-btn:hover {
 	background-color: var(--bg-hover);
-	color: var(--text-primary);
 	border-color: var(--accent);
+	color: var(--accent);
+	transform: translateY(-2px);
 }
 
-/* 输入区域 */
+/* ========== 输入区域 ========== */
 .input-area {
-	@apply p-4;
-	background-color: var(--bg-secondary);
-	border-top: 1px solid var(--border-color);
+	padding: 16px 24px 24px;
+	background-color: var(--bg-primary);
+	max-width: 900px;
+	margin: 0 auto;
+	width: 100%;
 }
 
 .input-form {
-	@apply flex gap-3;
+	display: flex;
+	gap: 12px;
+	padding: 8px;
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	border-radius: 24px;
+	transition: border-color 0.2s;
+}
+
+.input-form:focus-within {
+	border-color: var(--accent);
+}
+
+.input-form .input {
+	flex: 1;
+	padding: 10px 16px;
+	background: transparent;
+	border: none;
+	outline: none;
+	font-size: 14px;
+	color: var(--text-primary);
+}
+
+.input-form .input::placeholder {
+	color: var(--text-muted);
+}
+
+.input-form .btn {
+	padding: 10px 24px;
+	border-radius: 20px;
+	font-size: 14px;
+	font-weight: 500;
 }
 
 /* 移动端适配 */

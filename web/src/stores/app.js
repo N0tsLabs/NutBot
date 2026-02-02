@@ -11,7 +11,12 @@ export const useAppStore = defineStore('app', () => {
 	const messages = ref([]);
 	const providers = ref([]);
 	const tools = ref([]);
+	const toolsGrouped = ref({ builtin: [], mcp: [] });
 	const config = ref({});
+
+	// Agent Profiles
+	const agents = ref([]);
+	const currentAgentId = ref('default');
 
 	// 实时状态
 	const currentStatus = ref(null); // 当前执行状态
@@ -307,10 +312,13 @@ export const useAppStore = defineStore('app', () => {
 	};
 
 	// 发送消息
-	const sendMessage = async (content) => {
+	const sendMessage = async (content, options = {}) => {
 		// 清理之前的状态
 		currentStatus.value = { type: 'sending' };
 		toolExecutions.value = [];
+
+		// 使用的 Agent ID（优先使用传入的，否则使用当前选中的）
+		const agentId = options.agentId || currentAgentId.value;
 
 		// 添加用户消息
 		messages.value.push({
@@ -327,6 +335,7 @@ export const useAppStore = defineStore('app', () => {
 			content: '',
 			streaming: true,
 			timestamp: new Date().toISOString(),
+			agentId, // 记录使用的 Agent
 		});
 
 		// 通过 WebSocket 发送
@@ -339,6 +348,7 @@ export const useAppStore = defineStore('app', () => {
 					payload: {
 						message: content,
 						sessionId: currentSessionId.value,
+						agentId,
 					},
 				})
 			);
@@ -355,6 +365,7 @@ export const useAppStore = defineStore('app', () => {
 					body: JSON.stringify({
 						message: content,
 						sessionId: currentSessionId.value,
+						agentId,
 					}),
 				});
 
@@ -400,11 +411,109 @@ export const useAppStore = defineStore('app', () => {
 		}
 	};
 
-	const loadTools = async () => {
+	const loadTools = async (grouped = false) => {
 		try {
-			tools.value = await api.get('/api/tools');
+			if (grouped) {
+				toolsGrouped.value = await api.get('/api/tools?grouped=true');
+			} else {
+				tools.value = await api.get('/api/tools');
+			}
 		} catch (error) {
 			console.error('Failed to load tools:', error);
+		}
+	};
+
+	// ========== Agent Profiles ==========
+
+	const loadAgents = async () => {
+		try {
+			const data = await api.get('/api/agents');
+			agents.value = data.agents || [];
+			currentAgentId.value = data.currentId || 'default';
+		} catch (error) {
+			console.error('Failed to load agents:', error);
+		}
+	};
+
+	const getAgent = (id) => {
+		return agents.value.find((a) => a.id === id);
+	};
+
+	const getCurrentAgent = () => {
+		return agents.value.find((a) => a.id === currentAgentId.value);
+	};
+
+	const createAgent = async (data) => {
+		try {
+			const result = await api.post('/api/agents', data);
+			await loadAgents();
+			return result.agent;
+		} catch (error) {
+			console.error('Failed to create agent:', error);
+			throw error;
+		}
+	};
+
+	const updateAgent = async (id, data) => {
+		try {
+			const result = await api.put(`/api/agents/${id}`, data);
+			await loadAgents();
+			return result.agent;
+		} catch (error) {
+			console.error('Failed to update agent:', error);
+			throw error;
+		}
+	};
+
+	const deleteAgent = async (id) => {
+		try {
+			await api.del(`/api/agents/${id}`);
+			await loadAgents();
+		} catch (error) {
+			console.error('Failed to delete agent:', error);
+			throw error;
+		}
+	};
+
+	const duplicateAgent = async (id) => {
+		try {
+			const result = await api.post(`/api/agents/${id}/duplicate`);
+			await loadAgents();
+			return result.agent;
+		} catch (error) {
+			console.error('Failed to duplicate agent:', error);
+			throw error;
+		}
+	};
+
+	const setCurrentAgent = async (id) => {
+		try {
+			await api.post('/api/agents/current', { id });
+			currentAgentId.value = id;
+		} catch (error) {
+			console.error('Failed to set current agent:', error);
+			throw error;
+		}
+	};
+
+	const exportAgent = async (id) => {
+		try {
+			const data = await api.get(`/api/agents/${id}/export`);
+			return data;
+		} catch (error) {
+			console.error('Failed to export agent:', error);
+			throw error;
+		}
+	};
+
+	const importAgent = async (data) => {
+		try {
+			const result = await api.post('/api/agents/import', data);
+			await loadAgents();
+			return result.agent;
+		} catch (error) {
+			console.error('Failed to import agent:', error);
+			throw error;
 		}
 	};
 
@@ -489,12 +598,15 @@ export const useAppStore = defineStore('app', () => {
 		messages,
 		providers,
 		tools,
+		toolsGrouped,
 		config,
 		currentStatus,
 		toolExecutions,
 		debugConfirm,
 		securityConfirm,
 		logs,
+		agents,
+		currentAgentId,
 
 		// 方法
 		setConnected,
@@ -510,5 +622,17 @@ export const useAppStore = defineStore('app', () => {
 		sendDebugResponse,
 		sendSecurityResponse,
 		clearLogs,
+
+		// Agent Profiles
+		loadAgents,
+		getAgent,
+		getCurrentAgent,
+		createAgent,
+		updateAgent,
+		deleteAgent,
+		duplicateAgent,
+		setCurrentAgent,
+		exportAgent,
+		importAgent,
 	};
 });

@@ -7,13 +7,18 @@ import { logger } from '../utils/logger.js';
 import type { Gateway } from '../gateway/index.js';
 import type { ToolSchema, ToolExecuteResult } from '../types/index.js';
 
+interface ArrayItemSchema {
+	type: string;
+	items?: ArrayItemSchema; // 支持嵌套数组
+}
+
 interface ParameterSchema {
 	type: string;
 	description?: string;
 	required?: boolean;
 	enum?: string[];
 	default?: unknown;
-	items?: { type: string }; // 用于 array 类型
+	items?: ArrayItemSchema; // 用于 array 类型，支持嵌套
 }
 
 interface ToolConfig {
@@ -43,6 +48,38 @@ export class BaseTool {
 	}
 
 	/**
+	 * 递归修复 schema，确保所有 array 类型都有 items
+	 */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	private fixSchemaItems(schema: any): any {
+		if (!schema || typeof schema !== 'object') return schema;
+
+		const fixed = { ...schema };
+
+		// 数组类型必须有 items
+		if (fixed.type === 'array' && !fixed.items) {
+			fixed.items = { type: 'string' };
+		}
+
+		// 递归处理 items
+		if (fixed.items) {
+			fixed.items = this.fixSchemaItems(fixed.items);
+		}
+
+		// 递归处理 properties
+		if (fixed.properties && typeof fixed.properties === 'object') {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const fixedProps: Record<string, any> = {};
+			for (const [k, v] of Object.entries(fixed.properties)) {
+				fixedProps[k] = this.fixSchemaItems(v);
+			}
+			fixed.properties = fixedProps;
+		}
+
+		return fixed;
+	}
+
+	/**
 	 * 获取工具 Schema（用于 AI 调用）
 	 */
 	getSchema(): ToolSchema {
@@ -54,17 +91,20 @@ export class BaseTool {
 				description?: string;
 				enum?: string[];
 				default?: unknown;
-				items?: { type: string };
+				items?: ArrayItemSchema;
 			}
 		> = {};
 
 		for (const [key, schema] of Object.entries(this.parameters)) {
+			// 修复可能缺少 items 的数组 schema
+			const fixedSchema = this.fixSchemaItems(schema);
+			
 			properties[key] = {
-				type: schema.type,
-				...(schema.description && { description: schema.description }),
-				...(schema.enum && { enum: schema.enum }),
-				...(schema.default !== undefined && { default: schema.default }),
-				...(schema.items && { items: schema.items }), // 支持 array 类型的 items
+				type: fixedSchema.type,
+				...(fixedSchema.description && { description: fixedSchema.description }),
+				...(fixedSchema.enum && { enum: fixedSchema.enum }),
+				...(fixedSchema.default !== undefined && { default: fixedSchema.default }),
+				...(fixedSchema.items && { items: fixedSchema.items }), // 支持 array 类型的 items（含嵌套）
 			};
 		}
 
@@ -201,6 +241,58 @@ export class ToolRegistry {
 	}
 
 	/**
+	 * 重新加载 MCP 工具（热重载）
+	 */
+	async reloadMcpTools(): Promise<{ added: string[]; removed: string[]; total: number }> {
+		// 1. 关闭现有 MCP 连接
+		if (this.mcpManager) {
+			await this.mcpManager.close();
+			this.mcpManager = null;
+		}
+
+		// 2. 移除所有 MCP 工具
+		const removedTools: string[] = [];
+		for (const [name, tool] of this.tools) {
+			if (name.startsWith('mcp_')) {
+				this.tools.delete(name);
+				removedTools.push(name);
+			}
+		}
+
+		// 3. 重新加载 MCP 配置
+		this.gateway.config.reload();
+
+		// 4. 重新注册 MCP 工具
+		const addedTools: string[] = [];
+		const enabled = this.gateway.config.get<boolean>('mcp.enabled', false);
+		const servers = this.gateway.config.get<Array<{ name: string; command?: string; args?: string[]; url?: string }>>('mcp.servers', []);
+
+		if (enabled && Array.isArray(servers) && servers.length > 0) {
+			try {
+				const { McpClientManager } = await import('../services/mcp-client.js');
+				const { McpToolAdapter } = await import('./mcp-adapter.js');
+				this.mcpManager = new McpClientManager(this.gateway.config, this.logger);
+				const tools = await this.mcpManager.init();
+				for (const info of tools) {
+					const adapter = new McpToolAdapter(this.mcpManager, info, this.gateway);
+					this.register(adapter);
+					addedTools.push(adapter.name);
+				}
+			} catch (e) {
+				this.logger.warn('MCP 工具重载失败:', (e as Error).message);
+			}
+		}
+
+		this.logger.info(`MCP 工具已重载: 移除 ${removedTools.length} 个，添加 ${addedTools.length} 个`);
+
+		return {
+			added: addedTools,
+			removed: removedTools,
+			total: addedTools.length,
+		};
+	}
+
+	/**
 	 * 注册内置工具
 	 */
 	private async registerBuiltinTools(): Promise<void> {
@@ -214,6 +306,13 @@ export class ToolRegistry {
 			{ name: 'computer', module: './computer.js' }, // 鼠标键盘控制（桌面操作）
 			{ name: 'browser', module: './browser.js' }, // Playwright 浏览器控制
 			{ name: 'web', module: './web.js' }, // 网页获取
+			{ name: 'file', module: './file.js' }, // 文件操作
+			{ name: 'office', module: './office.js' }, // Office 文档（Excel/Word/PDF）
+			{ name: 'clipboard', module: './clipboard.js' }, // 剪贴板操作
+			{ name: 'http', module: './http.js' }, // HTTP 请求
+			{ name: 'notify', module: './notify.js' }, // 系统通知
+			{ name: 'window', module: './window.js' }, // 窗口管理
+			{ name: 'system_info', module: './system-info.js' }, // 系统信息（公网IP等）
 		];
 
 		for (const { name, module } of builtinTools) {
@@ -270,6 +369,31 @@ export class ToolRegistry {
 		return Array.from(this.tools.values())
 			.filter((t) => t.enabled)
 			.map((t) => t.getInfo());
+	}
+
+	/**
+	 * 列出所有工具（分类）
+	 */
+	listToolsGrouped(): {
+		builtin: ReturnType<BaseTool['getInfo']>[];
+		mcp: ReturnType<BaseTool['getInfo']>[];
+	} {
+		const builtin: ReturnType<BaseTool['getInfo']>[] = [];
+		const mcp: ReturnType<BaseTool['getInfo']>[] = [];
+
+		for (const tool of this.tools.values()) {
+			if (!tool.enabled) continue;
+			const info = tool.getInfo();
+
+			// MCP 工具名称以 mcp_ 开头
+			if (tool.name.startsWith('mcp_')) {
+				mcp.push(info);
+			} else {
+				builtin.push(info);
+			}
+		}
+
+		return { builtin, mcp };
 	}
 
 	/**

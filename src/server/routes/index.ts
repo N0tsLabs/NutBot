@@ -320,7 +320,14 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 
 		// ==================== 工具管理 ====================
 
-		fastify.get('/tools', async () => {
+		// 获取工具列表（支持分组）
+		fastify.get<{
+			Querystring: { grouped?: string };
+		}>('/tools', async (request) => {
+			const grouped = request.query.grouped === 'true';
+			if (grouped) {
+				return gateway.toolRegistry.listToolsGrouped();
+			}
 			return gateway.toolRegistry.listTools();
 		});
 
@@ -403,6 +410,7 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 
 		fastify.get('/user', async () => {
 			return {
+				aiName: gateway.config.get<string>('user.aiName') || 'NutBot',
 				name: gateway.config.get<string>('user.name'),
 				location: gateway.config.get<string>('user.location'),
 				timezone: gateway.config.get<string>('user.timezone'),
@@ -413,6 +421,7 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 
 		fastify.put<{
 			Body: {
+				aiName?: string;
 				name?: string;
 				location?: string;
 				timezone?: string;
@@ -420,8 +429,9 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 				language?: string;
 			};
 		}>('/user', async (request) => {
-			const { name, location, timezone, customPrompt, language } = request.body;
+			const { aiName, name, location, timezone, customPrompt, language } = request.body;
 
+			if (aiName !== undefined) gateway.config.set('user.aiName', aiName || 'NutBot');
 			if (name !== undefined) gateway.config.set('user.name', name || null);
 			if (location !== undefined) gateway.config.set('user.location', location || null);
 			if (timezone !== undefined) gateway.config.set('user.timezone', timezone || null);
@@ -432,17 +442,19 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			return { success: true };
 		});
 
-		// ==================== Agent 配置 ====================
+		// ==================== Agent 配置（旧版兼容） ====================
 
 		fastify.get('/agent', async () => {
+			// 返回当前选中的 Agent Profile 配置
+			const current = gateway.agentProfiles.getCurrent();
 			return {
-				defaultModel: gateway.config.get<string | null>('agent.defaultModel'),
-				systemPrompt: gateway.config.get<string | null>('agent.systemPrompt'),
-				maxIterations: gateway.config.get<number>('agent.maxIterations', 20),
-				timeout: gateway.config.get<number>('agent.timeout', 300000),
+				defaultModel: current.model || gateway.config.get<string | null>('agent.defaultModel'),
+				systemPrompt: current.systemPrompt || gateway.config.get<string | null>('agent.systemPrompt'),
+				maxIterations: current.maxIterations || gateway.config.get<number>('agent.maxIterations', 30),
+				timeout: current.timeout || gateway.config.get<number>('agent.timeout', 300000),
 				debugMode: gateway.config.get<boolean>('agent.debugMode', false),
-				temperature: gateway.config.get<number | null>('agent.temperature'),
-				maxTokens: gateway.config.get<number | null>('agent.maxTokens'),
+				temperature: current.temperature || gateway.config.get<number | null>('agent.temperature'),
+				maxTokens: current.maxTokens || gateway.config.get<number | null>('agent.maxTokens'),
 			};
 		});
 
@@ -458,6 +470,7 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			};
 		}>('/agent', async (request) => {
 			const body = request.body;
+			// 同时更新全局配置和当前 Agent Profile
 			if (body.defaultModel !== undefined) gateway.config.set('agent.defaultModel', body.defaultModel);
 			if (body.systemPrompt !== undefined) gateway.config.set('agent.systemPrompt', body.systemPrompt);
 			if (body.maxIterations !== undefined) gateway.config.set('agent.maxIterations', body.maxIterations);
@@ -466,7 +479,156 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			if (body.temperature !== undefined) gateway.config.set('agent.temperature', body.temperature);
 			if (body.maxTokens !== undefined) gateway.config.set('agent.maxTokens', body.maxTokens);
 			gateway.config.save();
+
+			// 更新当前 Agent Profile
+			const currentId = gateway.agentProfiles.getCurrentId();
+			await gateway.agentProfiles.update(currentId, {
+				model: body.defaultModel || undefined,
+				systemPrompt: body.systemPrompt || undefined,
+				maxIterations: body.maxIterations,
+				timeout: body.timeout,
+				temperature: body.temperature || undefined,
+				maxTokens: body.maxTokens || undefined,
+			});
+
 			return { success: true };
+		});
+
+		// ==================== Agent Profiles 管理 ====================
+
+		// 获取所有 Agent 列表
+		fastify.get('/agents', async () => {
+			return {
+				agents: gateway.agentProfiles.list(),
+				currentId: gateway.agentProfiles.getCurrentId(),
+			};
+		});
+
+		// 创建新 Agent
+		fastify.post<{
+			Body: {
+				name: string;
+				description?: string;
+				icon?: string;
+				model?: string;
+				temperature?: number;
+				maxTokens?: number;
+				systemPrompt?: string;
+				maxIterations?: number;
+				timeout?: number;
+				tools?: { enabled?: string[]; disabled?: string[] };
+			};
+		}>('/agents', async (request, reply) => {
+			try {
+				const agent = await gateway.agentProfiles.create(request.body);
+				return { success: true, agent };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
+		});
+
+		// 获取单个 Agent
+		fastify.get<{ Params: { id: string } }>('/agents/:id', async (request, reply) => {
+			const agent = gateway.agentProfiles.get(request.params.id);
+			if (!agent) {
+				return reply.code(404).send({ error: true, message: 'Agent not found' });
+			}
+			return agent;
+		});
+
+		// 更新 Agent
+		fastify.put<{
+			Params: { id: string };
+			Body: {
+				name?: string;
+				description?: string;
+				icon?: string;
+				model?: string;
+				temperature?: number;
+				maxTokens?: number;
+				systemPrompt?: string;
+				maxIterations?: number;
+				timeout?: number;
+				tools?: { enabled?: string[]; disabled?: string[] };
+			};
+		}>('/agents/:id', async (request, reply) => {
+			try {
+				const agent = await gateway.agentProfiles.update(request.params.id, request.body);
+				return { success: true, agent };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
+		});
+
+		// 删除 Agent
+		fastify.delete<{ Params: { id: string } }>('/agents/:id', async (request, reply) => {
+			try {
+				await gateway.agentProfiles.delete(request.params.id);
+				return { success: true };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
+		});
+
+		// 复制 Agent
+		fastify.post<{ Params: { id: string } }>('/agents/:id/duplicate', async (request, reply) => {
+			try {
+				const agent = await gateway.agentProfiles.duplicate(request.params.id);
+				return { success: true, agent };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
+		});
+
+		// 导出 Agent
+		fastify.get<{ Params: { id: string } }>('/agents/:id/export', async (request, reply) => {
+			try {
+				const data = gateway.agentProfiles.export(request.params.id);
+				const agent = gateway.agentProfiles.get(request.params.id);
+				const filename = `${agent?.name || 'agent'}.nutbot-agent.json`;
+
+				reply.header('Content-Type', 'application/json');
+				reply.header('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+				return data;
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
+		});
+
+		// 导入 Agent
+		fastify.post<{
+			Body: {
+				version: number;
+				agent: {
+					name: string;
+					description?: string;
+					icon?: string;
+					model?: string;
+					temperature?: number;
+					maxTokens?: number;
+					systemPrompt?: string;
+					maxIterations?: number;
+					timeout?: number;
+					tools?: { enabled?: string[]; disabled?: string[] };
+				};
+			};
+		}>('/agents/import', async (request, reply) => {
+			try {
+				const agent = await gateway.agentProfiles.import(request.body);
+				return { success: true, agent };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
+		});
+
+		// 设置当前 Agent
+		fastify.post<{ Body: { id: string } }>('/agents/current', async (request, reply) => {
+			try {
+				await gateway.agentProfiles.setCurrent(request.body.id);
+				return { success: true, currentId: request.body.id };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
 		});
 
 		// ==================== MCP 配置 ====================
@@ -489,6 +651,22 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			if (servers !== undefined) gateway.config.set('mcp.servers', servers);
 			gateway.config.save();
 			return { success: true };
+		});
+
+		// MCP 热重载
+		fastify.post('/mcp/reload', async () => {
+			try {
+				const result = await gateway.toolRegistry.reloadMcpTools();
+				return {
+					success: true,
+					...result,
+				};
+			} catch (error) {
+				return {
+					success: false,
+					error: (error as Error).message,
+				};
+			}
 		});
 
 		// ==================== Skills 配置 ====================

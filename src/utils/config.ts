@@ -285,6 +285,30 @@ class ConfigManager {
 	}
 
 	/**
+	 * 重新加载配置（热重载）
+	 */
+	reload(): AppConfig {
+		if (!this.configPath || !this.defaultConfig) {
+			throw new Error('配置未初始化');
+		}
+
+		// 重新加载用户配置
+		let userConfig: Partial<AppConfig> = {};
+		if (existsSync(this.configPath)) {
+			userConfig = this.loadJSON(this.configPath) as Partial<AppConfig>;
+			console.log('[Config] 重新加载用户配置');
+		}
+
+		// 合并配置
+		this.config = deepMerge(
+			JSON.parse(JSON.stringify(this.defaultConfig)),
+			userConfig
+		) as AppConfig;
+
+		return this.config;
+	}
+
+	/**
 	 * 添加 AI Provider
 	 */
 	addProvider(id: string, providerConfig: ProviderConfig): void {
@@ -337,4 +361,5 @@ class ConfigManager {
 
 // 单例导出
 export const configManager = new ConfigManager();
+export { ConfigManager };
 export default configManager;

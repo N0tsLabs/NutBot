@@ -1,5 +1,8 @@
 <template>
 	<div class="app-container" :data-theme="theme">
+		<!-- Toast 通知 -->
+		<Toast />
+
 		<!-- 移动端顶部导航栏 -->
 		<header class="mobile-header md:hidden">
 			<button @click="sidebarOpen = !sidebarOpen" class="menu-btn">
@@ -71,6 +74,7 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue';
 import { useAppStore } from './stores/app';
 import { getBaseUrl } from './utils/api';
+import Toast from './components/Toast.vue';
 
 const store = useAppStore();
 const connected = ref(false);
@@ -80,7 +84,10 @@ const theme = ref('dark');
 // 导航项
 const navItems = [
 	{ path: '/', name: '对话', icon: '💬' },
-	{ path: '/tools', name: '工具', icon: '🔧' },
+	{ path: '/agents', name: 'Agent', icon: '🎯' },
+	{ path: '/providers', name: 'Provider', icon: '🤖' },
+	{ path: '/mcp', name: 'MCP', icon: '🔌' },
+	{ path: '/skills', name: 'Skills', icon: '📚' },
 	{ path: '/cron', name: '定时任务', icon: '⏰' },
 	{ path: '/logs', name: '日志', icon: '📋' },
 	{ path: '/settings', name: '设置', icon: '⚙️' },

@@ -63,8 +63,8 @@
 				<span class="log-level" :class="'level-' + log.level">
 					{{ log.icon || getLevelIcon(log.level) }}
 				</span>
-				<span class="log-prefix" v-if="log.prefix">{{ log.prefix }}</span>
-				<span class="log-message">{{ log.message }}</span>
+				<span class="log-prefix" v-if="log.prefix" v-html="highlightText(log.prefix)"></span>
+				<span class="log-message" v-html="highlightText(log.message)"></span>
 			</div>
 		</div>
 
@@ -125,6 +125,17 @@ const formatTime = (time) => {
 		second: '2-digit',
 		fractionalSecondDigits: 3,
 	});
+};
+
+// 高亮搜索关键字
+const highlightText = (text) => {
+	if (!text || !searchText.value) return text;
+	const query = searchText.value.trim();
+	if (!query) return text;
+	
+	const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const regex = new RegExp(`(${escaped})`, 'gi');
+	return text.replace(regex, '<mark class="highlight">$1</mark>');
 };
 
 // 获取级别图标
@@ -344,5 +355,13 @@ onMounted(() => {
 
 .status-dot.offline {
 	background-color: var(--error);
+}
+
+/* 搜索高亮 */
+:deep(.highlight) {
+	background-color: rgba(245, 158, 11, 0.3);
+	color: #fbbf24;
+	padding: 0 2px;
+	border-radius: 2px;
 }
 </style>

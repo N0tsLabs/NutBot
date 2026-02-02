@@ -20,7 +20,8 @@
 		"systemPrompt": null,
 		"debugMode": false,
 		"temperature": null,
-		"maxTokens": null
+		"maxTokens": null,
+		"toolCallMode": "prompt"
 	},
 	"network": {
 		"timeout": 60000,

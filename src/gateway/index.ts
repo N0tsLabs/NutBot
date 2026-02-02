@@ -11,6 +11,7 @@ import { ProviderManager } from '../providers/index.js';
 import { ToolRegistry } from '../tools/index.js';
 import { Agent } from '../agent/index.js';
 import { SessionManager } from '../agent/session.js';
+import { AgentProfileManager } from '../agent/profiles.js';
 import { CronManager } from '../cron/index.js';
 import { systemInfo } from '../tools/exec.js';
 import type { AgentChunk } from '../types/index.js';
@@ -25,6 +26,7 @@ interface ChatOptions {
 	model?: string;
 	systemPrompt?: string;
 	maxIterations?: number;
+	agentId?: string; // 使用的 Agent Profile ID
 }
 
 /**
@@ -43,6 +45,7 @@ export class Gateway {
 	toolRegistry!: ToolRegistry;
 	agent!: Agent;
 	sessionManager!: SessionManager;
+	agentProfiles!: AgentProfileManager;
 	cronManager!: CronManager;
 
 	running = false;
@@ -100,17 +103,22 @@ export class Gateway {
 		await this.sessionManager.init();
 		this.logger.debug('会话管理器初始化完成');
 
-		// 4. Agent
+		// 4. Agent Profiles 管理器
+		this.agentProfiles = new AgentProfileManager();
+		await this.agentProfiles.init();
+		this.logger.debug('Agent Profiles 管理器初始化完成');
+
+		// 5. Agent
 		this.agent = new Agent(this);
 		await this.agent.init();
 		this.logger.debug('Agent 初始化完成');
 
-		// 5. Cron 管理器
+		// 6. Cron 管理器
 		this.cronManager = new CronManager(this);
 		await this.cronManager.init();
 		this.logger.debug('定时任务管理器初始化完成');
 
-		// 6. HTTP/WS 服务器
+		// 7. HTTP/WS 服务器
 		this.server = new Server(this, {
 			host: this.config.get('server.host', '127.0.0.1'),
 			port: this.config.get('server.port', 18800),
@@ -185,7 +193,7 @@ export class Gateway {
 	 * 执行聊天
 	 */
 	async *chat(message: string, options: ChatOptions = {}): AsyncGenerator<AgentChunk> {
-		const { sessionId } = options;
+		const { sessionId, agentId } = options;
 
 		// 获取或创建会话
 		let session = null;
@@ -197,8 +205,20 @@ export class Gateway {
 			session = this.sessionManager.createSession();
 		}
 
+		// 获取 Agent Profile 配置
+		const agentConfig = this.agentProfiles.getRunConfig(agentId);
+
+		// 合并选项（传入的选项优先级更高）
+		const mergedOptions = {
+			...agentConfig,
+			...options,
+			model: options.model || agentConfig.model,
+			systemPrompt: options.systemPrompt || agentConfig.systemPrompt,
+			maxIterations: options.maxIterations || agentConfig.maxIterations,
+		};
+
 		// 执行 Agent
-		for await (const chunk of this.agent.run(message, session, options)) {
+		for await (const chunk of this.agent.run(message, session, mergedOptions)) {
 			yield chunk;
 		}
 	}

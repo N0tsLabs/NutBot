@@ -15,12 +15,20 @@ import { ocrSomService } from '../services/ocr-som.js';
 import { drawClickPosition, saveDebugImages, cleanupOldDebugImages, type DebugInfo } from '../services/debug-visualizer.js';
 import { securityGuard } from '../services/security-guard.js';
 import { loadSkills, skillsToPromptSection } from '../services/skills-loader.js';
+import { parsePromptResponse, generateToolCallFormatPrompt } from './prompt-parser.js';
 
 interface AgentRunOptions {
 	model?: string;
 	systemPrompt?: string;
 	maxIterations?: number;
 	debugMode?: boolean;
+	timeout?: number;
+	temperature?: number;
+	maxTokens?: number;
+	tools?: {
+		enabled?: string[];
+		disabled?: string[];
+	};
 }
 
 // 缓存最近的截图和 OCR 结果（调试模式用）
@@ -63,10 +71,14 @@ export class Agent {
 
 	/**
 	 * 生成系统提示（根据 Vision 能力和用户信息动态调整）
+	 * @param hasVision 是否支持图像理解
+	 * @param userInfo 用户信息
+	 * @param toolFormatPrompt 工具调用格式提示（Prompt 模式下使用）
 	 */
 	private generateSystemPrompt(
 		hasVision: boolean,
-		userInfo?: { name?: string; location?: UserLocation; customPrompt?: string; language?: string }
+		userInfo?: { name?: string; location?: UserLocation; customPrompt?: string; language?: string },
+		toolFormatPrompt?: string
 	): string {
 		// 用户信息部分
 		const userInfoSection = userInfo
@@ -189,7 +201,8 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 			taskModes +
 			desktopMode +
 			skillsSection +
-			footer
+			footer +
+			(toolFormatPrompt ? `\n\n${toolFormatPrompt}` : '')
 		);
 	}
 
@@ -250,21 +263,44 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 				language: language || undefined,
 			};
 
-			// 获取系统提示（根据 Vision 能力和用户信息动态生成）
-			const systemPrompt =
-				options.systemPrompt ||
-				this.gateway.config.get<string>('agent.systemPrompt') ||
-				this.generateSystemPrompt(hasVision, userInfo);
+			// 获取工具调用模式
+			const toolCallMode = this.gateway.config.get<string>('agent.toolCallMode', 'prompt') as 'function' | 'prompt';
+			this.logger.info(`工具调用模式: ${toolCallMode === 'prompt' ? 'Prompt JSON' : 'Function Calling'}`);
 
 			// 获取工具（如果不支持 Vision，过滤掉需要 Vision 的工具）
 			let tools = this.gateway.toolRegistry.getToolSchemas();
 			if (!hasVision) {
 				tools = tools.filter((t) => !VISION_REQUIRED_TOOLS.includes(t.name));
 			}
+
+			// 根据 Agent Profile 的工具配置过滤
+			if (options.tools) {
+				const { enabled, disabled } = options.tools;
+				if (enabled && enabled.length > 0) {
+					// 只启用指定的工具
+					tools = tools.filter((t) => enabled.includes(t.name));
+				}
+				if (disabled && disabled.length > 0) {
+					// 禁用指定的工具
+					tools = tools.filter((t) => !disabled.includes(t.name));
+				}
+			}
+
 			this.logger.info(`可用工具: ${tools.map((t) => t.name).join(', ') || '无'}`);
 
+			// 生成工具格式提示（Prompt 模式下使用）
+			const toolFormatPrompt = toolCallMode === 'prompt' && tools.length > 0
+				? generateToolCallFormatPrompt(tools)
+				: undefined;
+
+			// 获取系统提示（根据 Vision 能力和用户信息动态生成）
+			const systemPrompt =
+				options.systemPrompt ||
+				this.gateway.config.get<string>('agent.systemPrompt') ||
+				this.generateSystemPrompt(hasVision, userInfo, toolFormatPrompt);
+
 			// 最大迭代次数（用于工具调用循环）
-			const maxIterations = options.maxIterations || this.gateway.config.get<number>('agent.maxIterations', 20);
+			const maxIterations = options.maxIterations || this.gateway.config.get<number>('agent.maxIterations', 30);
 
 			// 调试模式设置（移到循环外，保持状态跨迭代）
 			const debugMode = options.debugMode ?? this.gateway.config.get<boolean>('agent.debugMode', false);
@@ -291,6 +327,7 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 				let fullContent = '';
 				let toolCalls: Array<ToolCall | ToolUse> = [];
 				let finishReason: string | null = null;
+				let thinking = ''; // AI 的思考内容
 
 				yield { type: 'thinking', iteration };
 
@@ -305,18 +342,28 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 				}, 10000); // 每 10 秒检查一次
 
 				try {
-					for await (const chunk of this.gateway.providerManager.chat(modelRef, messages, {
-						tools: tools.length > 0 ? tools : undefined,
-					})) {
+					// Prompt 模式：不传递 tools 参数，从文本中解析
+					// Function 模式：传递 tools 参数，由 API 返回结构化工具调用
+					const chatOptions = toolCallMode === 'function' && tools.length > 0
+						? { tools }
+						: {};
+
+					for await (const chunk of this.gateway.providerManager.chat(modelRef, messages, chatOptions)) {
 						lastChunkTime = Date.now();
 						responseStarted = true;
 
 						if (chunk.type === 'content') {
 							fullContent = chunk.fullContent || fullContent + (chunk.content || '');
-							yield { type: 'content', content: chunk.content };
+							// Prompt 模式下不实时输出内容（因为是 JSON 格式，需要解析后才输出）
+							if (toolCallMode === 'function') {
+								yield { type: 'content', content: chunk.content };
+							}
 						} else if (chunk.type === 'finish') {
 							finishReason = chunk.reason || null;
-							toolCalls = (chunk.toolCalls || []) as ToolCall[];
+							// Function 模式下直接获取工具调用
+							if (toolCallMode === 'function') {
+								toolCalls = (chunk.toolCalls || []) as ToolCall[];
+							}
 						} else if (chunk.type === 'tool_use' && chunk.toolUse) {
 							toolCalls.push(chunk.toolUse);
 						}
@@ -325,11 +372,51 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 					clearInterval(timeoutCheckInterval);
 				}
 
+				// Prompt 模式：解析 JSON 响应
+				if (toolCallMode === 'prompt' && fullContent) {
+					const parsed = parsePromptResponse(fullContent);
+					thinking = parsed.thinking;
+					
+					if (thinking) {
+						this.logger.info(`AI 思考: ${thinking.substring(0, 100)}${thinking.length > 100 ? '...' : ''}`);
+					}
+
+					// 如果有工具调用
+					if (parsed.toolCalls.length > 0) {
+						// 转换为标准格式
+						toolCalls = parsed.toolCalls.map((tc, idx) => ({
+							id: `prompt_${Date.now()}_${idx}`,
+							type: 'function' as const,
+							function: {
+								name: tc.name,
+								arguments: JSON.stringify(tc.arguments),
+							},
+						}));
+						// 输出思考内容
+						if (thinking) {
+							yield { type: 'content', content: thinking };
+						}
+					} else if (parsed.response) {
+						// 有直接回复，输出
+						yield { type: 'content', content: parsed.response };
+						fullContent = parsed.response;
+					} else {
+						// 没有解析到有效内容，原样输出
+						yield { type: 'content', content: fullContent };
+					}
+				} else if (toolCallMode === 'function') {
+					// Function 模式下的思考内容
+					thinking = fullContent || '';
+					if (thinking) {
+						this.logger.info(`AI 思考: ${thinking.substring(0, 100)}${thinking.length > 100 ? '...' : ''}`);
+					}
+				}
+
 				// 保存 AI 响应
 				if (fullContent || toolCalls.length > 0) {
 					this.gateway.sessionManager.addMessage(session.id, {
 						role: 'assistant',
-						content: fullContent,
+						content: toolCallMode === 'prompt' ? (thinking || fullContent) : fullContent,
 						toolCalls: toolCalls.length > 0 ? this.normalizeToolCalls(toolCalls) : undefined,
 					});
 				}
@@ -338,24 +425,21 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 				if (toolCalls.length === 0 || finishReason === 'stop') {
 					// 没有工具调用，结束
 					this.logger.info(`AI 响应完成，无工具调用`);
-					if (fullContent) {
+					const responseContent = toolCallMode === 'prompt' 
+						? parsePromptResponse(fullContent).response || fullContent
+						: fullContent;
+					if (responseContent) {
 						this.logger.debug(
-							`AI 回复: ${fullContent.substring(0, 200)}${fullContent.length > 200 ? '...' : ''}`
+							`AI 回复: ${responseContent.substring(0, 200)}${responseContent.length > 200 ? '...' : ''}`
 						);
 					}
-					yield { type: 'done', content: fullContent };
+					yield { type: 'done', content: responseContent };
 					break;
 				}
 
 				// 执行工具调用
 				this.logger.info(`AI 请求执行 ${toolCalls.length} 个工具`);
-				yield { type: 'tools', count: toolCalls.length, thinking: fullContent };
-
-				// AI 的思考内容（工具调用前的文字）
-				const thinking = fullContent || '';
-				if (thinking) {
-					this.logger.info(`AI 思考: ${thinking.substring(0, 100)}${thinking.length > 100 ? '...' : ''}`);
-				}
+				yield { type: 'tools', count: toolCalls.length, thinking };
 
 				for (const toolCall of toolCalls) {
 					const toolName = this.getToolName(toolCall);

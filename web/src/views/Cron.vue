@@ -81,6 +81,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue';
+import toast from '../utils/toast';
 
 const jobs = ref([]);
 const showAddDialog = ref(false);
@@ -101,7 +102,7 @@ const loadJobs = async () => {
 
 const addJob = async () => {
 	if (!newJob.schedule || !newJob.task) {
-		alert('请填写 Cron 表达式和任务内容');
+		toast.warning('请填写 Cron 表达式和任务内容');
 		return;
 	}
 
@@ -115,8 +116,9 @@ const addJob = async () => {
 		await loadJobs();
 		showAddDialog.value = false;
 		Object.assign(newJob, { name: '', schedule: '', task: '' });
+		toast.success('添加成功');
 	} catch (error) {
-		alert('添加失败: ' + error.message);
+		toast.error('添加失败: ' + error.message);
 	}
 };
 
@@ -124,9 +126,9 @@ const runJob = async (id) => {
 	try {
 		await fetch(`/api/cron/${id}/run`, { method: 'POST' });
 		await loadJobs();
-		alert('任务已执行');
+		toast.success('任务已执行');
 	} catch (error) {
-		alert('执行失败: ' + error.message);
+		toast.error('执行失败: ' + error.message);
 	}
 };
 
@@ -139,7 +141,7 @@ const toggleJob = async (job) => {
 		});
 		await loadJobs();
 	} catch (error) {
-		alert('操作失败: ' + error.message);
+		toast.error('操作失败: ' + error.message);
 	}
 };
 
@@ -149,8 +151,9 @@ const deleteJob = async (id) => {
 	try {
 		await fetch(`/api/cron/${id}`, { method: 'DELETE' });
 		await loadJobs();
+		toast.success('删除成功');
 	} catch (error) {
-		alert('删除失败: ' + error.message);
+		toast.error('删除失败: ' + error.message);
 	}
 };
 

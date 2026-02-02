@@ -251,4 +251,69 @@ export interface AgentOptions {
 	systemPrompt?: string;
 	maxIterations?: number;
 	sessionId?: string;
+	agentId?: string; // 使用的 Agent Profile ID
+}
+
+// ==================== Agent Profile 相关 ====================
+
+/**
+ * Agent 配置档案
+ * 支持多 Agent 管理，每个 Agent 有独立的配置
+ */
+export interface AgentProfile {
+	id: string; // UUID 或 'default'
+	name: string; // 名称，如 "通用助手"、"代码专家"
+	description?: string; // Agent 描述
+	icon?: string; // Emoji 或图标
+
+	// 模型配置
+	model?: string; // provider/model 格式
+	temperature?: number;
+	maxTokens?: number;
+
+	// 行为配置
+	systemPrompt?: string; // 系统提示词
+	maxIterations: number; // 默认 30
+	timeout: number; // 默认 300000
+
+	// 工具配置
+	tools?: {
+		enabled?: string[]; // 启用的工具（空数组=全部启用）
+		disabled?: string[]; // 禁用的工具
+	};
+
+	// 元数据
+	createdAt: string;
+	updatedAt: string;
+	isBuiltin?: boolean; // 内置 Agent 不可删除
+}
+
+/**
+ * Agent 导出格式
+ */
+export interface AgentExportData {
+	version: number;
+	agent: {
+		name: string;
+		description?: string;
+		icon?: string;
+		model?: string;
+		temperature?: number;
+		maxTokens?: number;
+		systemPrompt?: string;
+		maxIterations?: number;
+		timeout?: number;
+		tools?: {
+			enabled?: string[];
+			disabled?: string[];
+		};
+	};
+}
+
+/**
+ * Agent 列表响应
+ */
+export interface AgentListResponse {
+	agents: AgentProfile[];
+	currentId?: string; // 当前选中的 Agent ID
 }
