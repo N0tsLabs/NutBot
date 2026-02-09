@@ -89,6 +89,7 @@ export class BrowserTool extends BaseTool {
 						'close_tab', // 关闭当前标签页（任务完成后使用）
 						'close', // 关闭浏览器连接
 						'notify', // 发送浏览器通知（任务完成后通知用户）
+						'search', // 快速搜索（支持常用搜索引擎）
 					],
 				},
 				url: {
@@ -142,6 +143,15 @@ export class BrowserTool extends BaseTool {
 					type: 'string',
 					description: 'notify 操作的通知内容（任务完成的总结）',
 				},
+				searchQuery: {
+					type: 'string',
+					description: 'search 操作要搜索的关键词',
+				},
+				engine: {
+					type: 'string',
+					description: 'search 操作的搜索引擎 (google/bing/baidu，默认 google)',
+					enum: ['google', 'bing', 'baidu'],
+				},
 			},
 			...config,
 		});
@@ -167,7 +177,7 @@ export class BrowserTool extends BaseTool {
 		}
 	}
 
-	async execute(
+		async execute(
 		params: {
 			action: string;
 			url?: string;
@@ -182,6 +192,8 @@ export class BrowserTool extends BaseTool {
 			selector?: string;
 			notifyTitle?: string;
 			notifyMessage?: string;
+			searchQuery?: string;
+			engine?: string;
 		},
 		context: Record<string, unknown> = {}
 	): Promise<unknown> {
@@ -244,12 +256,21 @@ export class BrowserTool extends BaseTool {
 				return await this.closeBrowser();
 			case 'notify':
 				return await this.sendNotification(params.notifyTitle, params.notifyMessage);
+			case 'search':
+				return await this.quickSearch(params.searchQuery, params.engine);
 			default:
 				throw new Error(`未知操作: ${action}`);
 		}
 	}
 
 	private async openBrowser(): Promise<{ success: boolean; message: string }> {
+		// 验证现有连接是否仍然有效
+		if (this.context && this.page && !(await this.isConnectionValid())) {
+			this.logger.info('现有连接已失效，重新建立连接');
+			this.context = null;
+			this.page = null;
+		}
+
 		if (this.context && this.page) {
 			return { success: true, message: '浏览器已打开' };
 		}
@@ -682,10 +703,72 @@ export class BrowserTool extends BaseTool {
 	}
 
 	private async ensurePage(): Promise<Page> {
-		if (!this.page) {
+		if (!this.page || await this.isPageClosed(this.page)) {
+			this.logger.info('页面连接已失效，重新建立连接');
+			this.page = null;
+			this.context = null;
 			await this.openBrowser();
 		}
 		return this.page!;
+	}
+
+	/**
+	 * 检查页面是否已关闭
+	 */
+	private async isPageClosed(page: Page): Promise<boolean> {
+		try {
+			// 尝试一个轻量级操作来验证连接
+			await page.evaluate(() => true);
+			return false;
+		} catch (error) {
+			// 如果操作失败，说明页面已关闭
+			return true;
+		}
+	}
+
+	/**
+	 * 检查浏览器连接是否有效
+	 */
+	private async isConnectionValid(): Promise<boolean> {
+		try {
+			if (!this.page || !this.context) {
+				return false;
+			}
+
+			// 验证页面是否响应
+			await this.page.evaluate(() => true);
+			return true;
+		} catch (error) {
+			return false;
+		}
+	}
+
+	/**
+	 * 快速搜索 - 内置常用搜索引擎
+	 */
+	private async quickSearch(query: string | undefined, engine: string | undefined): Promise<{ success: boolean; url: string; title: string }> {
+		if (!query) {
+			throw new Error('search 操作需要 searchQuery 参数');
+		}
+
+		// 常用搜索引擎URL模板
+		const searchEngines: Record<string, string> = {
+			google: 'https://www.google.com/search?q=',
+			bing: 'https://www.bing.com/search?q=',
+			baidu: 'https://www.baidu.com/s?wd=',
+		};
+
+		const searchEngine = engine || 'google';
+		const baseUrl = searchEngines[searchEngine] || searchEngines.google;
+		const searchUrl = baseUrl + encodeURIComponent(query);
+
+		const page = await this.ensurePage();
+		await page.goto(searchUrl);
+
+		const title = await page.title();
+
+		this.logger.info(`已搜索: ${searchEngine} - "${query}" -> ${searchUrl}`);
+		return { success: true, url: searchUrl, title };
 	}
 
 	private async goto(url: string, timeout: number): Promise<{ success: boolean; url: string; title: string }> {
@@ -720,14 +803,27 @@ export class BrowserTool extends BaseTool {
 
 	/**
 	 * 获取页面快照 - 返回可交互元素列表
-	 * 参考 Moltbot 的 snapshot 设计
+	 * 参考 Moltbot 的 snapshot 设计，集成文本压缩功能
 	 */
 	private async snapshot(): Promise<{
 		success: boolean;
+		action: string;
 		url: string;
 		title: string;
 		elements: ElementRef[];
 		text: string;
+		compressedText?: string;
+		searchAnalysis?: {
+			found: boolean;
+			confidence: number;
+			elements: Array<{
+				ref: number;
+				type: string;
+				placeholder?: string;
+				text?: string;
+				reason: string;
+			}>;
+		};
 	}> {
 		const page = await this.ensurePage();
 
@@ -738,7 +834,7 @@ export class BrowserTool extends BaseTool {
 		const url = page.url();
 		const title = await page.title();
 
-		// 获取可交互元素
+		// 获取可交互元素（不限制数量）
 		const elements: ElementRef[] = await page.evaluate(() => {
 			const interactiveSelectors = [
 				'a[href]',
@@ -756,8 +852,8 @@ export class BrowserTool extends BaseTool {
 				'[tabindex]:not([tabindex="-1"])',
 			];
 
-			const elements: ElementRef[] = [];
-			const seen = new Set<Element>();
+			const elements: any[] = [];
+			const seen = new Set<any>();
 
 			for (const selector of interactiveSelectors) {
 				const els = document.querySelectorAll(selector);
@@ -771,7 +867,7 @@ export class BrowserTool extends BaseTool {
 					if (rect.top > window.innerHeight || rect.bottom < 0) continue;
 
 					const tagName = el.tagName.toLowerCase();
-					const input = el as HTMLInputElement;
+					const input = el as any;
 
 					elements.push({
 						ref: 0, // 后面填充
@@ -779,7 +875,7 @@ export class BrowserTool extends BaseTool {
 						role: el.getAttribute('role') || undefined,
 						name: el.getAttribute('name') || undefined,
 						text: (el.textContent || '').trim().substring(0, 100) || undefined,
-						href: (el as HTMLAnchorElement).href || undefined,
+						href: (el as any).href || undefined,
 						type: input.type || undefined,
 						placeholder: input.placeholder || undefined,
 						value: input.value || undefined,
@@ -813,21 +909,217 @@ export class BrowserTool extends BaseTool {
 			this.elementRefs.set(ref, `:nth-match(${selector}, ${i + 1})`);
 		}
 
-		// 获取页面主要文本内容
+		// 获取页面主要文本内容 - 增强版本
 		const textContent = await page.evaluate(() => {
-			const body = document.body.innerText || '';
-			return body.substring(0, 5000); // 限制长度
+			// @ts-ignore
+			const body = document.body?.innerText || '';
+			
+			// 尝试获取更详细的文本内容，特别是B站等复杂页面
+			let additionalContent: string[] = [];
+			
+			try {
+				// 查找可能包含粉丝数的元素
+				// @ts-ignore
+				const fanElements = document.querySelectorAll('[class*="fan"], [class*="follow"], [class*="count"], [class*="number"]');
+				// @ts-ignore
+				fanElements.forEach((el) => {
+					const text = el.innerText?.trim();
+					if (text && (text.includes('万') || text.includes('千') || /\d+/.test(text))) {
+						additionalContent.push(`粉丝信息: ${text}`);
+					}
+				});
+				
+				// 查找可能包含用户信息的元素
+				// @ts-ignore
+				const userElements = document.querySelectorAll('[class*="user"], [class*="name"], [class*="title"]');
+				// @ts-ignore
+				userElements.forEach((el) => {
+					const text = el.innerText?.trim();
+					if (text && text.length > 0 && text.length < 100) {
+						additionalContent.push(`用户信息: ${text}`);
+					}
+				});
+			} catch (e) {
+				console.warn('获取额外内容时出错:', e);
+			}
+			
+			const combined = body + '\n' + additionalContent.join('\n');
+			return combined.substring(0, 8000); // 增加长度限制
 		});
 
-		this.logger.info(`页面快照: ${elements.length} 个可交互元素`);
-
-		return {
-			success: true,
+		// 文本压缩和搜索框分析
+		const searchAnalysis = this.analyzeSearchElements(elements);
+		const compressedText = this.compressStructureToText({
 			url,
 			title,
-			elements: elements.slice(0, 50), // 限制返回数量
-			text: textContent.substring(0, 2000),
+			totalCount: elements.length,
+			elements: elements, // 给AI全部元素，不限制数量用于压缩
+			searchAnalysis
+		});
+
+		this.logger.info(`页面快照: ${elements.length} 个可交互元素，已启用文本压缩`);
+
+		const result = {
+			success: true,
+			action: 'snapshot', // 标识这是snapshot操作
+			url,
+			title,
+			elements: elements, // 给AI全部元素，不限制数量
+			text: textContent,
+			compressedText,
+			searchAnalysis,
 		};
+
+		// 调试日志：检查返回结果中的元素数量
+		this.logger.info(`🔍 调试：返回结果中的elements数量: ${result.elements.length}`);
+		
+		// 验证关键内容
+		const hasKeyContents = result.elements.some(el => 
+			el.text?.includes('影视飓风') || 
+			el.text?.includes('456万') || 
+			el.text?.includes('粉丝')
+		);
+		this.logger.info(`🔍 调试：包含关键内容: ${hasKeyContents}`);
+
+		return result;
+	}
+
+	/**
+	 * 智能搜索框分析
+	 */
+	private analyzeSearchElements(elements: ElementRef[]): {
+		found: boolean;
+		confidence: number;
+		elements: Array<{
+			ref: number;
+			type: string;
+			placeholder?: string;
+			text?: string;
+			reason: string;
+		}>;
+	} {
+		const searchIndicators = [
+			'search', '搜索', '搜一搜', '查找', 'find', 'search for',
+			'query', '关键词', 'keyword', 'input', 'input search',
+			'searchbox', 'search box', 'search input'
+		];
+
+		const searchElements: Array<{
+			ref: number;
+			type: string;
+			placeholder?: string;
+			text?: string;
+			reason: string;
+		}> = [];
+
+		let maxConfidence = 0;
+
+		for (const element of elements) {
+			let confidence = 0;
+			const reasons: string[] = [];
+
+			// 检查标签类型
+			if (element.tag === 'input') {
+				confidence += 20;
+				reasons.push('input元素');
+			}
+
+			// 检查type属性
+			if (element.type === 'search' || element.type === 'text') {
+				confidence += 30;
+				reasons.push(`type="${element.type}"`);
+			}
+
+			// 检查placeholder
+			if (element.placeholder) {
+				const placeholderLower = element.placeholder.toLowerCase();
+				for (const indicator of searchIndicators) {
+					if (placeholderLower.includes(indicator)) {
+						confidence += 25;
+						reasons.push(`占位符包含"${indicator}"`);
+						break;
+					}
+				}
+			}
+
+			// 检查文本内容
+			if (element.text) {
+				const textLower = element.text.toLowerCase();
+				for (const indicator of searchIndicators) {
+					if (textLower.includes(indicator)) {
+						confidence += 15;
+						reasons.push(`文本包含"${indicator}"`);
+						break;
+					}
+				}
+			}
+
+			// 检查name属性
+			if (element.name) {
+				const nameLower = element.name.toLowerCase();
+				for (const indicator of searchIndicators) {
+					if (nameLower.includes(indicator)) {
+						confidence += 20;
+						reasons.push(`name属性包含"${indicator}"`);
+						break;
+					}
+				}
+			}
+
+			if (confidence >= 20) { // 至少20分才认为是搜索框
+				searchElements.push({
+					ref: element.ref!,
+					type: element.type || 'text',
+					placeholder: element.placeholder,
+					text: element.text,
+					reason: reasons.join(', ')
+				});
+				maxConfidence = Math.max(maxConfidence, confidence);
+			}
+		}
+
+		return {
+			found: searchElements.length > 0,
+			confidence: maxConfidence,
+			elements: searchElements
+		};
+	}
+
+	/**
+	 * 文本压缩：将页面结构压缩为AI友好的文本格式
+	 */
+	private compressStructureToText(structure: {
+		url: string;
+		title: string;
+		totalCount: number;
+		elements: ElementRef[];
+		searchAnalysis: any;
+	}): string {
+		// 简化输出，只返回JSON结构
+		const simplifiedData = {
+			url: structure.url,
+			title: structure.title,
+			totalElements: structure.totalCount,
+			elements: structure.elements.map((el: any) => ({
+				ref: el.ref,
+				tag: el.tag,
+				text: el.text,
+				type: el.type,
+				placeholder: el.placeholder,
+				href: el.href,
+				position: el.rect
+			})),
+			searchFound: structure.searchAnalysis.found,
+			searchElements: structure.searchAnalysis.elements?.map((el: any) => ({
+				ref: el.ref,
+				type: el.type,
+				placeholder: el.placeholder,
+				text: el.text,
+				confidence: el.confidence
+			})) || []
+		};
+
+		return JSON.stringify(simplifiedData, null, 2);
 	}
 
 	private async screenshot(): Promise<{ success: boolean; base64: string }> {
@@ -843,7 +1135,24 @@ export class BrowserTool extends BaseTool {
 	private async click(ref: number, timeout: number): Promise<{ success: boolean; ref: number }> {
 		const page = await this.ensurePage();
 
-		// 使用坐标点击（更可靠）
+		// 在操作前验证连接是否仍然有效
+		if (await this.isPageClosed(page)) {
+			this.logger.info('页面连接已失效，重新建立连接');
+			await this.openBrowser();
+			const newPage = await this.ensurePage();
+			
+			// 重新获取页面元素
+			const elements = await this.snapshot();
+			const element = elements.elements.find((e) => e.ref === ref);
+			
+			if (!element) {
+				throw new Error(`重新连接后找不到 ref=${ref} 的元素，请先执行 snapshot 获取最新元素列表`);
+			}
+			
+			return this.performClick(newPage, ref, element);
+		}
+
+		// 获取当前页面元素列表
 		const elements = await this.snapshot();
 		const element = elements.elements.find((e) => e.ref === ref);
 
@@ -851,11 +1160,51 @@ export class BrowserTool extends BaseTool {
 			throw new Error(`找不到 ref=${ref} 的元素，请先执行 snapshot 获取最新元素列表`);
 		}
 
-		const { x, y, width, height } = element.rect;
-		await page.mouse.click(x + width / 2, y + height / 2);
+		return this.performClick(page, ref, element);
+	}
 
-		this.logger.info(`已点击元素 ref=${ref}`);
+	/**
+	 * 执行点击操作
+	 */
+	private async performClick(page: Page, ref: number, element: any): Promise<{ success: boolean; ref: number }> {
+		// 增强的点击机制：优先使用CSS选择器，备选坐标点击
+		const selector = this.elementRefs.get(ref);
+		
+		if (selector) {
+			try {
+				// 使用Playwright的内置点击方法（更准确）
+				await page.click(selector, { timeout: 5000 });
+				this.logger.info(`已点击元素 ref=${ref} (使用选择器: ${selector})`);
+			} catch (error) {
+				this.logger.warn(`选择器点击失败，回退到坐标点击: ${error}`);
+				// 回退到坐标点击
+				await this.clickByCoordinates(ref, element);
+			}
+		} else {
+			// 没有选择器，使用坐标点击
+			await this.clickByCoordinates(ref, element);
+		}
+
 		return { success: true, ref };
+	}
+
+	/**
+	 * 通过坐标点击元素
+	 */
+	private async clickByCoordinates(ref: number, element: any): Promise<void> {
+		const page = await this.ensurePage();
+		
+		const { x, y, width, height } = element.rect;
+		// 使用元素中心点点击
+		const centerX = x + width / 2;
+		const centerY = y + height / 2;
+
+		// 添加点击前的短暂等待，确保页面稳定
+		await new Promise(resolve => setTimeout(resolve, 100));
+		
+		await page.mouse.click(centerX, centerY);
+
+		this.logger.info(`已点击元素 ref=${ref} (坐标: ${centerX}, ${centerY}, 尺寸: ${width}x${height})`);
 	}
 
 	private async type(
@@ -1135,9 +1484,10 @@ export class BrowserTool extends BaseTool {
 
 							const target = targetInfos.find((t) => t.url === url && t.type === 'page');
 							if (target) {
+								// @ts-ignore
 								await cdpSession.send('Target.closeTarget', {
 									targetId: target.targetId,
-									closeBrowser: closeBrowserWindow, // 只有需要关闭整个浏览器时才为 true
+									// closeBrowser: closeBrowserWindow, // 只有需要关闭整个浏览器时才为 true
 								});
 								this.logger.info(closeBrowserWindow ? `已关闭浏览器窗口` : `已关闭标签页: ${url}`);
 								return true;

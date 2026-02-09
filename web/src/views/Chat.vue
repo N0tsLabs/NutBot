@@ -130,16 +130,25 @@
 													<span>结果</span>
 													<button class="copy-btn" @click.stop="copyToClipboard(getRawResult(tool.result))">📋 复制</button>
 												</div>
-												<pre class="tool-code" :class="{ error: tool.result?.error }">{{ formatToolResult(tool.result, false) }}</pre>
+												<pre class="tool-code" :class="{ error: tool.result?.error, 'browser-snapshot': tool.result?.action === 'snapshot' }">{{ formatToolResult(tool.result, false) }}</pre>
 											</div>
 										</div>
 									</div>
 								</div>
 							</div>
 							
+							<!-- AI 思考内容（如果有） -->
+							<div v-if="getMessageThinking(msg)" class="msg-thinking">
+								<div class="thinking-header">
+									<span class="thinking-icon">💭</span>
+									<span class="thinking-label">思考</span>
+								</div>
+								<div class="thinking-content">{{ getMessageThinking(msg) }}</div>
+							</div>
+
 							<!-- 消息文本 -->
-							<div v-if="msg.streaming" class="msg-text markdown" v-html="renderMarkdown(msg.content + '▊')"></div>
-							<div v-else-if="msg.content" class="msg-text markdown" v-html="renderMarkdown(msg.content)"></div>
+							<div v-if="getMessageContent(msg)" class="msg-text markdown" v-html="renderMarkdown(getMessageContent(msg) + (msg.streaming ? '▊' : ''))"></div>
+							<div v-else-if="msg.streaming && msg.content" class="msg-text markdown" v-html="renderMarkdown(msg.content + '▊')"></div>
 							<div v-if="msg.error" class="msg-error">❌ {{ msg.error }}</div>
 						</div>
 					</div>
@@ -160,12 +169,39 @@
 
 		<!-- 输入框 -->
 		<div class="input-area">
-			<form @submit.prevent="send" class="input-form">
-				<input v-model="input" type="text" placeholder="输入消息..." class="input" :disabled="sending" />
-				<button type="submit" class="btn btn-primary" :disabled="!input.trim() || sending">
-					{{ sending ? '发送中...' : '发送' }}
-				</button>
-			</form>
+			<div class="input-form">
+				<div class="textarea-container">
+					<textarea
+						v-model="input"
+						@keydown="handleKeydown"
+						@input="autoResize"
+						@paste="handlePaste"
+						ref="textareaRef"
+						placeholder="输入消息...（Shift+Enter换行，Enter发送）"
+						class="input-textarea"
+						:disabled="sending"
+						rows="1"
+					></textarea>
+					<div class="input-actions">
+						<button 
+							v-if="hasActiveChat"
+							@click="stopChat"
+							class="btn btn-secondary stop-btn"
+							title="停止当前对话"
+						>
+							⏹️ 停止
+						</button>
+						<button 
+							@click="send"
+							class="btn btn-primary" 
+							:disabled="!input.trim() || sending"
+							title="发送消息"
+						>
+							{{ sending ? '发送中...' : '发送' }}
+						</button>
+					</div>
+				</div>
+			</div>
 		</div>
 
 		<!-- 图片预览模态框 -->
@@ -389,6 +425,11 @@ const hasStreamingMessage = computed(() => {
 	return store.messages.some(m => m.streaming || hasRunningTools(m));
 });
 
+// 检查是否有活跃的聊天（用于显示停止按钮）
+const hasActiveChat = computed(() => {
+	return sending.value || hasStreamingMessage.value;
+});
+
 // 获取当前状态文本
 const getCurrentStatusText = () => {
 	if (!store.currentStatus) return '';
@@ -429,6 +470,7 @@ const messagesContainer = ref(null);
 const executionStatus = ref(null);
 const expandedTools = ref(new Set());
 const expandedToolsGroup = ref(new Set());
+const textareaRef = ref(null);
 
 // 图片预览模态框
 const imageModal = ref({
@@ -676,6 +718,44 @@ const formatToolResult = (result, summarize = false) => {
 	if (!result) return '';
 	const cleaned = JSON.parse(JSON.stringify(result));
 
+	// 特殊处理 browser snapshot - 优先显示增强分析
+	if (cleaned.action === 'snapshot' && cleaned.compressedText) {
+		let displayText = `🗜️ 页面结构分析
+
+${cleaned.compressedText}`;
+
+		// 如果不是摘要模式，添加分隔线和完整数据
+		if (!summarize) {
+			displayText += `
+
+═══════════════════════════════════════════════════════════
+
+📋 完整数据:`;
+			
+			// 处理base64图片数据
+			if (cleaned.base64) {
+				cleaned.base64 = `[图片数据 ${Math.round(cleaned.base64.length / 1024)}KB]`;
+			}
+			
+			// 摘要模式下简化元素显示
+			if (cleaned.elements && Array.isArray(cleaned.elements)) {
+				if (summarize) {
+					cleaned.elements = `[${cleaned.elements.length} 个元素]`;
+				} else {
+					displayText += `
+
+🔍 元素列表（共 ${cleaned.elements.length} 个）:`;
+				}
+			}
+			
+			displayText += `
+
+${JSON.stringify(cleaned, null, 2)}`;
+		}
+
+		return displayText;
+	}
+
 	// 只对 base64 图片数据做处理（太大了没必要显示）
 	if (cleaned.base64) {
 		cleaned.base64 = `[图片数据 ${Math.round(cleaned.base64.length / 1024)}KB]`;
@@ -710,15 +790,107 @@ const getRawResult = (result) => {
 	return JSON.stringify(result, null, 2);
 };
 
+// 提取 <thinking> 标签内容
+const extractThinking = (content) => {
+	if (!content) return { thinking: '', content: content };
+
+	// 匹配两种格式：
+	// 1. <thinking>\n...\n</thinking> (多行格式)
+	// 2. <thinking>...</thinking> (无换行格式)
+	const match = content.match(/<thinking>\n?([\s\S]*?)\n?<\/thinking>/);
+	if (match) {
+		const thinking = match[1].trim();
+		// 移除 thinking 标签，保留剩余内容
+		const remaining = content.replace(/<thinking>\n?[\s\S]*?\n?<\/thinking>\n?\n?/g, '').trim();
+		return { thinking, content: remaining };
+	}
+
+	return { thinking: '', content };
+};
+
+// 获取消息的思考内容（优先从 metadata.thinking，否则从内容提取）
+const getMessageThinking = (msg) => {
+	// 优先从 metadata 获取
+	if (msg?.metadata?.thinking) {
+		return msg.metadata.thinking;
+	}
+	// 否则从内容提取
+	if (!msg?.content) return '';
+	const { thinking } = extractThinking(msg.content);
+	return thinking;
+};
+
+// 获取消息去除思考后的内容
+const getMessageContent = (msg) => {
+	if (!msg?.content) return '';
+	const { content } = extractThinking(msg.content);
+	return content || msg.content;
+};
+
+// 键盘事件处理
+const handleKeydown = (event) => {
+	if (event.key === 'Enter') {
+		if (event.shiftKey) {
+			// Shift + Enter: 换行
+			return;
+		} else {
+			// Enter: 发送消息
+			event.preventDefault();
+			send();
+		}
+	}
+};
+
+// 自动调整textarea高度
+const autoResize = () => {
+	const textarea = textareaRef.value;
+	if (textarea) {
+		textarea.style.height = 'auto';
+		textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px'; // 最大高度200px
+	}
+};
+
+// 处理粘贴事件（保持格式）
+const handlePaste = (event) => {
+	// 默认行为即可，保持粘贴的格式
+};
+
+// 停止聊天
+const stopChat = () => {
+	if (sending.value) {
+		sending.value = false;
+		
+		// 发送中断消息到后端
+		if (store.ws && store.ws.readyState === 1) {
+			store.ws.send(JSON.stringify({
+				type: 'chat_interrupt',
+				payload: {
+					reason: 'user_requested',
+				},
+			}));
+		}
+		
+		// 重置当前状态
+		store.currentStatus = null;
+		store.toolExecutions = [];
+	}
+};
+
 const send = async () => {
 	const message = input.value.trim();
 	if (!message || sending.value) return;
 
-	input.value = '';
 	sending.value = true;
 
 	try {
 		await store.sendMessage(message);
+		// 清空输入框
+		input.value = '';
+		// 重置textarea高度
+		await nextTick();
+		autoResize();
+		// 聚焦到textarea
+		textareaRef.value?.focus();
 	} finally {
 		sending.value = false;
 	}
@@ -1080,6 +1252,41 @@ onMounted(async () => {
 	border-radius: 6px;
 }
 
+/* 消息思考内容样式 */
+.msg-thinking {
+	margin: 12px 0;
+	padding: 12px 16px;
+	background-color: var(--bg-tertiary);
+	border-left: 3px solid var(--accent);
+	border-radius: 0 8px 8px 0;
+}
+
+.thinking-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 8px;
+}
+
+.thinking-icon {
+	font-size: 14px;
+}
+
+.thinking-label {
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--accent);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+.thinking-content {
+	font-size: 14px;
+	line-height: 1.6;
+	color: var(--text-secondary);
+	font-style: italic;
+}
+
 .tool-call-row {
 	display: flex;
 	align-items: center;
@@ -1174,6 +1381,12 @@ onMounted(async () => {
 	max-height: 200px;
 	white-space: pre-wrap;
 	word-break: break-all;
+}
+
+/* 特殊处理browser snapshot的显示 */
+.tool-code.browser-snapshot {
+	max-height: 600px;
+	overflow-y: auto;
 }
 
 .tool-code.error {
@@ -1336,8 +1549,11 @@ onMounted(async () => {
 }
 
 .input-form {
-	display: flex;
-	gap: 12px;
+	width: 100%;
+}
+
+.textarea-container {
+	position: relative;
 	padding: 8px;
 	background-color: var(--bg-secondary);
 	border: 1px solid var(--border-color);
@@ -1345,22 +1561,46 @@ onMounted(async () => {
 	transition: border-color 0.2s;
 }
 
-.input-form:focus-within {
+.textarea-container:focus-within {
 	border-color: var(--accent);
 }
 
-.input-form .input {
-	flex: 1;
-	padding: 10px 16px;
+.input-textarea {
+	width: 100%;
+	min-height: 40px;
+	max-height: 200px;
+	padding: 10px 120px 10px 16px;
 	background: transparent;
 	border: none;
 	outline: none;
+	resize: none;
 	font-size: 14px;
 	color: var(--text-primary);
+	font-family: inherit;
+	line-height: 1.5;
+	overflow-y: auto;
 }
 
-.input-form .input::placeholder {
+.input-textarea::placeholder {
 	color: var(--text-muted);
+}
+
+.input-actions {
+	position: absolute;
+	right: 12px;
+	bottom: 12px;
+	display: flex;
+	gap: 8px;
+}
+
+.stop-btn {
+	padding: 8px 16px;
+	border-radius: 20px;
+	font-size: 12px;
+	font-weight: 500;
+	background-color: var(--bg-tertiary);
+	color: var(--text-secondary);
+	border: 1px solid var(--border-color);
 }
 
 .input-form .btn {
@@ -1384,12 +1624,29 @@ onMounted(async () => {
 		@apply p-3;
 	}
 
-	.input-form {
-		@apply flex-col gap-2;
+	.textarea-container {
+		padding: 6px;
+	}
+
+	.input-textarea {
+		padding: 8px 100px 8px 12px;
+		min-height: 36px;
+	}
+
+	.input-actions {
+		right: 8px;
+		bottom: 8px;
+		gap: 6px;
+	}
+
+	.stop-btn {
+		padding: 6px 12px;
+		font-size: 11px;
 	}
 
 	.input-form .btn {
-		@apply w-full;
+		padding: 8px 20px;
+		font-size: 13px;
 	}
 }
 

@@ -23,7 +23,7 @@ export {
 	BrowserTool,
 	ComputerTool,
 	ScreenshotTool,
-	WebTool,
+	// WebTool 已移除 - 按用户建议，所有浏览器操作统一使用BrowserTool
 	FileTool,
 	OfficeTool,
 	ClipboardTool,

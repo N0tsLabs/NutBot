@@ -140,7 +140,7 @@ export class Gateway {
 		// 启动 HTTP/WS 服务器
 		await this.server?.start({ openBrowser: options.openBrowser });
 
-		// 启动 CDP Relay 服务（用于浏览器扩展）
+		// 启动 CDP Relay 服务（用于浏览器扩展模式）
 		try {
 			const cdpRelayPort = this.config.get('browser.cdpRelayPort', 18801);
 			this.cdpRelay = await startCDPRelayServer({
@@ -224,6 +224,18 @@ export class Gateway {
 	}
 
 	/**
+	 * 中断当前正在运行的聊天任务
+	 */
+	async interrupt(reason: string = 'user_requested'): Promise<void> {
+		this.logger.info(`中断当前任务: ${reason}`);
+		
+		// 中断 Agent 的执行
+		if (this.agent) {
+			this.agent.interrupt(reason);
+		}
+	}
+
+	/**
 	 * 执行工具
 	 */
 	async executeTool(
@@ -253,8 +265,10 @@ export class Gateway {
 			cdpRelay: this.cdpRelay
 				? {
 						port: this.cdpRelay.getPort(),
-						extensionConnected: this.cdpRelay.isExtensionConnected(),
-						connectedTargets: this.cdpRelay.getConnectedTargets().size,
+						extension: this.cdpRelay.getStatus()?.extension || {
+							connected: this.cdpRelay.isExtensionConnected(),
+							targets: this.cdpRelay.getConnectedTargets().size,
+						},
 					}
 				: null,
 			providers: this.providerManager?.getStatus(),

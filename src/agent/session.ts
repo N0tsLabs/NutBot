@@ -72,19 +72,55 @@ export class SessionManager {
 	private async loadSessions(): Promise<void> {
 		try {
 			const files = await fs.readdir(this.sessionsDir);
+			let loadedCount = 0;
+			let failedCount = 0;
 
 			for (const file of files) {
 				if (!file.endsWith('.json')) continue;
 
+				const filePath = join(this.sessionsDir, file);
+				
 				try {
-					const filePath = join(this.sessionsDir, file);
 					const content = await fs.readFile(filePath, 'utf-8');
-					const session = JSON.parse(content) as StoredSession;
+					
+					// 检查文件是否为空
+					if (!content.trim()) {
+						this.logger.warn(`删除空会话文件: ${file}`);
+						await fs.unlink(filePath);
+						failedCount++;
+						continue;
+					}
+					
+					// 尝试解析JSON
+					let session: StoredSession;
+					try {
+						session = JSON.parse(content) as StoredSession;
+					} catch (parseError) {
+						this.logger.warn(`解析JSON失败，删除损坏文件: ${file}`, (parseError as Error).message);
+						await fs.unlink(filePath);
+						failedCount++;
+						continue;
+					}
+					
+					// 验证会话数据完整性
+					if (!session.id || !session.title || !session.createdAt) {
+						this.logger.warn(`会话数据不完整，删除损坏文件: ${file}`);
+						await fs.unlink(filePath);
+						failedCount++;
+						continue;
+					}
+					
 					this.sessions.set(session.id, session);
+					loadedCount++;
+					
 				} catch (error) {
 					this.logger.warn(`加载会话失败: ${file}`, (error as Error).message);
+					failedCount++;
 				}
 			}
+			
+			this.logger.info(`会话加载完成: 成功 ${loadedCount} 个, 失败 ${failedCount} 个`);
+			
 		} catch (error) {
 			this.logger.warn('加载会话列表失败:', (error as Error).message);
 		}
@@ -145,6 +181,29 @@ export class SessionManager {
 
 		this.saveSession(session);
 		return session;
+	}
+
+	/**
+	 * 设置浏览器上下文（跟踪当前页面 URL）
+	 */
+	setBrowserContext(sessionId: string, context: { url?: string; title?: string }): void {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+
+		if (!session.context) session.context = {};
+		session.context.browser = {
+			...context,
+			timestamp: new Date().toISOString(),
+		};
+		this.saveSession(session);
+	}
+
+	/**
+	 * 获取浏览器上下文
+	 */
+	getBrowserContext(sessionId: string): { url?: string; title?: string; timestamp?: string } | undefined {
+		const session = this.sessions.get(sessionId);
+		return session?.context?.browser as { url?: string; title?: string; timestamp?: string } | undefined;
 	}
 
 	/**
@@ -228,30 +287,47 @@ export class SessionManager {
 		// 安全截断点：user 消息之前（不能截断 assistant+tool 的组合）
 		let startIndex = Math.max(0, allMessages.length - maxMessages);
 
+		this.logger.debug(`消息截断: 总消息=${allMessages.length}, maxMessages=${maxMessages}, 初始startIndex=${startIndex}`);
+
 		// 确保不会从 tool 消息或带 toolCalls 的 assistant 消息开始
 		while (startIndex < allMessages.length) {
 			const msg = allMessages[startIndex];
+			this.logger.debug(`检查截断点 [${startIndex}]: ${msg.role}${'toolCalls' in msg ? ' (has toolCalls)' : ''}`);
+
 			// 如果是 tool 消息，继续往前找
 			if (msg.role === 'tool') {
+				this.logger.debug(`  -> 是 tool 消息，继续往前找`);
 				startIndex--;
 				if (startIndex < 0) startIndex = 0;
 				continue;
 			}
 			// 如果找到 user 消息，这是安全的起点
 			if (msg.role === 'user') {
+				this.logger.debug(`  -> 是 user 消息，安全截断点`);
 				break;
 			}
 			// 如果是 assistant 消息且有 toolCalls，往前找到 user
 			if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+				this.logger.debug(`  -> 是 assistant 带 toolCalls，继续往前找`);
 				startIndex--;
 				if (startIndex < 0) startIndex = 0;
 				continue;
 			}
+			// 其他情况（assistant 无 toolCalls）是安全的
+			this.logger.debug(`  -> 是 assistant 无 toolCalls，安全`);
 			break;
 		}
 
+		this.logger.debug(`最终截断点: startIndex=${startIndex}, 将包含 ${allMessages.length - startIndex} 条消息`);
+
 		// 构建消息数组
 		const history = allMessages.slice(startIndex);
+
+		this.logger.debug(`将处理 ${history.length} 条消息:`);
+		for (let i = 0; i < history.length; i++) {
+			const msg = history[i];
+			this.logger.debug(`  [${startIndex + i}] ${msg.role}${'toolCalls' in msg ? ' (has toolCalls)' : ''}`);
+		}
 
 		for (const msg of history) {
 			if (msg.role === 'user') {
@@ -273,8 +349,18 @@ export class SessionManager {
 				messages.push(aiMsg);
 			} else if (msg.role === 'tool') {
 				// OpenAI API 要求 tool 消息必须有 tool_call_id
-				const toolCallId = (msg.metadata?.toolCallId as string) || '';
+				let toolCallId = (msg.metadata?.toolCallId as string) || '';
 				const isMultimodal = msg.metadata?.isMultimodal === true;
+
+				this.logger.debug(`处理 tool 消息: toolName=${msg.metadata?.toolName}, 原始toolCallId="${toolCallId}"`);
+
+				// 如果没有 toolCallId，生成一个占位符
+				// OpenAI API 要求每个 tool 响应都必须关联一个 tool_call
+				if (!toolCallId) {
+					const toolName = (msg.metadata?.toolName as string) || 'unknown';
+					toolCallId = `call_${toolName}_${Date.now()}`;
+					this.logger.warn(`⚠️ 生成占位符 tool_call_id: ${toolCallId}`);
+				}
 
 				if (toolCallId) {
 					// 多模态内容：需要创建一个特殊的用户消息来包含图片

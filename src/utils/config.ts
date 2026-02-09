@@ -9,6 +9,15 @@ import { fileURLToPath } from 'url';
 import { deepMerge } from './helpers.js';
 import type { AppConfig, ProviderConfig } from '../types/index.js';
 
+// 加载.env文件
+import { config as dotenvConfig } from 'dotenv';
+const dotenvResult = dotenvConfig();
+if (dotenvResult.error) {
+    console.log('[Config] 未找到.env文件，使用默认环境变量');
+} else {
+    console.log('[Config] .env文件加载成功');
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -45,6 +54,9 @@ class ConfigManager {
 
 		// 合并配置：默认 + 用户
 		this.config = deepMerge(this.defaultConfig, userConfig) as AppConfig;
+
+		// 处理环境变量替换
+		this.replaceEnvironmentVariables();
 
 		// 确保数据目录存在
 		this.ensureDirectories();
@@ -108,6 +120,40 @@ class ConfigManager {
 		} catch (error) {
 			throw new Error(`Failed to load config from ${filePath}: ${(error as Error).message}`);
 		}
+	}
+
+	/**
+	 * 替换环境变量
+	 */
+	private replaceEnvironmentVariables(): void {
+		if (!this.config) return;
+
+		// 递归替换字符串中的环境变量
+		const replaceVars = (obj: any): any => {
+			if (typeof obj === 'string') {
+				// 替换 ${VAR_NAME} 格式的环境变量
+				return obj.replace(/\$\{([^}]+)\}/g, (match, varName) => {
+					const envValue = process.env[varName.trim()];
+					if (envValue) {
+						return envValue;
+					}
+					return match; // 如果环境变量不存在，保持原样
+				});
+			} else if (Array.isArray(obj)) {
+				return obj.map(replaceVars);
+			} else if (obj && typeof obj === 'object') {
+				const result: any = {};
+				for (const [key, value] of Object.entries(obj)) {
+					result[key] = replaceVars(value);
+				}
+				return result;
+			}
+			return obj;
+		};
+
+		// 替换整个配置中的环境变量
+		this.config = replaceVars(this.config) as AppConfig;
+		console.log('[Config] 环境变量替换完成');
 	}
 
 	/**

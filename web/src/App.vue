@@ -55,10 +55,29 @@
 					<span>{{ theme === 'dark' ? '深色' : '浅色' }}</span>
 				</button>
 
-				<!-- 连接状态 -->
-				<div class="connection-status">
+				<!-- 状态显示 -->
+				<div class="status-row">
 					<span class="status-dot" :class="connected ? 'online' : 'offline'"></span>
-					<span class="status-text">{{ connected ? '已连接' : '未连接' }}</span>
+					<span v-if="connectionStatus.som?.connected" class="status-label">SOM视觉</span>
+					<span v-if="connectionStatus.browser?.connected" class="status-label">浏览器</span>
+				</div>
+
+				<!-- 状态详情 -->
+				<div class="status-detail">
+					<!-- SOM 状态 -->
+					<div class="detail-item">
+						<span class="detail-icon">🖥️</span>
+						<span class="detail-value" :class="connectionStatus.som?.connected ? 'success' : 'error'">
+							{{ connectionStatus.som?.connected ? '已连接' : '未连接' }}
+						</span>
+					</div>
+					<!-- 浏览器扩展状态 -->
+					<div class="detail-item">
+						<span class="detail-icon">🌐</span>
+						<span class="detail-value" :class="connectionStatus.browser?.connected ? 'success' : 'error'">
+							{{ connectionStatus.browser?.connected ? `已连接 (${connectionStatus.browser?.targets || 0} 个)` : '未连接' }}
+						</span>
+					</div>
 				</div>
 			</div>
 		</aside>
@@ -71,7 +90,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 import { useAppStore } from './stores/app';
 import { getBaseUrl } from './utils/api';
 import Toast from './components/Toast.vue';
@@ -80,6 +99,9 @@ const store = useAppStore();
 const connected = ref(false);
 const sidebarOpen = ref(false);
 const theme = ref('dark');
+
+// 连接状态（使用 store 中的值）
+const connectionStatus = computed(() => store.connectionStatus);
 
 // 导航项
 const navItems = [
@@ -153,11 +175,15 @@ onMounted(() => {
 	initTheme();
 	connect();
 	window.addEventListener('resize', handleResize);
+	// 启动心跳检测
+	store.startHeartbeat();
 });
 
 onUnmounted(() => {
 	ws?.close();
 	window.removeEventListener('resize', handleResize);
+	// 停止心跳检测
+	store.stopHeartbeat();
 });
 </script>
 
@@ -281,21 +307,39 @@ onUnmounted(() => {
 	color: var(--text-primary);
 }
 
-.connection-status {
-	@apply flex items-center gap-2 text-sm;
-	color: var(--text-muted);
+/* 状态显示 - 默认展开 */
+.status-row {
+	@apply flex items-center gap-2 text-xs;
 }
 
-.status-dot {
-	@apply w-2 h-2 rounded-full;
+.status-label {
+	@apply text-xs;
+	color: var(--text-secondary);
 }
 
-.status-dot.online {
-	background-color: var(--success);
+.status-detail {
+	@apply mt-2 p-2 rounded space-y-1;
+	background-color: var(--bg-tertiary);
 }
 
-.status-dot.offline {
-	background-color: var(--error);
+.detail-item {
+	@apply flex items-center gap-2 text-xs;
+}
+
+.detail-icon {
+	@apply text-base;
+}
+
+.detail-value {
+	@apply font-medium;
+}
+
+.detail-value.success {
+	color: var(--success);
+}
+
+.detail-value.error {
+	color: var(--error);
 }
 
 /* 主内容 */

@@ -21,16 +21,80 @@ export const useAppStore = defineStore('app', () => {
 	// 实时状态
 	const currentStatus = ref(null); // 当前执行状态
 	const toolExecutions = ref([]); // 工具执行历史
-	
+
 	// 调试模式
 	const debugConfirm = ref(null); // 当前等待确认的调试数据
-	
+
 	// 沙盒安全
 	const securityConfirm = ref(null); // 当前等待确认的安全操作
 
 	// 实时日志
 	const logs = ref([]); // 日志列表
 	const maxLogs = 1000; // 最大日志条数
+
+	// ========== 连接状态管理 ==========
+	const connectionStatus = ref({
+		som: { connected: false, latency: null },
+		browser: { connected: false, targets: 0 },
+		lastUpdate: null,
+	});
+	const heartbeatTimer = ref(null);
+	const HEARTBEAT_INTERVAL = 3000; // 3秒心跳（更快响应）
+
+	// 启动心跳检测
+	const startHeartbeat = () => {
+		stopHeartbeat();
+		// 立即检查一次
+		checkConnectionStatus();
+		heartbeatTimer.value = setInterval(checkConnectionStatus, HEARTBEAT_INTERVAL);
+	};
+
+	// 停止心跳检测
+	const stopHeartbeat = () => {
+		if (heartbeatTimer.value) {
+			clearInterval(heartbeatTimer.value);
+			heartbeatTimer.value = null;
+		}
+	};
+
+	// 检查连接状态
+	const checkConnectionStatus = async () => {
+		try {
+			const startTime = Date.now();
+
+			// 并行检查浏览器扩展状态
+			let browserStatus = { connected: false, targets: 0 };
+			try {
+				const statusRes = await fetch('/api/status', {
+					signal: AbortSignal.timeout(2000), // 2秒超时
+				});
+				if (statusRes.ok) {
+					const data = await statusRes.json();
+					const cdpData = data.cdpRelay || data;
+					browserStatus = {
+						connected: cdpData?.extension?.connected || cdpData?.connected || false,
+						targets: cdpData?.extension?.targets || cdpData?.targets || 0,
+					};
+				}
+			} catch (e) {
+				// 获取失败，浏览器扩展可能未运行
+				browserStatus = { connected: false, targets: 0 };
+			}
+
+			const latency = Date.now() - startTime;
+
+			connectionStatus.value = {
+				som: {
+					connected: connected.value,
+					latency: connected.value ? latency : null,
+				},
+				browser: browserStatus,
+				lastUpdate: new Date().toISOString(),
+			};
+		} catch (error) {
+			console.error('Failed to check connection status:', error);
+		}
+	};
 
 	// 计算属性
 	const currentSession = computed(() => {
@@ -59,6 +123,12 @@ export const useAppStore = defineStore('app', () => {
 				break;
 			case 'chat:error':
 				handleChatError(message);
+				break;
+			case 'chat:interrupted':
+				handleChatInterrupted(message);
+				break;
+			case 'chat:interrupt_error':
+				handleChatInterruptError(message);
 				break;
 			case 'event':
 				handleEvent(message);
@@ -94,28 +164,18 @@ export const useAppStore = defineStore('app', () => {
 		switch (chunk.type) {
 			case 'thinking':
 				currentStatus.value = { type: 'thinking', iteration: chunk.iteration };
-				// thinking chunk 内容会在 tools chunk 时作为 _pendingContent 处理
 				break;
 
 			case 'content':
 				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
-					// 追加内容到 pendingContent（等看是否有工具调用）
-					if (!lastMessage._pendingContent) lastMessage._pendingContent = '';
-					lastMessage._pendingContent += chunk.content || '';
+					// 直接累积到 content 实现流式显示
+					lastMessage.content = (lastMessage.content || '') + (chunk.content || '');
 				}
 				currentStatus.value = { type: 'generating' };
 				break;
 
 			case 'tools':
 				currentStatus.value = { type: 'tools', count: chunk.count };
-				// 把思考内容暂存，等 tool_start 时附加到工具调用上
-				if (lastMessage && lastMessage.role === 'assistant') {
-					const thinking = chunk.thinking || lastMessage._pendingContent || '';
-					if (thinking) {
-						lastMessage._currentThinking = thinking; // 暂存当前迭代的思考
-						lastMessage._pendingContent = '';
-					}
-				}
 				break;
 
 			case 'tool_start':
@@ -132,24 +192,15 @@ export const useAppStore = defineStore('app', () => {
 					status: 'running',
 					startTime: Date.now(),
 				});
-				// 在当前消息中添加工具调用记录，附带思考内容
+				// 在当前消息中添加工具调用记录
 				if (lastMessage && lastMessage.role === 'assistant') {
 					if (!lastMessage.toolCalls) lastMessage.toolCalls = [];
-					// 只有第一个工具调用带上思考内容（同一批次的工具共享一个思考）
-					const isFirstInBatch =
-						!lastMessage.toolCalls.length ||
-						lastMessage.toolCalls[lastMessage.toolCalls.length - 1].thinking;
 					lastMessage.toolCalls.push({
 						name: chunk.tool,
 						arguments: chunk.args,
 						status: 'running',
 						description: chunk.description,
-						thinking: isFirstInBatch ? lastMessage._currentThinking : null,
 					});
-					// 清空暂存的思考（已附加到工具调用）
-					if (isFirstInBatch) {
-						lastMessage._currentThinking = '';
-					}
 				}
 				break;
 
@@ -282,16 +333,6 @@ export const useAppStore = defineStore('app', () => {
 	const handleChatDone = (message) => {
 		const lastMessage = messages.value[messages.value.length - 1];
 		if (lastMessage && lastMessage.role === 'assistant') {
-			// 如果有待处理的内容，放到 content（这是最终回复）
-			if (lastMessage._pendingContent) {
-				// 如果已有 content，追加；否则设置
-				if (lastMessage.content) {
-					lastMessage.content += lastMessage._pendingContent;
-				} else {
-					lastMessage.content = lastMessage._pendingContent;
-				}
-				delete lastMessage._pendingContent;
-			}
 			lastMessage.streaming = false;
 		}
 		// 清理状态
@@ -305,6 +346,24 @@ export const useAppStore = defineStore('app', () => {
 			lastMessage.streaming = false;
 			lastMessage.error = message.error?.message;
 		}
+	};
+
+	const handleChatInterrupted = (message) => {
+		const lastMessage = messages.value[messages.value.length - 1];
+		if (lastMessage && lastMessage.streaming) {
+			lastMessage.streaming = false;
+			lastMessage.content = (lastMessage.content || '') + '\n\n⚠️ **任务已中断**';
+		}
+		// 清理状态
+		currentStatus.value = null;
+		toolExecutions.value = [];
+	};
+
+	const handleChatInterruptError = (message) => {
+		console.error('中断失败:', message.error?.message);
+		// 即使中断失败，也要清理状态
+		currentStatus.value = null;
+		toolExecutions.value = [];
 	};
 
 	const handleEvent = (message) => {
@@ -607,6 +666,7 @@ export const useAppStore = defineStore('app', () => {
 		logs,
 		agents,
 		currentAgentId,
+		connectionStatus,
 
 		// 方法
 		setConnected,
@@ -622,6 +682,9 @@ export const useAppStore = defineStore('app', () => {
 		sendDebugResponse,
 		sendSecurityResponse,
 		clearLogs,
+		startHeartbeat,
+		stopHeartbeat,
+		checkConnectionStatus,
 
 		// Agent Profiles
 		loadAgents,

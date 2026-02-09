@@ -159,7 +159,15 @@ class Logger {
 	 * 格式化日志消息
 	 */
 	private format(level: string, message: string, ...args: unknown[]): FormattedLog {
-		const timestamp = new Date().toISOString();
+		const now = new Date();
+		// 生成ISO标准时间戳，确保前端可以正确解析
+		const timestamp = now.toISOString();
+		const displayTime = now.toLocaleTimeString('zh-CN', { 
+			hour: '2-digit', 
+			minute: '2-digit', 
+			second: '2-digit',
+			hour12: false 
+		});
 		const icon = LEVEL_ICONS[level] || '';
 		const prefix = this.prefix ? `[${this.prefix}]` : '';
 
@@ -175,7 +183,7 @@ class Logger {
 			icon,
 			prefix,
 			message: String(message) + extra,
-			raw: `${timestamp} ${prefix} [${level.toUpperCase()}] ${message}${extra}`,
+			raw: `${displayTime} ${prefix} [${level.toUpperCase()}] ${message}${extra}`,
 		};
 	}
 
@@ -210,7 +218,15 @@ class Logger {
 
 		// 控制台输出（使用全局开关）
 		if (Logger.globalConsoleEnabled) {
-			const consoleMsg = `${chalk.gray(formatted.timestamp)} ${formatted.prefix} ${color(`[${level.toUpperCase()}]`)} ${formatted.icon} ${formatted.message}`;
+			// 简化格式：时间 级别 图标 消息
+			const levelTag = color(`[${level.toUpperCase()}]`);
+			const displayTime = new Date().toLocaleTimeString('zh-CN', { 
+				hour: '2-digit', 
+				minute: '2-digit', 
+				second: '2-digit',
+				hour12: false 
+			});
+			const consoleMsg = `${chalk.gray(displayTime)} ${levelTag} ${formatted.icon} ${formatted.prefix} ${formatted.message}`;
 			console.log(consoleMsg);
 		}
 
@@ -262,8 +278,14 @@ class Logger {
 		}
 
 		if (Logger.globalConsoleEnabled) {
+			const displayTime = new Date().toLocaleTimeString('zh-CN', { 
+				hour: '2-digit', 
+				minute: '2-digit', 
+				second: '2-digit',
+				hour12: false 
+			});
 			console.log(
-				`${chalk.gray(formatted.timestamp)} ${formatted.prefix} ${chalk.green('[SUCCESS]')} ✅ ${formatted.message}`
+				`${chalk.gray(displayTime)} ${chalk.green('[SUCCESS]')} ✅ ${formatted.prefix} ${formatted.message}`
 			);
 		}
 
@@ -280,8 +302,14 @@ class Logger {
 		const formatted = this.format('info', message, ...args);
 
 		if (Logger.globalConsoleEnabled) {
+			const displayTime = new Date().toLocaleTimeString('zh-CN', { 
+				hour: '2-digit', 
+				minute: '2-digit', 
+				second: '2-digit',
+				hour12: false 
+			});
 			console.log(
-				`${chalk.gray(formatted.timestamp)} ${formatted.prefix} ${chalk.cyan('[PROGRESS]')} 🔄 ${formatted.message}`
+				`${chalk.gray(displayTime)} ${chalk.cyan('[PROGRESS]')} 🔄 ${formatted.prefix} ${formatted.message}`
 			);
 		}
 	}

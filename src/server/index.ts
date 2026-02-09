@@ -3,7 +3,7 @@
  * HTTP API 和 WebSocket 服务
  */
 
-import Fastify, { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import Fastify, { FastifyInstance, FastifyRequest, FastifyReply, type FastifyError } from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyWebsocket from '@fastify/websocket';
 import fastifyStatic from '@fastify/static';
@@ -89,6 +89,23 @@ export class Server {
 			logger: false, // 使用自定义 logger
 			disableRequestLogging: true,
 		});
+
+		// 处理 JSON 空 body（允许无 body 的请求，如 DELETE、GET 等）
+		// 使用 contentTypeParser 在 Fastify 解析 body 之前处理
+		this.app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
+			try {
+				const bodyStr = body as string;
+				// 如果 body 为空，返回空对象
+				if (!bodyStr || bodyStr.trim() === '') {
+					return done(null, {});
+				}
+				// 正常解析 JSON
+				const parsed = JSON.parse(bodyStr);
+				return done(null, parsed);
+			} catch (error) {
+				return done(error as Error);
+			}
+		});
 	}
 
 	/**
@@ -155,7 +172,7 @@ export class Server {
 		}
 
 		// 错误处理
-		this.app.setErrorHandler((error, request, reply) => {
+		this.app.setErrorHandler((error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
 			this.logger.error('请求错误:', error.message);
 			return reply.code(error.statusCode || 500).send({
 				error: true,
@@ -236,6 +253,10 @@ export class Server {
 				await this.handleChatMessage(clientId, id, payload);
 				break;
 
+			case 'chat_interrupt':
+				await this.handleChatInterrupt(clientId, id, payload);
+				break;
+
 			case 'debug_response':
 				// 处理调试确认响应
 				const confirmId = payload?.confirmId as string;
@@ -298,6 +319,34 @@ export class Server {
 		} catch (error) {
 			this.sendToClient(clientId, {
 				type: 'chat:error',
+				id: messageId,
+				error: { message: (error as Error).message },
+			});
+		}
+	}
+
+	/**
+	 * 处理聊天中断消息
+	 */
+	private async handleChatInterrupt(
+		clientId: string,
+		messageId: string | undefined,
+		payload: Record<string, unknown> | undefined
+	): Promise<void> {
+		const { reason } = payload || {};
+
+		try {
+			// 通知网关中断当前聊天
+			await this.gateway.interrupt(reason as string);
+
+			this.sendToClient(clientId, {
+				type: 'chat:interrupted',
+				id: messageId,
+				reason: reason || 'user_requested',
+			});
+		} catch (error) {
+			this.sendToClient(clientId, {
+				type: 'chat:interrupt_error',
 				id: messageId,
 				error: { message: (error as Error).message },
 			});

@@ -234,9 +234,14 @@ async function startInteractiveChat(options: { port: number; host: string; verbo
 
 					case 'tool_result':
 						// 显示工具结果
-						if (chunk.result?.success) {
-							const resultSummary = getResultSummary(chunk.result);
-							console.log(chalk.green(`     ✓ `) + chalk.gray(resultSummary));
+						if (chunk.result && typeof chunk.result === 'object' && 'success' in chunk.result) {
+							const resultObj = chunk.result as Record<string, unknown>;
+							if (resultObj.success) {
+								const resultSummary = getResultSummary(resultObj);
+								console.log(chalk.green(`     ✓ `) + chalk.gray(resultSummary));
+							} else {
+								console.log(chalk.red(`     ✗ 失败`));
+							}
 						} else {
 							console.log(chalk.red(`     ✗ 失败`));
 						}
@@ -314,16 +319,19 @@ program
 	.option('-h, --host <host>', '服务地址', '127.0.0.1')
 	.option('--open-browser', '启动时自动打开浏览器（默认不打开）')
 	.option('-v, --verbose', '显示详细日志')
-	.option('--no-interactive', '禁用交互式聊天')
+	.option('--interactive', '启用交互式聊天模式（终端对话）')
+	.option('--silent', '禁用所有日志输出')
 	.action(async (options) => {
 		try {
-			// 判断是否使用交互式模式
-			const useInteractive = options.interactive !== false && process.stdin.isTTY;
+			// 交互式模式：明确指定 --interactive 才启用
+			const useInteractive = options.interactive === true;
+			// 静默模式：--silent 或 交互模式时自动静默
+			const isSilent = options.silent === true || useInteractive;
 
-			// 初始化（交互模式使用静默模式）
+			// 初始化
 			await gateway.init({
 				configPath: options.config,
-				silent: useInteractive && !options.verbose,
+				silent: isSilent,
 			});
 
 			// 覆盖配置
@@ -337,19 +345,14 @@ program
 			const port = gateway.config.get('server.port', 18800);
 			const host = gateway.config.get('server.host', '127.0.0.1');
 
-			// 重要：init 会重置日志设置，需要在 init 后再次禁用
-			if (!options.verbose) {
-				gateway.logger.setConsoleEnabled(false);
-			}
-
-			// 启动服务（默认不自动打开浏览器，需打开请加 --open-browser）
+			// 启动服务
 			await gateway.start({ openBrowser: options.openBrowser === true });
 
-			// 交互式模式
+			// 交互式模式（终端对话，无日志）
 			if (useInteractive) {
 				await startInteractiveChat({ port, host, verbose: options.verbose });
 			} else {
-				// 非交互模式（后台运行）
+				// 正常模式（后台运行，显示日志）
 				console.log('');
 				console.log('  🥜 NutBot 已启动');
 				console.log(`  📍 http://${host}:${port}`);

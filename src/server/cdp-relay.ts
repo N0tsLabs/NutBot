@@ -59,6 +59,7 @@ interface ExtensionMessage {
 	params?: unknown;
 	result?: unknown;
 	error?: string;
+	timestamp?: number;
 }
 
 interface PlaywrightClient {
@@ -80,6 +81,10 @@ export interface CDPRelayServer {
 	getPort(): number;
 	isExtensionConnected(): boolean;
 	getConnectedTargets(): Map<string, ConnectedTarget>;
+	getStatus(): {
+		extension: { connected: boolean; connectedAt?: string; targets: number };
+		playwright: { clients: number };
+	};
 }
 
 export async function startCDPRelayServer(options: CDPRelayOptions = {}): Promise<CDPRelayServer> {
@@ -101,6 +106,25 @@ export async function startCDPRelayServer(options: CDPRelayOptions = {}): Promis
 	>();
 
 	// ========== 辅助函数 ==========
+
+	/**
+	 * 获取完整状态信息
+	 */
+	function getStatus(): {
+		extension: { connected: boolean; connectedAt?: string; targets: number };
+		playwright: { clients: number };
+	} {
+		return {
+			extension: {
+				connected: extensionWs !== null,
+				connectedAt: extensionWs ? new Date().toISOString() : undefined,
+				targets: connectedTargets.size,
+			},
+			playwright: {
+				clients: playwrightClients.size,
+			},
+		};
+	}
 
 	function sendToPlaywright(message: CDPResponse | CDPEvent, clientId?: string): void {
 		const messageStr = JSON.stringify(message);
@@ -149,20 +173,71 @@ export async function startCDPRelayServer(options: CDPRelayOptions = {}): Promis
 		});
 	}
 
+	// 心跳状态
+	let lastPingTime = 0;
+	let lastPongTime = 0;
+	let pingTimer: ReturnType<typeof setInterval> | null = null;
+	let pongTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+	const PING_INTERVAL = 10000; // 增加到10秒，减少频繁ping
+	const PONG_TIMEOUT = 15000; // 增加到15秒，给扩展更多响应时间
+
 	function startExtensionPing(): void {
 		stopExtensionPing();
-		pingInterval = setInterval(() => {
+		lastPingTime = 0;
+		lastPongTime = 0;
+
+		pingTimer = setInterval(() => {
 			if (extensionWs?.readyState === WebSocket.OPEN) {
-				extensionWs.send(JSON.stringify({ method: 'ping' }));
+				const now = Date.now();
+				lastPingTime = now;
+				extensionWs.send(JSON.stringify({ method: 'ping', timestamp: now }));
+
+				// 设置 pong 超时检测
+				pongTimeoutTimer = setTimeout(() => {
+					if (lastPongTime < lastPingTime) {
+						logger.warn('扩展 Pong 超时，尝试重连...');
+						// 延迟重连，给扩展一些时间恢复
+						setTimeout(() => {
+							if (lastPongTime < lastPingTime && extensionWs?.readyState === WebSocket.OPEN) {
+								extensionWs.close(4003, 'Pong timeout');
+								extensionWs = null;
+								stopExtensionPing();
+								handleExtensionDisconnect();
+							}
+						}, 2000); // 2秒延迟
+					}
+				}, PONG_TIMEOUT);
 			}
-		}, 5000);
+		}, PING_INTERVAL);
 	}
 
 	function stopExtensionPing(): void {
-		if (pingInterval) {
-			clearInterval(pingInterval);
-			pingInterval = null;
+		if (pingTimer) {
+			clearInterval(pingTimer);
+			pingTimer = null;
 		}
+		if (pongTimeoutTimer) {
+			clearTimeout(pongTimeoutTimer);
+			pongTimeoutTimer = null;
+		}
+		lastPingTime = 0;
+		lastPongTime = 0;
+	}
+
+	/**
+	 * 处理扩展断开连接
+	 */
+	function handleExtensionDisconnect(): void {
+		stopExtensionPing();
+		extensionWs = null;
+		connectedTargets.clear();
+		pendingRequests.clear();
+
+		// 关闭所有 Playwright 客户端
+		for (const client of playwrightClients.values()) {
+			client.ws.close(1000, 'Extension disconnected');
+		}
+		playwrightClients.clear();
 	}
 
 	// ========== 路由 CDP 命令 ==========
@@ -288,7 +363,7 @@ export async function startCDPRelayServer(options: CDPRelayOptions = {}): Promis
 			return;
 		}
 
-		// 扩展状态
+		// 扩展状态（旧版，保留兼容性）
 		if (pathname === '/extension/status') {
 			res.writeHead(200, { 'Content-Type': 'application/json' });
 			res.end(
@@ -297,6 +372,13 @@ export async function startCDPRelayServer(options: CDPRelayOptions = {}): Promis
 					activeTargets: connectedTargets.size,
 				})
 			);
+			return;
+		}
+
+		// 完整状态
+		if (pathname === '/status' || pathname === '/extension/status/new') {
+			res.writeHead(200, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify(getStatus()));
 			return;
 		}
 
@@ -418,13 +500,16 @@ export async function startCDPRelayServer(options: CDPRelayOptions = {}): Promis
 
 			// 处理 pong
 			if (message.method === 'pong') {
+				lastPongTime = Date.now();
+				const pingTime = message.timestamp ? lastPongTime - message.timestamp : 0;
+				logger.debug(`Pong received: ${pingTime}ms`);
 				return;
 			}
 
 			// 处理日志（保持 this 绑定）
 			if (message.method === 'log') {
 				const { level, args } = message.params as { level: string; args: string[] };
-				const logFn = (logger as Record<string, (...args: unknown[]) => void>)[level] || logger.info;
+				const logFn = (logger as unknown as Record<string, (...args: unknown[]) => void>)[level] || logger.info;
 				if (typeof logFn === 'function') {
 					logFn.call(logger, '[扩展]', ...args);
 				}
@@ -440,16 +525,7 @@ export async function startCDPRelayServer(options: CDPRelayOptions = {}): Promis
 
 		ws.on('close', () => {
 			logger.info('扩展已断开');
-			stopExtensionPing();
-			extensionWs = null;
-			connectedTargets.clear();
-			pendingRequests.clear();
-
-			// 关闭所有 Playwright 客户端
-			for (const client of playwrightClients.values()) {
-				client.ws.close(1000, 'Extension disconnected');
-			}
-			playwrightClients.clear();
+			handleExtensionDisconnect();
 		});
 
 		ws.on('error', (error) => {
@@ -622,6 +698,9 @@ export async function startCDPRelayServer(options: CDPRelayOptions = {}): Promis
 		},
 		getConnectedTargets() {
 			return connectedTargets;
+		},
+		getStatus() {
+			return getStatus();
 		},
 	};
 }

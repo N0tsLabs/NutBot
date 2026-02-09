@@ -117,7 +117,7 @@ function formatDebugInfo(step: number, info?: DebugInfo): string {
     
     lines.push(divider);
     lines.push(`  调试步骤 #${step}`);
-    lines.push(`  时间: ${new Date().toLocaleString('zh-CN')}`);
+    lines.push(`  时间: ${new Date().toLocaleTimeString('zh-CN', {hour12: false})}`);
     lines.push(divider);
     
     if (!info) {

@@ -221,6 +221,7 @@ export interface AgentChunk {
 	iterations?: number;
 	reason?: string; // 终止原因
 	thinking?: string; // AI 思考内容
+	description?: string; // 工具描述
 	// 调试模式数据
 	debug?: DebugData;
 	confirmId?: string; // 确认 ID，用于关联响应

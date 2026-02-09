@@ -63,10 +63,280 @@ export class Agent {
 	private gateway: Gateway;
 	private logger = logger.child('Agent');
 	private defaultSystemPrompt: string;
+	private currentRunId: string | null = null;
+	private interruptRequested = false;
 
 	constructor(gateway: Gateway) {
 		this.gateway = gateway;
 		this.defaultSystemPrompt = ''; // 动态生成
+	}
+
+	/**
+	 * 中断当前正在运行的任务
+	 */
+	interrupt(reason: string = 'user_requested'): void {
+		if (this.currentRunId) {
+			this.logger.info(`中断任务 ${this.currentRunId}: ${reason}`);
+			this.interruptRequested = true;
+		}
+	}
+
+
+
+	/**
+	 * 改进的任务检查 - 加强版本
+	 * @param userMessage 用户原始消息
+	 * @param aiResponse AI响应
+	 * @param toolResults 工具执行结果
+	 * @returns 检查结果
+	 */
+	private checkTaskCompletion(
+		userMessage: string,
+		aiResponse: string,
+		toolResults: any[]
+	): { completed: boolean; needsMoreWork: boolean; nextAction?: string } {
+		
+		// 强化的完成关键词检测
+		const completionPhrases = [
+			// 直接无法获取
+			'无法直接获取',
+			'无法直接访问',
+			'无法直接查看',
+			'无法直接搜索',
+			
+			// 建议类
+			'建议您',
+			'建议你在',
+			'建议使用',
+			'建议访问',
+			'建议查看',
+			'建议直接',
+			
+			// 无法完成类
+			'无法获取',
+			'无法找到',
+			'无法完成',
+			'无法提供',
+			'无法获取到',
+			'无法访问到',
+			
+			// 其他完成指示
+			'建议您查看',
+			'建议您使用',
+			'建议您访问',
+			'建议您直接',
+			
+			// 搜索相关
+			'建议你在',
+			'建议你在浏览器中',
+			'建议你在搜索引擎中'
+		];
+		
+		// 检查AI是否表示无法完成或给出建议
+		const isCompletionResponse = completionPhrases.some(phrase => 
+			aiResponse.includes(phrase)
+		);
+		
+		// 强化的完成判断 - 区分真实失败和尝试中的困难
+		if (isCompletionResponse && aiResponse.length > 20) {
+			// 检查AI是否真的尝试了所有可能的方法
+			const hasAttemptedMultipleMethods = aiResponse.includes('尝试') || 
+				aiResponse.includes('搜索') || 
+				aiResponse.includes('点击') ||
+				aiResponse.includes('访问') ||
+				aiResponse.includes('查找');
+		
+			const isRealFailure = (aiResponse.includes('无法') && 
+				(aiResponse.includes('访问') || aiResponse.includes('获取') || aiResponse.includes('找到'))) &&
+				(aiResponse.includes('页面不存在') || aiResponse.includes('网络') || aiResponse.includes('权限') || aiResponse.includes('服务器') || aiResponse.includes('错误'));
+		
+			// 如果AI只是说"无法直接获取"但没有真正尝试多种方法，不要认为任务完成
+			if (!hasAttemptedMultipleMethods && !isRealFailure) {
+				this.logger.info(`🔄 AI可能还有未尝试的方法: ${aiResponse.substring(0, 50)}...`);
+				return { completed: false, needsMoreWork: true, nextAction: 'try_alternative_methods' };
+			}
+		
+			this.logger.info(`✅ 任务完成检测: AI表示无法完成或给出建议`);
+			return { completed: true, needsMoreWork: false };
+		}
+		
+		// 检查AI要求澄清的情况 - 防止死循环澄清
+		const clarificationPhrases = ['澄清', '具体', '详细', '明确', '清楚'];
+		const isClarificationRequest = clarificationPhrases.some(phrase => 
+			aiResponse.includes(phrase)
+		);
+		
+		if (isClarificationRequest) {
+			// 检查用户任务是否已经足够明确
+			const userTask = userMessage.toLowerCase();
+			const isClearTask = (
+				userTask.includes('搜索') && userTask.includes('影视飓风') ||
+				userTask.includes('粉丝') ||
+				userTask.includes('视频') ||
+				userTask.includes('b站') || userTask.includes('bilibili')
+			);
+			
+			// 如果任务已经足够明确，不允许AI要求澄清
+			if (isClearTask) {
+				this.logger.info(`🔄 任务已明确，AI不应要求澄清: ${userMessage}`);
+				return { completed: false, needsMoreWork: true, nextAction: 'continue_execution' };
+			}
+			
+			this.logger.info(`❓ 任务澄清: AI需要更多信息`);
+			return { completed: false, needsMoreWork: true, nextAction: 'ask_clarification' };
+		}
+		
+		// 检查工具执行结果
+		if (toolResults.length > 0) {
+			// 检查是否有错误
+			const hasErrors = toolResults.some(result => 
+				result.success === false || result.error
+			);
+			if (hasErrors) {
+				this.logger.warn(`⚠️ 工具执行有错误`);
+				return { completed: false, needsMoreWork: true, nextAction: 'retry' };
+			}
+			
+			// 检查是否有实际结果（URL、内容等）
+			const hasResults = toolResults.some(result => 
+				result.success === true && (result.url || result.content || result.data)
+			);
+			if (hasResults) {
+				this.logger.info(`✅ 工具执行成功，获得结果`);
+				return { completed: true, needsMoreWork: false };
+			}
+		}
+		
+		// 对于纯回答性问题，根据回复长度判断
+		if (toolResults.length === 0 && aiResponse.length > 80) {
+			this.logger.info(`✅ 回答性问题: AI提供了完整回答`);
+			return { completed: true, needsMoreWork: false };
+		}
+		
+		// 如果AI明确表达无法完成的意思
+		const cannotCompletePhrases = [
+			'我无法',
+			'无法',
+			'不能',
+			'不建议',
+			'不建议您'
+		];
+		
+		const expressesInability = cannotCompletePhrases.some(phrase => 
+			aiResponse.includes(phrase)
+		);
+		
+		if (expressesInability && aiResponse.length > 30) {
+			// 进一步判断这是真的无法完成还是需要尝试不同方法
+			const hasTriedAlternatives = aiResponse.includes('尝试') || 
+				aiResponse.includes('不同') ||
+				aiResponse.includes('其他') ||
+				aiResponse.includes('方法');
+				
+			const isRealLimitation = aiResponse.includes('权限') || 
+				aiResponse.includes('网络') ||
+				aiResponse.includes('页面不存在') ||
+				aiResponse.includes('服务器错误');
+				
+			// 如果AI没有尝试替代方法且不是真正的技术限制，要求继续尝试
+			if (!hasTriedAlternatives && !isRealLimitation) {
+				this.logger.info(`🔄 AI需要尝试不同方法: ${aiResponse.substring(0, 50)}...`);
+				return { completed: false, needsMoreWork: true, nextAction: 'try_alternative_methods' };
+			}
+			
+			this.logger.info(`✅ AI表达无法完成: ${aiResponse.substring(0, 50)}...`);
+			return { completed: true, needsMoreWork: false };
+		}
+		
+		// 默认需要更多信息
+		this.logger.info(`🔄 任务未完成，需要更多信息`);
+		return { completed: false, needsMoreWork: true };
+	}
+
+	/**
+	 * 估算token数量（粗略估算）
+	 */
+	private estimateTokenCount(messages: any[], systemPrompt: string): number {
+		const allText = [
+			systemPrompt,
+			...messages.map(msg => {
+				if (typeof msg.content === 'string') {
+					return msg.content;
+				} else if (Array.isArray(msg.content)) {
+					return msg.content.map((block: any) => 
+						typeof block === 'string' ? block : block.text || ''
+					).join('');
+				}
+				return '';
+			})
+		].join(' ');
+		
+		// 粗略估算：每个token大约4个字符
+		return Math.ceil(allText.length / 4);
+	}
+
+	/**
+	 * 压缩消息历史 - 更激进的压缩策略
+	 */
+	private compressMessages(
+		messages: any[], 
+		systemPrompt: string, 
+		maxTokens: number
+	): any[] {
+		// 保留系统提示
+		const systemMessage = messages.find(msg => msg.role === 'system');
+		const userMessages = messages.filter(msg => msg.role === 'user');
+		const assistantMessages = messages.filter(msg => msg.role === 'assistant');
+		const toolMessages = messages.filter(msg => msg.role === 'tool');
+		
+		const compressed: any[] = [];
+		
+		// 保留系统提示
+		if (systemMessage) {
+			compressed.push(systemMessage);
+		}
+		
+		// 更激进的压缩策略
+		// 用户消息：只保留最近的2-3条
+		const recentUserCount = Math.min(3, Math.max(1, Math.floor(userMessages.length / 3)));
+		const recentUsers = userMessages.slice(-recentUserCount);
+		
+		// 助手消息：只保留最近的2-3条
+		const recentAssistantCount = Math.min(3, Math.max(1, Math.floor(assistantMessages.length / 3)));
+		const recentAssistants = assistantMessages.slice(-recentAssistantCount);
+		
+		// 工具消息：只保留最近1-2条
+		const recentToolCount = Math.min(2, Math.max(1, Math.floor(toolMessages.length / 4)));
+		const recentTools = toolMessages.slice(-recentToolCount);
+		
+		// 添加压缩后的消息
+		const allRecentMessages = [
+			...recentUsers,
+			...recentAssistants,
+			...recentTools
+		].sort((a, b) => {
+			// 按时间戳排序
+			const aTime = a.timestamp || a.createdAt || 0;
+			const bTime = b.timestamp || b.createdAt || 0;
+			return aTime - bTime;
+		});
+		
+		compressed.push(...allRecentMessages);
+		
+		// 添加详细的压缩总结消息
+		compressed.push({
+			role: 'system',
+			content: `🔄 上下文压缩完成: 原始${messages.length}条消息 → 保留${allRecentMessages.length}条最近消息 (用户:${recentUsers.length}, 助手:${recentAssistants.length}, 工具:${recentTools.length})`
+		});
+		
+		// 再次检查压缩后的长度，如果仍然超长，进一步压缩
+		const newTokenCount = this.estimateTokenCount(compressed, systemPrompt);
+		if (newTokenCount > maxTokens * 0.8) { // 如果仍然超过80%阈值
+			this.logger.warn(`⚠️ 压缩后仍然较长: ~${newTokenCount} tokens，再次压缩`);
+			return this.compressMessages(compressed, systemPrompt, maxTokens * 0.8);
+		}
+		
+		return compressed;
 	}
 
 	/**
@@ -78,7 +348,8 @@ export class Agent {
 	private generateSystemPrompt(
 		hasVision: boolean,
 		userInfo?: { name?: string; location?: UserLocation; customPrompt?: string; language?: string },
-		toolFormatPrompt?: string
+		toolFormatPrompt?: string,
+		browserContext?: { url?: string; title?: string }
 	): string {
 		// 用户信息部分
 		const userInfoSection = userInfo
@@ -107,24 +378,20 @@ ${userInfo.customPrompt}
 		// 获取沙盒安全说明
 		const sandboxPrompt = securityGuard.getSandboxPrompt();
 
-		const basePrompt = `你是 NutBot，用户电脑上的 AI 助理，能看屏幕、操控电脑。
+		const basePrompt = `你是 NutBot，一个能自动操作电脑的 AI 助理。
 
-## 回复风格
-- 简洁、直接：一两句话说清结果，不啰嗦、不列举、不写"洞察/观察/总结"
-- 禁止：输出思考过程、报告式语言、客服套话
-
-示例：❌ "从截图中看到...让我整理...我注意到..." ✅ "群里最新：KE 说 Hytale 可塑性不错，有人在卖插件文档。挺安静的技术群。"
+理解用户需求，主动执行任务，提供简洁回复。
+"
 
 ${userInfoSection}${memorySummary ? `\n${memorySummary}\n` : ''}${customPromptSection}
 ${sandboxPrompt}
+${browserContext?.url ? `
+## 当前浏览器状态
+- 页面: ${browserContext.url}
+${browserContext?.title ? `- 标题: ${browserContext.title}` : ''}
 
+` : ''}
 ${getSystemDescription()}
-
-## 规则
-
-**工具选择**：网页/浏览器/链接/搜索 → browser；本地应用/桌面/微信/Excel → screenshot + computer。禁止用 screenshot+computer 操作浏览器。
-
-**执行**：自己用工具完成，不推给用户；先 snapshot/list_elements 再操作；任务没完成就继续下一步，别中途问"要不要继续"；完成后不要自动关浏览器，除非用户说关。
 
 ## 可用工具
 
@@ -148,59 +415,35 @@ ${getSystemDescription()}
 
 ## 当前模型不支持图像理解
 
-可做：exec（命令/文件/系统设置）、browser（网页有 snapshot）、web fetch、写脚本处理数据。不可做：操作微信/QQ/桌面图标等需要"看屏幕"的任务。若用户请求必须看屏幕才能完成，回复："当前模型不支持图像，请换支持视觉的模型（如 GPT-4o）或告诉我命令行方式。"`;
+可做：exec（命令/文件/系统设置）、browser（网页有 snapshot）、http request、写脚本处理数据。不可做：操作微信/QQ/桌面图标等需要"看屏幕"的任务。若用户请求必须看屏幕才能完成，回复："当前模型不支持图像，请换支持视觉的模型（如 GPT-4o）或告诉我命令行方式。"`;
 
 		const browserTool = `
 
 ### 网页操作
 - 只打开让用户看：exec Start-Process/open/xdg-open + URL
-- 自动搜索/点击/填表：browser（goto → snapshot → click/type/press，完成后不自动 close）
-- 只要网页文本：web fetch
+- 自动搜索/点击/填表：browser（goto → snapshot → click/type/press）
+- 获取网页内容：browser snapshot
+- 任何浏览器相关操作：全部使用browser工具
 
-### web - 网页文本
-- fetch / batch_fetch：获取网页内容`;
+**快速搜索**：
+- 直接使用：{"action":"search","searchQuery":"关键词","engine":"google"}
 
-		const taskModes = `
-
-## 任务与工具对应
-| 意图 | 工具 |
-|------|------|
-| 打开网页让用户看 | exec Start-Process/open + URL |
-| 自动搜索/点击网页 | browser（snapshot 取 ref，再 click/type/press） |
-| 只要网页文本 | web fetch/batch_fetch |
-| 桌面应用（微信/记事本等） | screenshot + computer（list_elements 或截图坐标） |
-
-打开本地应用：先 list_elements taskbar，有则 click_element；没有则 win 键 + type 搜索 + Enter。`;
-
-		const desktopMode = hasVision
-			? `
-
-## 桌面操作（仅本地应用）
-优先 list_elements + click_element；找不到再用 screenshot 坐标 + left_click。任务栏用 filter_type:"taskbar"。操作后可加 delay。`
-			: '';
+**手动搜索步骤**：
+1. snapshot 获取页面元素
+2. 找到搜索框并点击
+3. type 输入关键词
+4. press Enter
+5. 查看结果并根据需要继续操作`;
 
 		const footer = `
 
-## 效率与回复
-- 可合并的操作一次返回多工具（如 点击+输入+回车）；需看结果再定的（截图、搜索）分步执行。
-- 完成后回复：简洁总结结果，可顺带一句建议；不要长列表和"洞察/观察"式分析。
-
-当前时间：${new Date().toLocaleString()}
-${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图像的任务'}`;
-
-		// Skills：从配置目录加载并注入
-		const skillsEnabled = this.gateway.config.get<boolean>('skills.enabled', true);
-		const includeInPrompt = this.gateway.config.get<boolean>('skills.includeInPrompt', true);
-		const skillsSection =
-			skillsEnabled && includeInPrompt ? skillsToPromptSection(loadSkills(this.gateway.config)) : '';
+当前时间：${new Date().toLocaleTimeString('zh-CN', {hour12: false})}
+${hasVision ? 'Vision 已启用' : 'Vision 未启用'}`;
 
 		return (
 			basePrompt +
 			(hasVision ? visionTools : nonVisionNotice) +
 			browserTool +
-			taskModes +
-			desktopMode +
-			skillsSection +
 			footer +
 			(toolFormatPrompt ? `\n\n${toolFormatPrompt}` : '')
 		);
@@ -223,7 +466,16 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 		this.logger.info(`开始 Agent 运行: ${runId}`);
 		this.logger.info(`用户消息: ${message.substring(0, 100)}${message.length > 100 ? '...' : ''}`);
 
+		// 设置当前运行ID
+		this.currentRunId = runId;
+		this.interruptRequested = false;
+
 		try {
+			// 检查是否请求了中断
+			if (this.interruptRequested) {
+				this.logger.info(`任务 ${runId} 在开始前被中断`);
+				return;
+			}
 			// 添加用户消息
 			this.gateway.sessionManager.addMessage(session.id, {
 				role: 'user',
@@ -247,8 +499,9 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 			// 如果配置中没有位置，尝试 IP 定位
 			if (!userLocation) {
 				try {
-					userLocation = (await getLocationByIP()) || undefined;
-					if (userLocation) {
+					const ipLocation = await getLocationByIP();
+					if (ipLocation) {
+						userLocation = ipLocation;
 						this.logger.info(`IP 定位成功: ${userLocation.city}, ${userLocation.region || ''}`);
 					}
 				} catch (e) {
@@ -293,11 +546,17 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 				? generateToolCallFormatPrompt(tools)
 				: undefined;
 
+			// 获取浏览器上下文（每次迭代更新）
+			const browserContext = this.gateway.sessionManager.getBrowserContext(session.id);
+			if (browserContext?.url) {
+				this.logger.debug(`📍 当前浏览器上下文: ${browserContext.url}`);
+			}
+
 			// 获取系统提示（根据 Vision 能力和用户信息动态生成）
 			const systemPrompt =
 				options.systemPrompt ||
 				this.gateway.config.get<string>('agent.systemPrompt') ||
-				this.generateSystemPrompt(hasVision, userInfo, toolFormatPrompt);
+				this.generateSystemPrompt(hasVision, userInfo, toolFormatPrompt, browserContext);
 
 			// 最大迭代次数（用于工具调用循环）
 			const maxIterations = options.maxIterations || this.gateway.config.get<number>('agent.maxIterations', 30);
@@ -312,16 +571,50 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 			}
 
 			let iteration = 0;
+			const toolResults: any[] = []; // 收集所有工具执行结果
 
 			while (iteration < maxIterations) {
 				iteration++;
 				this.logger.info(`─────────── 迭代 ${iteration}/${maxIterations} ───────────`);
 
-				// 获取消息历史
-				const messages = this.gateway.sessionManager.getMessagesForAI(session.id, {
+				// 获取消息历史 - 降低默认数量避免超限
+				let messages = this.gateway.sessionManager.getMessagesForAI(session.id, {
 					systemPrompt,
-					maxMessages: 30,
+					maxMessages: 10, // 降低默认数量避免快速增长
 				});
+
+				// 检查上下文长度，如果超长则压缩
+				const estimatedTokens = this.estimateTokenCount(messages, systemPrompt);
+				const maxTokens = 100000; // 降低阈值，更早触发压缩
+				
+				if (estimatedTokens > maxTokens) {
+					this.logger.warn(`⚠️ 上下文过长: ~${estimatedTokens} tokens，开始压缩`);
+					
+					// 压缩消息历史：保留系统提示和最近的消息
+					messages = this.compressMessages(messages, systemPrompt, maxTokens);
+					
+					const compressedTokens = this.estimateTokenCount(messages, systemPrompt);
+					this.logger.info(`✅ 压缩后: ~${compressedTokens} tokens, 消息数量: ${messages.length}`);
+				} else {
+					this.logger.info(`📊 消息数量: ${messages.length}, ~${estimatedTokens} tokens`);
+				}
+				this.logger.debug('===== 发送给 OpenAI 的消息 =====');
+				for (let i = 0; i < messages.length; i++) {
+					const msg = messages[i];
+					if (msg.role === 'tool') {
+						const hasId = (msg as any).tool_call_id;
+						this.logger.debug(`  [${i}] tool role, tool_call_id: ${hasId || 'MISSING!'}`);
+						if (!hasId) {
+							this.logger.warn(`⚠️ 严重: tool 消息缺少 tool_call_id!`);
+						}
+					} else if ('tool_calls' in msg) {
+						this.logger.debug(`  [${i}] assistant with ${(msg as any).tool_calls?.length || 0} tool_calls`);
+					} else {
+						const content = typeof msg.content === 'string' ? msg.content.substring(0, 30) : '...';
+						this.logger.debug(`  [${i}] ${msg.role}: ${content}...`);
+					}
+				}
+				this.logger.debug('===================================');
 
 				// 调用 AI
 				let fullContent = '';
@@ -349,6 +642,12 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 						: {};
 
 					for await (const chunk of this.gateway.providerManager.chat(modelRef, messages, chatOptions)) {
+						// 检查中断请求
+						if (this.interruptRequested) {
+							this.logger.info(`任务 ${runId} 在处理AI响应时被中断`);
+							return;
+						}
+						
 						lastChunkTime = Date.now();
 						responseStarted = true;
 
@@ -377,8 +676,9 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 					const parsed = parsePromptResponse(fullContent);
 					thinking = parsed.thinking;
 					
-					if (thinking) {
-						this.logger.info(`AI 思考: ${thinking.substring(0, 100)}${thinking.length > 100 ? '...' : ''}`);
+					// 只在必要时输出AI思考内容（避免输出给用户）
+					if (thinking && iteration <= 2) {
+						this.logger.debug(`AI 思考: ${thinking.substring(0, 100)}${thinking.length > 100 ? '...' : ''}`);
 					}
 
 					// 如果有工具调用
@@ -407,8 +707,9 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 				} else if (toolCallMode === 'function') {
 					// Function 模式下的思考内容
 					thinking = fullContent || '';
-					if (thinking) {
-						this.logger.info(`AI 思考: ${thinking.substring(0, 100)}${thinking.length > 100 ? '...' : ''}`);
+					// 只在必要时输出AI思考内容（避免输出给用户）
+					if (thinking && iteration <= 2) {
+						this.logger.debug(`AI 思考: ${thinking.substring(0, 100)}${thinking.length > 100 ? '...' : ''}`);
 					}
 				}
 
@@ -423,11 +724,41 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 
 				// 检查是否需要执行工具
 				if (toolCalls.length === 0 || finishReason === 'stop') {
-					// 没有工具调用，结束
-					this.logger.info(`AI 响应完成，无工具调用`);
-					const responseContent = toolCallMode === 'prompt' 
+					// 检查任务完成度（只对第一次完成时进行评估）
+					const responseContent = toolCallMode === 'prompt'
 						? parsePromptResponse(fullContent).response || fullContent
 						: fullContent;
+
+					if (responseContent && iteration > 1) {
+						// 检查任务是否完成
+						const checkResult = this.checkTaskCompletion(message, responseContent, toolResults);
+						
+						// 只在必要时输出检查信息
+						if (checkResult.completed || checkResult.nextAction === 'ask_clarification') {
+							this.logger.info(`任务检查: 完成=${checkResult.completed}, 需要更多工作=${checkResult.needsMoreWork}`);
+							if (checkResult.nextAction) {
+								this.logger.info(`下一步操作: ${checkResult.nextAction}`);
+							}
+						}
+						
+						// 如果任务未完成，继续执行
+						if (checkResult.needsMoreWork) {
+							// 通过prompt告知AI继续，完全自主判断
+							this.gateway.sessionManager.addMessage(session.id, {
+								role: 'user',
+								content: '任务未完成，请继续处理并提供完整结果。'
+							});
+							
+							// 只在必要时输出继续信息
+							if (checkResult.nextAction !== 'ask_clarification') {
+								this.logger.info(`🔄 任务未完成，继续执行...`);
+							}
+							continue; // 继续下一次迭代
+						}
+					}
+					
+					// 任务完成或无法继续
+					this.logger.info(`AI 响应完成，无工具调用`);
 					if (responseContent) {
 						this.logger.debug(
 							`AI 回复: ${responseContent.substring(0, 200)}${responseContent.length > 200 ? '...' : ''}`
@@ -447,7 +778,18 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 					const toolId = this.getToolId(toolCall);
 
 					this.logger.info(`┌─ 执行工具: ${toolName}`);
+					this.logger.info(`│  toolId: "${toolId}"`);
+					if (!toolId) {
+						this.logger.warn(`│  ⚠️ toolCall 没有 ID!`);
+					}
 					this.logger.info(`│  参数: ${JSON.stringify(toolArgs).substring(0, 200)}`);
+
+					// ========== 搜索关键字验证 ==========
+					const searchKeyword = this.validateSearchKeyword(toolName, toolArgs);
+					if (searchKeyword) {
+						this.logger.info(`│  🔍 搜索关键字: "${searchKeyword}"`);
+					}
+
 					// 附带 AI 的思考内容
 					yield { type: 'tool_start', tool: toolName, args: toolArgs, thinking };
 
@@ -629,6 +971,19 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 								}),
 								metadata: { toolCallId: toolId, toolName },
 							});
+
+							// 收集工具被阻止的结果
+							toolResults.push({
+								toolName,
+								toolArgs,
+								result: { 
+									success: false, 
+									blocked: true, 
+									error: securityCheck.message 
+								},
+								success: false,
+								action: toolArgs.action || 'unknown'
+							});
 							
 							// 继续处理下一个工具调用
 							continue;
@@ -665,6 +1020,15 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 										role: 'tool',
 										content: JSON.stringify({ success: false, cancelled: true }),
 										metadata: { toolCallId: toolId, toolName },
+									});
+
+									// 收集用户取消操作的结果
+									toolResults.push({
+										toolName,
+										toolArgs,
+										result: { success: false, cancelled: true },
+										success: false,
+										action: toolArgs.action || 'unknown'
 									});
 									
 									continue;
@@ -705,6 +1069,24 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 								: JSON.stringify(result).substring(0, 300);
 						this.logger.info(`│  结果: ${resultStr}${resultStr.length >= 300 ? '...' : ''}`);
 						this.logger.info(`└─ 完成 (${toolDuration}ms)`);
+
+						// ========== 浏览器上下文跟踪 ==========
+						if (toolName === 'browser') {
+							const browserResult = result as {
+								success?: boolean;
+								url?: string;
+								title?: string;
+								action?: string;
+							};
+							// 跟踪成功操作后的页面上下文（goto、snapshot 等）
+							if (browserResult.success && (browserResult.url || browserResult.title)) {
+								this.gateway.sessionManager.setBrowserContext(session.id, {
+									url: browserResult.url,
+									title: browserResult.title,
+								});
+								this.logger.debug(`📍 浏览器上下文已更新: ${browserResult.url}`);
+							}
+						}
 
 						// 调试模式：如果是截图工具，缓存截图（OCR-SoM 结果已由 screenshot 工具返回）
 						if (debugMode && toolName === 'screenshot') {
@@ -777,6 +1159,15 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 								isMultimodal: processed.isMultimodal,
 							},
 						});
+
+						// 收集工具执行结果用于任务完成度评估
+						toolResults.push({
+							toolName,
+							toolArgs,
+							result,
+							success: true,
+							action: toolArgs.action || 'unknown'
+						});
 					} catch (error) {
 						const toolDuration = Date.now() - toolStartTime;
 						this.logger.error(`│  错误: ${(error as Error).message}`);
@@ -788,6 +1179,15 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 							role: 'tool',
 							content: JSON.stringify({ error: (error as Error).message }),
 							metadata: { toolCallId: toolId, toolName, error: true },
+						});
+
+						// 收集工具执行失败结果
+						toolResults.push({
+							toolName,
+							toolArgs,
+							result: { error: (error as Error).message },
+							success: false,
+							action: toolArgs.action || 'unknown'
 						});
 					}
 				}
@@ -812,9 +1212,27 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 					maxMessages: 30,
 				});
 
+				// 详细调试：打印消息历史
+				this.logger.debug('===== 发送给 OpenAI 的消息（强制总结）=====');
+				for (let i = 0; i < messages.length; i++) {
+					const msg = messages[i];
+					if (msg.role === 'tool') {
+						const hasId = (msg as any).tool_call_id;
+						if (!hasId) {
+							this.logger.warn(`⚠️ tool 消息缺少 tool_call_id!`);
+						}
+					}
+				}
+				this.logger.debug('===================================');
+
 				for await (const chunk of this.gateway.providerManager.chat(modelRef, messages, {
 					tools: undefined, // 不提供工具，强制文字回复
 				})) {
+					// 检查中断请求
+					if (this.interruptRequested) {
+						this.logger.info(`任务 ${runId} 在生成最终回复时被中断`);
+						return;
+					}
 					if (chunk.type === 'content') {
 						yield { type: 'content', content: chunk.content };
 					}
@@ -828,6 +1246,10 @@ ${hasVision ? 'Vision 已启用' : 'Vision 未启用，仅可执行不依赖图�
 		} catch (error) {
 			this.logger.error(`Agent 运行失败: ${runId}`, (error as Error).message);
 			yield { type: 'error', error: (error as Error).message };
+		} finally {
+			// 清理状态
+			this.currentRunId = null;
+			this.interruptRequested = false;
 		}
 		// 注意：不自动关闭浏览器！让用户决定是否关闭
 		// 浏览器只有在用户明确要求"关闭浏览器"时才会关闭
@@ -1018,9 +1440,21 @@ ${elementsJson}
 			};
 		}
 
-		// browser 工具的截图也需要处理
+		// browser 工具的特殊处理
 		if (toolName === 'browser') {
-			const browserResult = result as { success: boolean; base64?: string };
+			const browserResult = result as { 
+				success: boolean; 
+				base64?: string;
+				action?: string;
+				compressedText?: string;
+				searchAnalysis?: any;
+				elements?: any[];
+				url?: string;
+				title?: string;
+				text?: string;
+			};
+
+			// 处理browser的截图操作
 			if (browserResult.base64) {
 				const sizeKB = Math.round((browserResult.base64.length * 0.75) / 1024);
 
@@ -1042,6 +1476,51 @@ ${elementsJson}
 					};
 				}
 			}
+
+			// 处理browser的snapshot操作 - 关键修复！
+			if (browserResult.action === 'snapshot' || browserResult.compressedText) {
+				const content: ContentBlock[] = [];
+
+				// 如果有压缩文本，先返回压缩文本（这是关键！）
+				if (browserResult.compressedText) {
+					content.push({
+						type: 'text',
+						text: `## 🗜️ 页面结构分析（增强版）
+
+${browserResult.compressedText}
+
+⚠️ **重要提示**：请重点关注上述分析结果，特别是搜索功能检测和任务执行建议。`,
+					});
+				}
+
+				// 添加原始元素列表（向后兼容）
+				if (browserResult.elements && browserResult.elements.length > 0) {
+					const elementsJson = JSON.stringify(browserResult.elements, null, 2);
+					content.push({
+						type: 'text',
+						text: `## 📋 原始元素列表（共 ${browserResult.elements.length} 个元素）
+
+\`\`\`json
+${elementsJson}
+\`\`\`
+
+**使用说明**：优先使用上面的结构化分析结果，如果需要具体元素信息，可参考此列表。`,
+					});
+				}
+
+				// 如果有页面基本信息，也添加
+				if (browserResult.url || browserResult.title) {
+					content.push({
+						type: 'text',
+						text: `**当前页面**：${browserResult.url || '未知URL'} - ${browserResult.title || '未知标题'}`,
+					});
+				}
+
+				return {
+					content,
+					isMultimodal: false,
+				};
+			}
 		}
 
 		// 其他工具直接返回
@@ -1049,6 +1528,95 @@ ${elementsJson}
 			content: typeof result === 'string' ? result : JSON.stringify(result),
 			isMultimodal: false,
 		};
+	}
+
+	/**
+	 * 验证搜索关键字
+	 * 检测常见问题：关键字过短、缺少字符等
+	 * @returns 验证通过返回关键字，否则返回 null
+	 */
+	private validateSearchKeyword(toolName: string, args: Record<string, unknown>): string | null {
+		// 只对 browser/web 工具进行搜索验证
+		if (toolName !== 'browser' && toolName !== 'web') {
+			return null;
+		}
+
+		// 提取搜索关键字
+		let keyword: string | undefined;
+
+		if (toolName === 'browser') {
+			// browser 工具的搜索参数
+			const action = args.action as string;
+			if (action === 'goto' || action === 'search') {
+				keyword = args.url as string | undefined;
+				// 如果是 search action，text 字段是搜索内容
+				if (action === 'search') {
+					keyword = args.text as string | undefined;
+				}
+			}
+		} else if (toolName === 'web') {
+			// web 工具的参数
+			keyword = args.query as string | undefined;
+			if (!keyword && Array.isArray(args.query)) {
+				keyword = (args.query as string[]).join(' ');
+			}
+		}
+
+		if (!keyword) return null;
+
+		// 清理关键字
+		keyword = keyword.trim();
+		if (!keyword) return null;
+
+		// 过滤掉 URL（只验证搜索词）
+		if (keyword.startsWith('http://') || keyword.startsWith('https://')) {
+			return null;
+		}
+
+		// ========== 验证逻辑 ==========
+
+		// 1. 检查关键字是否过短（中文至少 2 个字符，英文至少 3 个字符）
+		// 统计中文字符数量
+		const chineseChars = keyword.match(/[\u4e00-\u9fa5]/g);
+		const chineseCount = chineseChars ? chineseChars.length : 0;
+		const totalChars = keyword.length;
+
+		if (chineseCount >= 2) {
+			// 中文搜索：检查是否可能丢失字符
+			// 常见问题：4 字词变成 3 字（如"影视飓风"变成"影视风"）
+			if (chineseCount === 3 && totalChars === 3) {
+				// 3 个中文字符，可能是丢字
+				this.logger.warn(`│  ⚠️ 搜索关键字 "${keyword}" 只有 3 个中文字符，可能缺少字符`);
+			}
+		} else if (chineseCount === 1 && totalChars <= 4) {
+			// 只有 1 个中文字符，加上一些其他字符
+			this.logger.warn(`│  ⚠️ 搜索关键字 "${keyword}" 只有一个中文字符 "${chineseChars?.[0]}"，可能缺少字符`);
+		}
+
+		// 2. 检查英文/数字为主的关键字
+		const englishChars = keyword.match(/[a-zA-Z]/g);
+		const digitChars = keyword.match(/[0-9]/g);
+		if (!englishChars && !digitChars && chineseCount >= 2 && totalChars < 4) {
+			// 只有中文字符且少于 4 个
+			this.logger.warn(`│  ⚠️ 搜索关键字 "${keyword}" 较短，请确认完整性`);
+		}
+
+		// 3. 特殊模式检测：明显的字符丢失模式
+		// 如 "xx风" 可能来自 "影视飓风"（丢掉了"飓"）
+		const missingCharPatterns = [
+			{ pattern: /^(影视).*风$/, expected: '影视飓风', missing: '飓' },
+			{ pattern: /^(.*)风$/, expected: null, missing: '前导字符' },
+		];
+
+		for (const { pattern, expected, missing } of missingCharPatterns) {
+			if (pattern.test(keyword)) {
+				if (expected) {
+					this.logger.warn(`│  ⚠️ 搜索关键字 "${keyword}" 可能不完整，参考: "${expected}"（缺少 "${missing}"）`);
+				}
+			}
+		}
+
+		return keyword;
 	}
 
 	/**

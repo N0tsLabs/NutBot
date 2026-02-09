@@ -29,9 +29,34 @@
 		"retryCount": 3,
 		"retryDelay": 1000
 	},
-	"providers": {},
+	"providers": {
+		"openai": {
+			"id": "openai",
+			"name": "OpenAI",
+			"baseUrl": "${OPENAI_BASE_URL}",
+			"apiKey": "${OPENAI_API_KEY}",
+			"type": "openai",
+			"models": ["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
+			"defaultModel": "gpt-4",
+			"enabled": true,
+			"timeout": 120000,
+			"supportsVision": true
+		},
+		"anthropic": {
+			"id": "anthropic",
+			"name": "Anthropic",
+			"baseUrl": "${ANTHROPIC_BASE_URL}",
+			"apiKey": "${ANTHROPIC_API_KEY}",
+			"type": "anthropic",
+			"models": ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"],
+			"defaultModel": "claude-3-5-sonnet-20241022",
+			"enabled": true,
+			"timeout": 120000,
+			"supportsVision": true
+		}
+	},
 	"tools": {
-		"enabled": ["exec", "browser", "desktop", "screenshot", "web"],
+		"enabled": ["exec", "browser", "desktop", "screenshot"],
 		"exec": {
 			"enabled": true,
 			"timeout": 30000,
@@ -39,8 +64,15 @@
 		},
 		"browser": {
 			"enabled": true,
-			"headless": true,
-			"timeout": 30000
+			"headless": false,
+			"timeout": 60000,
+			"userDataDir": null,
+			"browserPath": null,
+			"debugPort": 9223,
+			"useIsolatedProfile": false,
+			"isolatedProfileDir": null,
+			"autoStart": true,
+			"smartDetection": true
 		},
 		"desktop": {
 			"enabled": true,

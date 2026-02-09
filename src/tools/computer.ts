@@ -107,7 +107,26 @@ Write-Output $json
 
 // 初始化 UI Automation 脚本
 const UI_AUTOMATION_SCRIPT_PATH = join(SCRIPT_DIR, 'ui-automation.ps1');
-writeFileSync(UI_AUTOMATION_SCRIPT_PATH, UI_AUTOMATION_SCRIPT, 'utf8');
+
+// 尝试安全的文件写入，支持重试机制
+try {
+    writeFileSync(UI_AUTOMATION_SCRIPT_PATH, UI_AUTOMATION_SCRIPT, 'utf8');
+} catch (writeError: any) {
+    if (writeError.code === 'EBUSY' || writeError.code === 'EACCES') {
+        // 文件被占用或权限问题，等待后重试
+        await new Promise(resolve => setTimeout(resolve, 200));
+        try {
+            writeFileSync(UI_AUTOMATION_SCRIPT_PATH, UI_AUTOMATION_SCRIPT, 'utf8');
+        } catch (retryError) {
+            // 重试失败，使用临时文件名
+            const tempPath = UI_AUTOMATION_SCRIPT_PATH + '.tmp';
+            writeFileSync(tempPath, UI_AUTOMATION_SCRIPT, 'utf8');
+            // 注意：后续使用 tempPath 替代 UI_AUTOMATION_SCRIPT_PATH
+        }
+    } else {
+        throw writeError;
+    }
+}
 
 /**
  * 获取屏幕上的 UI 元素（Windows 使用 UI Automation）

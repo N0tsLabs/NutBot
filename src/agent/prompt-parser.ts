@@ -146,62 +146,52 @@ export function parsePromptResponse(text: string): ParsedResponse {
 
 /**
  * 生成工具调用格式的 System Prompt 部分
+ * 包含每个工具的参数说明，帮助 AI 正确生成参数
  */
-export function generateToolCallFormatPrompt(tools: Array<{ name: string; description: string; parameters: unknown }>): string {
-	const toolList = tools.map(t => `- **${t.name}**: ${t.description}`).join('\n');
-	
-	const toolSchemas = tools.map(t => ({
-		name: t.name,
-		description: t.description,
-		parameters: t.parameters,
-	}));
+export function generateToolCallFormatPrompt(tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>): string {
+	// 生成工具列表和参数说明
+	const toolList = tools.map(t => {
+		const params = t.parameters;
+		let paramsStr = '';
+
+		if (params && typeof params === 'object' && Object.keys(params).length > 0) {
+			const paramList = [];
+			for (const [key, value] of Object.entries(params)) {
+				const paramInfo = value as { type?: string; description?: string; required?: boolean; enum?: string[] };
+				let desc = paramInfo?.description || '';
+				if (paramInfo?.required) {
+					desc = `(必填) ${desc}`;
+				}
+				if (paramInfo?.enum) {
+					desc = `${desc} 可选值: ${paramInfo.enum.join(', ')}`;
+				}
+				paramList.push(`    - ${key}: ${desc}`);
+			}
+			paramsStr = `\n${paramList.join('\n')}`;
+		}
+
+		return `- **${t.name}**: ${t.description}${paramsStr}`;
+	}).join('\n');
 
 	return `
 ## 工具调用格式
 
-你可以使用以下工具来完成任务。当需要调用工具时，**必须**按照指定的 JSON 格式输出。
+**调用工具时**（必须包含 thinking）：
+\`\`\`json
+{"thinking": "为什么这样做", "tool_calls": [{"name": "工具名", "arguments": {"参数": "值"}}]}
+\`\`\`
+
+**直接回复时**：
+\`\`\`json
+{"thinking": "思考过程", "response": "回复内容"}
+\`\`\`
+
+**重要规则**：
+1. 必须用工具名称，不要用中文描述！
+2. 必须用 JSON 格式输出！
+3. 不要在 JSON 外写任何文字！
+4. 工具参数必须完整填写，required 参数不能省略！
 
 ### 可用工具
-${toolList}
-
-### 工具 Schema
-\`\`\`json
-${JSON.stringify(toolSchemas, null, 2)}
-\`\`\`
-
-### 输出格式要求
-
-**重要**：你的每次响应都必须是一个有效的 JSON 对象，格式如下：
-
-#### 需要调用工具时：
-\`\`\`json
-{
-  "thinking": "简短描述你的思考过程，为什么要执行这个操作",
-  "tool_calls": [
-    {
-      "name": "工具名称",
-      "arguments": {
-        "参数名": "参数值"
-      }
-    }
-  ]
-}
-\`\`\`
-
-#### 直接回复用户时（不需要工具）：
-\`\`\`json
-{
-  "thinking": "简短描述你的思考过程",
-  "response": "你要回复给用户的内容"
-}
-\`\`\`
-
-### 注意事项
-1. **必须**输出有效的 JSON 格式
-2. **每次响应只能选择一种**：要么调用工具（tool_calls），要么直接回复（response）
-3. thinking 字段**必填**，用于展示你的思考过程
-4. 可以一次调用多个工具，按顺序执行
-5. 工具参数必须符合 Schema 定义的类型
-6. 不要在 JSON 外添加任何其他文字
-`;
+${toolList}`;
 }

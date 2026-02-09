@@ -27,13 +27,14 @@
   ],
   "scripts": {
     "start": "node bin/nutbot.js start",
-    "dev": "tsx src/index.ts start",
-    "dev:watch": "nodemon --watch src --ext ts --exec \"tsx src/index.ts start --no-interactive\"",
-    "cli": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts start",
+    "start:chat": "tsx src/index.ts start --interactive",
     "build": "npm run build:server && npm run build:web",
     "build:server": "tsup src/index.ts --format esm --dts --clean",
     "build:web": "cd web && npm run build",
     "test": "vitest run",
+    "test:prompt": "node test/test-prompt-parser.js",
+    "test:streaming": "node test/test-streaming.js",
     "lint": "prettier --write \"src/**/*.ts\" \"web/src/**/*.{vue,js,ts,css}\" \"test/**/*.ts\"",
     "lint:check": "prettier --check \"src/**/*.ts\" \"web/src/**/*.{vue,js,ts,css}\" \"test/**/*.ts\"",
     "typecheck": "tsc --noEmit",
@@ -88,10 +89,11 @@
     "node-notifier": "^10.0.1",
     "ora": "^8.1.0",
     "pdf-parse": "^1.1.1",
-    "playwright": ">=1.40.0",
+    "playwright": "^1.58.2",
     "screenshot-desktop": "^1.15.0",
     "systeminformation": "^5.30.6",
     "uuid": "^10.0.0",
+    "ws": "^8.19.0",
     "xlsx": "^0.18.5",
     "zod": "^3.23.8"
   },
@@ -110,9 +112,6 @@
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
-  },
-  "peerDependencies": {
-    "playwright": ">=1.40.0"
   },
   "peerDependenciesMeta": {
     "playwright": {

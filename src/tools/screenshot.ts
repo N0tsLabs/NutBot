@@ -40,8 +40,9 @@ export class ScreenshotTool extends BaseTool {
 			parameters: {
 				action: {
 					type: 'string',
-					description: '操作类型: capture(截图返回图片), save(截图保存到文件)',
-					required: true,
+					description: '操作类型: capture(截图返回图片), save(截图保存到文件), list_screens(列出屏幕)',
+					required: false,
+					default: 'capture',
 					enum: ['capture', 'save', 'list_screens'],
 				},
 				screen: {
@@ -85,7 +86,7 @@ export class ScreenshotTool extends BaseTool {
 
 	async execute(
 		params: {
-			action: string;
+			action?: string;
 			screen?: number;
 			path?: string;
 			quality?: string;
@@ -96,7 +97,7 @@ export class ScreenshotTool extends BaseTool {
 			throw new Error('screenshot-desktop 未安装。请运行: npm install screenshot-desktop');
 		}
 
-		const { action, screen, path: savePath, quality = 'medium' } = params;
+		const { action = 'capture', screen, path: savePath, quality = 'medium' } = params;
 
 		switch (action) {
 			case 'capture':
@@ -145,6 +146,35 @@ export class ScreenshotTool extends BaseTool {
 		} catch (error) {
 			this.logger.warn('图片压缩失败，使用原图:', error);
 			return buffer;
+		}
+	}
+
+	/**
+	 * 在终端显示图片（支持 iTerm2 和 Kitty 协议）
+	 */
+	private displayImageInTerminal(buffer: Buffer): void {
+		try {
+			const base64 = buffer.toString('base64');
+			const fileSize = buffer.length;
+
+			// 尝试使用 iTerm2 图像协议
+			// 格式: \033]1337;File=inline=1;size=<size>:<base64>\a
+			const iterm2Sequence = `\x1b]1337;File=inline=1;size=${fileSize}:${base64}\x07`;
+
+			// 尝试使用 Kitty 图像协议
+			// 格式: \033_G...<base64>\033\\
+			const kittyStart = `\x1b_Gf=100,i=1,s=${fileSize},v=1`;
+			const kittyEnd = `\x1b\\\x1b]1337;File=done`;
+			const kittySequence = `${kittyStart};${base64}${kittyEnd}`;
+
+			// 输出到控制台
+			process.stdout.write(iterm2Sequence + '\n');
+			process.stdout.write(kittySequence + '\n');
+
+			this.logger.debug('图片已发送到终端显示');
+		} catch (error) {
+			// 静默失败，不影响主要功能
+			this.logger.debug('终端图片显示失败:', error);
 		}
 	}
 
@@ -259,6 +289,9 @@ export class ScreenshotTool extends BaseTool {
 		this.logger.info(
 			`截图尺寸: ${screenInfo.imageWidth}x${screenInfo.imageHeight}, 鼠标坐标系: ${screenInfo.mouseWidth}x${screenInfo.mouseHeight}, 缩放: ${screenInfo.scale.toFixed(2)}x`
 		);
+
+		// 在终端显示图片（使用 iTerm2 或 Kitty 协议）
+		this.displayImageInTerminal(compressedBuffer);
 
 		// 基础返回结果
 		const result: {
