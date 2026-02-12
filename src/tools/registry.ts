@@ -305,7 +305,7 @@ export class ToolRegistry {
 			{ name: 'screenshot', module: './screenshot.js' }, // 屏幕截图
 			{ name: 'computer', module: './computer.js' }, // 鼠标键盘控制（桌面操作）
 			{ name: 'browser', module: './browser.js' }, // Playwright 浏览器控制
-			{ name: 'web', module: './web.js' }, // 网页获取
+			// web 工具已移除 - 所有网页操作统一使用 BrowserTool
 			{ name: 'file', module: './file.js' }, // 文件操作
 			{ name: 'office', module: './office.js' }, // Office 文档（Excel/Word/PDF）
 			{ name: 'clipboard', module: './clipboard.js' }, // 剪贴板操作

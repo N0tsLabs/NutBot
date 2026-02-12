@@ -55,29 +55,21 @@
 					<span>{{ theme === 'dark' ? '深色' : '浅色' }}</span>
 				</button>
 
-				<!-- 状态显示 -->
-				<div class="status-row">
-					<span class="status-dot" :class="connected ? 'online' : 'offline'"></span>
-					<span v-if="connectionStatus.som?.connected" class="status-label">SOM视觉</span>
-					<span v-if="connectionStatus.browser?.connected" class="status-label">浏览器</span>
-				</div>
-
-				<!-- 状态详情 -->
-				<div class="status-detail">
-					<!-- SOM 状态 -->
-					<div class="detail-item">
-						<span class="detail-icon">🖥️</span>
-						<span class="detail-value" :class="connectionStatus.som?.connected ? 'success' : 'error'">
-							{{ connectionStatus.som?.connected ? '已连接' : '未连接' }}
+				<!-- 连接状态 -->
+				<div class="connection-status">
+					<span class="status-item">
+						浏览器：
+						<span :class="store.connectionStatus?.browser?.connected ? 'status-green' : 'status-red'">
+							{{ store.connectionStatus?.browser?.connected ? '已连接' : '未连接' }}
 						</span>
-					</div>
-					<!-- 浏览器扩展状态 -->
-					<div class="detail-item">
-						<span class="detail-icon">🌐</span>
-						<span class="detail-value" :class="connectionStatus.browser?.connected ? 'success' : 'error'">
-							{{ connectionStatus.browser?.connected ? `已连接 (${connectionStatus.browser?.targets || 0} 个)` : '未连接' }}
+					</span>
+					<span class="separator">|</span>
+					<span class="status-item">
+						SoM识别：
+						<span :class="store.connectionStatus?.som?.connected ? 'status-green' : 'status-red'">
+							{{ store.connectionStatus?.som?.connected ? '已连接' : '未连接' }}
 						</span>
-					</div>
+					</span>
 				</div>
 			</div>
 		</aside>
@@ -90,7 +82,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import { useAppStore } from './stores/app';
 import { getBaseUrl } from './utils/api';
 import Toast from './components/Toast.vue';
@@ -99,9 +91,6 @@ const store = useAppStore();
 const connected = ref(false);
 const sidebarOpen = ref(false);
 const theme = ref('dark');
-
-// 连接状态（使用 store 中的值）
-const connectionStatus = computed(() => store.connectionStatus);
 
 // 导航项
 const navItems = [
@@ -307,39 +296,30 @@ onUnmounted(() => {
 	color: var(--text-primary);
 }
 
-/* 状态显示 - 默认展开 */
-.status-row {
-	@apply flex items-center gap-2 text-xs;
+/* 连接状态 */
+.connection-status {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
 }
 
-.status-label {
-	@apply text-xs;
-	color: var(--text-secondary);
+.connection-status .status-item {
+	color: var(--text-muted);
 }
 
-.status-detail {
-	@apply mt-2 p-2 rounded space-y-1;
-	background-color: var(--bg-tertiary);
+.connection-status .separator {
+	opacity: 0.5;
 }
 
-.detail-item {
-	@apply flex items-center gap-2 text-xs;
+.connection-status .status-green {
+	color: #4ade80;
+	font-weight: 600;
 }
 
-.detail-icon {
-	@apply text-base;
-}
-
-.detail-value {
-	@apply font-medium;
-}
-
-.detail-value.success {
-	color: var(--success);
-}
-
-.detail-value.error {
-	color: var(--error);
+.connection-status .status-red {
+	color: #f87171;
+	font-weight: 600;
 }
 
 /* 主内容 */

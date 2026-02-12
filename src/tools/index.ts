@@ -7,7 +7,6 @@ import { ExecTool, systemInfo, getSystemDescription } from './exec.js';
 import { BrowserTool } from './browser.js';
 import { ComputerTool } from './computer.js';
 import { ScreenshotTool } from './screenshot.js';
-import { WebTool } from './web.js';
 import { FileTool } from './file.js';
 import { OfficeTool } from './office.js';
 import { ClipboardTool } from './clipboard.js';
@@ -23,7 +22,7 @@ export {
 	BrowserTool,
 	ComputerTool,
 	ScreenshotTool,
-	// WebTool 已移除 - 按用户建议，所有浏览器操作统一使用BrowserTool
+	// WebTool 已移除 - 所有网页操作统一使用 BrowserTool
 	FileTool,
 	OfficeTool,
 	ClipboardTool,

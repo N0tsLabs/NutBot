@@ -50,12 +50,18 @@ export class Gateway {
 
 	running = false;
 	startTime: Date | null = null;
+	initialized = false;  // 防止重复初始化
 
 	/**
 	 * 初始化 Gateway
 	 */
 	async init(options: GatewayOptions = {}): Promise<this> {
 		const silent = options.silent ?? false;
+
+		// 如果已经初始化过，跳过
+		if (this.initialized) {
+			return this;
+		}
 
 		if (!silent) this.logger.info('正在初始化 NutBot Gateway...');
 
@@ -71,6 +77,8 @@ export class Gateway {
 
 		// 初始化子系统
 		await this.initSubsystems();
+
+		this.initialized = true;
 
 		// 打印系统信息（非静默模式）
 		if (!silent) {
@@ -195,14 +203,19 @@ export class Gateway {
 	async *chat(message: string, options: ChatOptions = {}): AsyncGenerator<AgentChunk> {
 		const { sessionId, agentId } = options;
 
-		// 获取或创建会话
+		// 获取会话
 		let session = null;
 		if (sessionId) {
 			session = this.sessionManager.getSession(sessionId);
+			// 如果提供了 sessionId 但找不到会话，记录警告
+			if (!session) {
+				this.logger.warn(`[chat] 找不到会话 ${sessionId}，将创建新会话`);
+			}
 		}
 		// 如果找不到会话或没有提供 sessionId，创建新会话
 		if (!session) {
 			session = this.sessionManager.createSession();
+			this.logger.info(`[chat] 创建新会话: ${session.id}`);
 		}
 
 		// 获取 Agent Profile 配置

@@ -1,6 +1,13 @@
 /**
  * 记忆系统
- * 管理 AI 的长期记忆
+ * 管理 AI 的长期记忆（参考 OpenClaw 设计）
+ *
+ * 记忆类型：
+ * - identity: AI 自己的身份（名字等）
+ * - preference: 用户偏好
+ * - habit: 使用习惯
+ * - fact: 关于用户的事实信息
+ * - instruction: 用户的指令/要求
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
@@ -8,10 +15,12 @@ import { join, dirname } from 'path';
 import { logger } from '../utils/logger.js';
 import { generateId } from '../utils/helpers.js';
 
+export type MemoryCategory = 'identity' | 'preference' | 'habit' | 'fact' | 'instruction' | 'other';
+
 export interface Memory {
 	id: string;
 	content: string;
-	category: 'preference' | 'habit' | 'fact' | 'instruction' | 'other';
+	category: MemoryCategory;
 	tags?: string[];
 	createdAt: string;
 	updatedAt: string;
@@ -156,14 +165,47 @@ class MemoryManager {
 	}
 
 	/**
-	 * 生成记忆摘要（用于 AI prompt）
+	 * 获取 AI 自己的身份记忆（名字等）
 	 */
-	getSummary(): string {
-		if (this.store.memories.length === 0) return '';
+	getIdentity(): Memory | undefined {
+		return this.store.memories.find((m) => m.category === 'identity');
+	}
+
+	/**
+	 * 设置/更新 AI 身份
+	 */
+	setIdentity(name: string): Memory {
+		// 删除旧的身份记忆
+		const existing = this.getIdentity();
+		if (existing) {
+			this.delete(existing.id);
+		}
+
+		// 添加新的身份记忆
+		return this.add({
+			content: `我叫 ${name}`,
+			category: 'identity',
+			tags: ['名字', '身份'],
+		});
+	}
+
+	/**
+	 * 获取用户相关的记忆（不包括 AI 自己的身份）
+	 */
+	getUserMemories(): Memory[] {
+		return this.store.memories.filter((m) => m.category !== 'identity');
+	}
+
+	/**
+	 * 生成用户记忆摘要（用于 AI prompt）
+	 */
+	getUserSummary(): string {
+		const userMemories = this.getUserMemories();
+		if (userMemories.length === 0) return '';
 
 		const grouped: Record<string, string[]> = {};
 
-		for (const memory of this.store.memories) {
+		for (const memory of userMemories) {
 			if (!grouped[memory.category]) {
 				grouped[memory.category] = [];
 			}
@@ -173,9 +215,9 @@ class MemoryManager {
 		const categoryNames: Record<string, string> = {
 			preference: '用户偏好',
 			habit: '使用习惯',
-			fact: '用户信息',
-			instruction: '用户指令',
-			other: '其他记忆',
+			fact: '关于用户的信息',
+			instruction: '用户的指令',
+			other: '其他',
 		};
 
 		const sections: string[] = [];
@@ -185,6 +227,17 @@ class MemoryManager {
 		}
 
 		return `## 关于用户的记忆\n\n${sections.join('\n\n')}`;
+	}
+
+	/**
+	 * 生成 AI 身份摘要（用于 AI prompt）
+	 */
+	getIdentitySummary(): string {
+		const identity = this.getIdentity();
+		if (identity) {
+			return `## 我的身份\n${identity.content}`;
+		}
+		return '';
 	}
 }
 

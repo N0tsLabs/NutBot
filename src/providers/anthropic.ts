@@ -1,339 +1,267 @@
 /**
  * Anthropic Provider
- * 支持 Claude API
+ * 支持 Claude 模型
  */
 
-import { BaseProvider, ProviderConfig } from './base.js';
-import type { ChatMessage, ChatOptions, ChatChunk, ContentBlock } from '../types/index.js';
-
-interface AnthropicResponse {
-	content?: Array<{
-		type: string;
-		text?: string;
-		id?: string;
-		name?: string;
-		input?: Record<string, unknown>;
-	}>;
-	model?: string;
-	stop_reason?: string;
-	usage?: { input_tokens: number; output_tokens: number };
-}
-
-interface AnthropicStreamEvent {
-	type: string;
-	content_block?: {
-		type: string;
-		id?: string;
-		name?: string;
-		text?: string;
-	};
-	delta?: {
-		type: string;
-		text?: string;
-		partial_json?: string;
-	};
-	error?: { message: string };
-	usage?: { input_tokens: number; output_tokens: number };
-}
+import { BaseProvider, type ChatChunk, type ChatOptions } from './base.js';
+import { safeParseJSON } from '../utils/helpers.js';
+import type { ConfigManager } from '../utils/config.js';
 
 export class AnthropicProvider extends BaseProvider {
-	private apiVersion: string;
+	private fetch: typeof fetch;
 
-	constructor(config: ProviderConfig & { apiVersion?: string }) {
+	constructor(config: ConfigManager) {
 		super(config);
-		this.type = 'anthropic';
-		this.apiVersion = config.apiVersion || '2023-06-01';
-		// 自动补全 baseUrl（Anthropic 兼容 API 通常需要 /v1）
-		this.baseUrl = BaseProvider.normalizeBaseUrl(this.baseUrl, 'anthropic', '/messages');
+		this.fetch = fetch;
+	}
+
+	get name(): string {
+		return 'Anthropic';
+	}
+
+	get type(): string {
+		return 'anthropic';
 	}
 
 	/**
-	 * 获取认证头
+	 * Claude 支持 Vision（Claude 3+）
 	 */
-	protected getAuthHeaders(): Record<string, string> {
-		return {
-			'x-api-key': this.apiKey,
-			'anthropic-version': this.apiVersion,
-		};
+	supportsVision(): boolean {
+		return true; // Claude 3/4 都支持 Vision
 	}
 
 	/**
-	 * 聊天补全
+	 * Claude 支持 Function Calling（Claude 3.5+）
 	 */
-	async *chat(messages: ChatMessage[], options: ChatOptions = {}): AsyncGenerator<ChatChunk> {
-		const { model = this.defaultModel, maxTokens = 4096, stream = true, tools, system } = options;
+	supportsFunctionCall(): boolean {
+		return true; // Claude 3.5 Haiku/Sonnet 支持 Tool Use
+	}
 
-		if (!model) {
-			throw new Error('No model specified');
+	/**
+	 * Claude 支持 Thinking（Claude 3.7+）
+	 */
+	supportsThinking(): boolean {
+		const options = this.getOptions();
+		const model = options.model?.toLowerCase() || '';
+		
+		// Claude 3.7+ 支持 extended thinking
+		return model.includes('3.7') || model.includes('3.5') || model.includes('4');
+	}
+
+	async *chat(
+		modelRef: string | undefined,
+		messages: unknown[],
+		options?: ChatOptions
+	): AsyncGenerator<ChatChunk> {
+		const opts = this.getOptions(modelRef);
+		const apiKey = opts.apiKey || this.config.get<string>('anthropic.apiKey');
+		let baseURL = opts.baseURL || 'https://api.anthropic.com';
+		const model = opts.model || 'claude-sonnet-4-20250514';
+		const maxTokens = opts.maxTokens || 4096;
+
+		if (!apiKey) {
+			throw new Error('Anthropic API key 未配置。请设置 anthropic.apiKey');
+		}
+
+		// 正确拼接 URL
+		if (baseURL.endsWith('/v1') || baseURL.endsWith('/v1/')) {
+			baseURL = baseURL + '/messages';
+		} else {
+			baseURL = baseURL + '/v1/messages';
 		}
 
 		// 转换消息格式
-		const anthropicMessages = this.convertMessages(messages);
+		const apiMessages = this.convertMessages(messages);
 
-		const requestBody: Record<string, unknown> = {
+		const body: Record<string, unknown> = {
 			model,
-			messages: anthropicMessages,
 			max_tokens: maxTokens,
-			stream,
+			messages: apiMessages,
+			stream: true,
 		};
 
-		// 系统提示
-		if (system) {
-			requestBody.system = system;
+		// 添加系统提示
+		const systemMessage = messages.find((m: any) => m.role === 'system');
+		if (systemMessage && typeof systemMessage.content === 'string') {
+			body.system = systemMessage.content;
 		}
 
-		// 工具调用
-		if (tools && tools.length > 0) {
-			requestBody.tools = tools.map((tool) => ({
-				name: tool.name,
-				description: tool.description,
-				input_schema: tool.parameters,
-			}));
+		// 添加工具定义（Function Calling）
+		if (options?.tools && options.tools.length > 0) {
+			body.tools = this.convertTools(options.tools);
+			body.tool_choice = { type: 'auto' };
 		}
 
-		if (stream) {
-			yield* this.streamChat(requestBody);
-		} else {
-			const response = await this.request<AnthropicResponse>('/messages', requestBody);
-			yield this.parseResponse(response as AnthropicResponse);
+		try {
+			const response = await fetch(baseURL, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'x-api-key': apiKey,
+					'anthropic-version': '2023-06-01',
+					'anthropic-dangerous-direct-browser-access': 'true',
+				},
+				body: JSON.stringify(body),
+			});
+
+			if (!response.ok) {
+				const error = await response.text();
+				throw new Error(`Anthropic API 错误: ${response.status} - ${error}`);
+			}
+
+			const reader = response.body?.getReader();
+			if (!reader) throw new Error('无法读取响应流');
+
+			const decoder = new TextDecoder();
+			let fullContent = '';
+
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				const chunk = decoder.decode(value);
+				const lines = chunk.split('\n');
+
+				for (const line of lines) {
+					if (!line.startsWith('data: ')) continue;
+
+					const data = line.slice(6);
+					if (data === '[DONE]') continue;
+
+					try {
+						const parsed = JSON.parse(data);
+						const eventType = parsed.type;
+
+						if (eventType === 'content_block_start') {
+							// 开始内容块
+						} else if (eventType === 'content_block_delta') {
+							// 内容增量
+							const delta = parsed.delta;
+							if (delta.type === 'text_delta') {
+								fullContent += delta.text;
+								yield { type: 'content', content: delta.text, fullContent };
+							} else if (delta.type === 'tool_use_delta') {
+								// 工具调用增量
+								yield { type: 'tool_use', toolUse: delta };
+							}
+						} else if (eventType === 'message_stop') {
+							// 消息结束
+							yield { type: 'finish', reason: parsed.message?.stop_reason };
+						} else if (eventType === 'message_delta') {
+							// 消息增量
+							if (parsed.delta?.stop_reason) {
+								yield { type: 'finish', reason: parsed.delta.stop_reason };
+							}
+						}
+					} catch {
+						/* 忽略解析错误 */
+					}
+				}
+			}
+		} catch (error: any) {
+			// 改进错误诊断
+			let errorMsg = '未知错误';
+			let errorDetails = '';
+			let rawError = '';
+
+			if (error instanceof Error) {
+				errorMsg = error.message;
+				errorDetails = error.stack || '';
+			} else if (typeof error === 'string') {
+				errorMsg = error;
+				rawError = error;
+			} else if (typeof error === 'object' && error !== null) {
+				rawError = JSON.stringify(error);
+				if (Object.keys(error).length === 0) {
+					errorMsg = 'API 请求失败（空错误响应，可能是网络问题或 API 不可用）';
+					errorDetails = `请求 URL: ${baseURL}\n模型: ${model}`;
+				} else {
+					errorMsg = rawError;
+				}
+			}
+
+			const fullError = `错误: ${errorMsg}${errorDetails ? `\n${errorDetails}` : ''}`;
+			this.logger.error(fullError);
+			yield { type: 'error', content: fullError };
 		}
 	}
 
 	/**
 	 * 转换消息格式
 	 */
-	private convertMessages(messages: ChatMessage[]): Array<{ role: string; content: unknown }> {
+	private convertMessages(messages: unknown[]): Record<string, unknown>[] {
 		return messages
-			.filter((m) => m.role !== 'system')
-			.map((m) => ({
-				role: m.role === 'assistant' ? 'assistant' : 'user',
-				content: this.convertContent(m.content),
-			}));
-	}
-
-	/**
-	 * 转换内容格式
-	 */
-	private convertContent(content: string | ContentBlock[]): unknown {
-		if (typeof content === 'string') {
-			return content;
-		}
-
-		if (Array.isArray(content)) {
-			return content.map((item) => {
-				if (item.type === 'text') {
-					return { type: 'text', text: item.text };
+			.filter((m: any) => m.role !== 'system') // 系统消息单独处理
+			.map((m: any) => {
+				// 处理 tool 消息（Anthropic 使用 role: 'user' + name + tool_use_id）
+				if (m.role === 'tool') {
+					return {
+						role: 'user',
+						content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+						name: m.name || m.metadata?.toolName || 'unknown',
+						tool_use_id: m.tool_call_id || m.metadata?.toolCallId || `call_${Date.now()}`,
+					};
 				}
-				if (item.type === 'image_url') {
-					const url = item.image_url?.url || '';
-					if (url.startsWith('data:')) {
-						const [header, base64] = url.split(',');
-						const mediaType = header.match(/data:([^;]+)/)?.[1] || 'image/png';
-						return {
-							type: 'image',
-							source: {
-								type: 'base64',
-								media_type: mediaType,
-								data: base64,
-							},
-						};
-					}
-					return { type: 'text', text: `[Image: ${url}]` };
+
+				const msg: Record<string, unknown> = { role: m.role };
+
+				if (typeof m.content === 'string') {
+					msg.content = m.content;
+				} else if (Array.isArray(m.content)) {
+					// 多模态内容
+					msg.content = m.content
+						.filter((c: any) => c.type === 'text')
+						.map((c: any) => c.text)
+						.join('\n');
+				} else if (m.tool_calls) {
+					// 工具调用
+					msg.role = 'assistant';
+					msg.content = '';
+					msg.tool_calls = m.tool_calls;
 				}
-				return item;
+
+				return msg;
 			});
-		}
-
-		return content;
 	}
 
 	/**
-	 * 流式聊天
+	 * 转换工具定义
 	 */
-	private async *streamChat(requestBody: Record<string, unknown>): AsyncGenerator<ChatChunk> {
-		const response = await this.request<ReadableStream<Uint8Array>>('/messages', requestBody, { stream: true });
-
-		const reader = (response as ReadableStream<Uint8Array>).getReader();
-		const decoder = new TextDecoder();
-
-		let buffer = '';
-		let fullContent = '';
-		let toolUse: { id: string; name: string; input: string } | null = null;
-
-		try {
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-
-				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split('\n');
-				buffer = lines.pop() || '';
-
-				for (const line of lines) {
-					const trimmed = line.trim();
-					if (!trimmed || !trimmed.startsWith('data: ')) continue;
-
-					try {
-						const json = JSON.parse(trimmed.slice(6)) as AnthropicStreamEvent;
-
-						switch (json.type) {
-							case 'content_block_start':
-								if (json.content_block?.type === 'tool_use') {
-									toolUse = {
-										id: json.content_block.id || '',
-										name: json.content_block.name || '',
-										input: '',
-									};
-								}
-								break;
-
-							case 'content_block_delta':
-								if (json.delta?.type === 'text_delta') {
-									const text = json.delta.text || '';
-									fullContent += text;
-									yield {
-										type: 'content',
-										content: text,
-										fullContent,
-									};
-								} else if (json.delta?.type === 'input_json_delta' && toolUse) {
-									toolUse.input += json.delta.partial_json || '';
-								}
-								break;
-
-							case 'content_block_stop':
-								if (toolUse) {
-									let parsedInput: Record<string, unknown> = {};
-									try {
-										parsedInput = JSON.parse(toolUse.input);
-									} catch {
-										/* ignore */
-									}
-
-									yield {
-										type: 'tool_use',
-										toolUse: {
-											id: toolUse.id,
-											name: toolUse.name,
-											input: parsedInput,
-										},
-									};
-									toolUse = null;
-								}
-								break;
-
-							case 'message_stop':
-								yield {
-									type: 'finish',
-									reason: 'stop',
-									fullContent,
-								};
-								break;
-
-							case 'message_delta':
-								if (json.delta) {
-									yield {
-										type: 'finish',
-										reason: 'stop',
-										fullContent,
-										usage: json.usage,
-									};
-								}
-								break;
-
-							case 'error':
-								throw new Error(json.error?.message || 'Stream error');
-						}
-					} catch (e) {
-						if ((e as Error).message !== 'Stream error') {
-							this.logger.warn('Failed to parse stream chunk');
-						} else {
-							throw e;
-						}
-					}
-				}
-			}
-		} finally {
-			reader.releaseLock();
-		}
-	}
-
-	/**
-	 * 解析非流式响应
-	 */
-	private parseResponse(response: AnthropicResponse): ChatChunk {
-		const content = response.content?.[0];
-
-		return {
-			type: 'complete',
-			content: content?.text || '',
-			fullContent: content?.text || '',
-			toolUse:
-				content?.type === 'tool_use'
-					? {
-							id: content.id || '',
-							name: content.name || '',
-							input: content.input || {},
-						}
-					: undefined,
-		};
-	}
-
-	/**
-	 * 测试连接
-	 */
-	async testConnection(model?: string): Promise<{ success: boolean; model?: string; message: string }> {
-		const testModel = model || this.defaultModel || 'claude-3-haiku-20240307';
-		try {
-			const response = await this.request<AnthropicResponse>('/messages', {
-				model: testModel,
-				messages: [{ role: 'user', content: 'Hi' }],
-				max_tokens: 5,
-			});
-
-			return {
-				success: true,
-				model: (response as AnthropicResponse).model || testModel,
-				message: '连接成功',
+	private convertTools(tools: unknown[]): Record<string, unknown>[] {
+		return tools.map((tool: any) => {
+			const t: Record<string, unknown> = {
+				name: tool.name,
+				description: tool.description || '',
+				input_schema: {
+					type: 'object',
+					properties: {},
+					required: [],
+				},
 			};
-		} catch (error) {
-			return {
-				success: false,
-				model: testModel,
-				message: (error as Error).message,
-			};
-		}
+
+			if (tool.parameters && typeof tool.parameters === 'object') {
+				const params = tool.parameters as Record<string, any>;
+				t.input_schema = {
+					type: 'object',
+					properties: params.properties || {},
+					required: params.required || [],
+				};
+			}
+
+			return t;
+		});
 	}
 
 	/**
-	 * 视觉分析
+	 * 流式聊天（非流式包装）
 	 */
-	async analyzeImage(imageBase64: string, prompt: string, options: ChatOptions = {}): Promise<string> {
-		const messages: ChatMessage[] = [
-			{
-				role: 'user',
-				content: [
-					{
-						type: 'image',
-						source: {
-							type: 'base64',
-							media_type: 'image/png',
-							data: imageBase64,
-						},
-					},
-					{ type: 'text', text: prompt },
-				],
-			},
-		];
-
-		let result = '';
-		for await (const chunk of this.chat(messages, { ...options, stream: false })) {
-			if (chunk.content) {
-				result = chunk.content;
-			}
-		}
-
-		return result;
+	*stream(
+		modelRef: string | undefined,
+		messages: unknown[],
+		options?: ChatOptions
+	): AsyncGenerator<ChatChunk> {
+		// Anthropic 原生就是流式的，直接使用 chat
+		yield* this.chat(modelRef, messages, options);
 	}
 }
 

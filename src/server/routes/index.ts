@@ -301,6 +301,13 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			return gateway.sessionManager.listSessions();
 		});
 
+		// 创建新会话
+		fastify.post('/sessions', async (request) => {
+			const { title, context } = request.body as { title?: string; context?: Record<string, unknown> } || {};
+			const session = gateway.sessionManager.createSession({ title, context });
+			return session;
+		});
+
 		fastify.get<{ Params: { id: string } }>('/sessions/:id', async (request, reply) => {
 			const session = gateway.sessionManager.getSession(request.params.id);
 			if (!session) {
@@ -314,8 +321,23 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			return { success: true };
 		});
 
-		fastify.get<{ Params: { id: string } }>('/sessions/:id/history', async (request) => {
-			return gateway.sessionManager.getHistory(request.params.id);
+		fastify.get<{ Params: { id: string } }>('/sessions/:id/history', async (request, reply) => {
+			const { id } = request.params;
+			try {
+				const history = gateway.sessionManager.getHistory(id);
+				return history;
+			} catch (error) {
+				const message = (error as Error).message;
+				console.error(`[history] 获取会话 ${id} 历史失败: ${message}`);
+				// 返回空数组而不是抛出错误
+				return [];
+			}
+		});
+
+		// 清空所有会话
+		fastify.delete('/sessions', async () => {
+			await gateway.sessionManager.clearAllSessions();
+			return { success: true };
 		});
 
 		// ==================== 工具管理 ====================

@@ -8,8 +8,8 @@ export interface ProviderConfig {
 	id: string;
 	name?: string;
 	type: 'openai' | 'anthropic';
-	baseUrl: string;
-	apiKey: string;
+	baseUrl?: string;
+	apiKey?: string;
 	models?: string[];
 	defaultModel?: string;
 	enabled?: boolean;
@@ -21,21 +21,23 @@ export interface ProviderInfo {
 	id: string;
 	name: string;
 	type: string;
-	baseUrl: string;
+	baseUrl?: string;
 	models: string[];
 	defaultModel: string | null;
 	enabled: boolean;
-	supportsVision: boolean; // Provider 级别（已弃用，用 visionModels）
-	visionModels?: string[]; // 支持 Vision 的模型列表
+	supportsVision: boolean;
+	visionModels?: string[];
 	isDefault?: boolean;
 }
+
+// ==================== Chat 相关 ====================
 
 export interface ChatMessage {
 	role: 'system' | 'user' | 'assistant' | 'tool';
 	content: string | ContentBlock[];
-	toolCalls?: ToolCall[]; // 内部使用 (camelCase)
-	tool_calls?: ToolCall[]; // OpenAI API 格式 (snake_case)
-	tool_call_id?: string; // tool 消息必须有此字段
+	toolCalls?: ToolCall[];
+	tool_calls?: ToolCall[];
+	tool_call_id?: string;
 	metadata?: Record<string, unknown>;
 }
 
@@ -66,13 +68,12 @@ export interface ChatOptions {
 }
 
 export interface ChatChunk {
-	type: 'content' | 'finish' | 'tool_use' | 'complete';
+	type: 'content' | 'finish' | 'tool_use' | 'error' | 'thinking';
 	content?: string;
 	fullContent?: string;
 	reason?: string;
 	toolCalls?: ToolCall[];
 	toolUse?: ToolUse;
-	usage?: { input_tokens: number; output_tokens: number };
 }
 
 export interface ToolUse {
@@ -159,7 +160,6 @@ export interface AppConfig {
 	};
 }
 
-/** MCP 服务端配置：stdio 或 SSE */
 export interface McpServerConfig {
 	name: string;
 	command?: string;
@@ -168,21 +168,11 @@ export interface McpServerConfig {
 	url?: string;
 }
 
-/** Skill 定义（从文件加载） */
 export interface SkillDefinition {
 	name: string;
 	description?: string;
 	prompt: string;
 }
-
-// 导出沙盒相关类型
-export type { 
-	SandboxMode, 
-	SandboxConfig, 
-	OperationType, 
-	OperationInfo, 
-	SecurityCheckResult 
-} from './sandbox.js';
 
 // ==================== API 相关 ====================
 
@@ -207,10 +197,8 @@ export interface AgentChunk {
 		| 'max_iterations'
 		| 'terminated'
 		| 'error'
-		| 'status'            // 状态提示（如倒计时）
-		| 'debug_confirm'     // 调试模式：等待用户确认
-		| 'security_confirm'; // 沙盒安全：等待用户确认
-	status?: string; // 状态消息
+		| 'status';
+	status?: string;
 	iteration?: number;
 	content?: string;
 	count?: number;
@@ -218,33 +206,6 @@ export interface AgentChunk {
 	args?: Record<string, unknown>;
 	result?: unknown;
 	error?: string;
-	iterations?: number;
-	reason?: string; // 终止原因
-	thinking?: string; // AI 思考内容
-	description?: string; // 工具描述
-	// 调试模式数据
-	debug?: DebugData;
-	confirmId?: string; // 确认 ID，用于关联响应
-	// 沙盒安全数据
-	message?: string; // 确认消息
-	category?: string; // 安全类别 (forbidden/sensitive/sandbox)
-}
-
-export interface DebugData {
-	originalImage?: string; // 原始截图 base64
-	markedImage?: string; // OCR-SoM 标注图 base64
-	clickImage?: string; // 点击位置预览图 base64
-	elements?: DebugElement[]; // OCR-SoM 识别的元素列表
-	action?: string; // AI 计划执行的操作
-	coordinate?: [number, number]; // 点击坐标
-	thinking?: string; // AI 思考内容
-}
-
-export interface DebugElement {
-	id: number;
-	type: 'text' | 'ui';
-	text: string;
-	box: [number, number, number, number];
 }
 
 export interface AgentOptions {
@@ -252,46 +213,31 @@ export interface AgentOptions {
 	systemPrompt?: string;
 	maxIterations?: number;
 	sessionId?: string;
-	agentId?: string; // 使用的 Agent Profile ID
+	agentId?: string;
 }
 
 // ==================== Agent Profile 相关 ====================
 
-/**
- * Agent 配置档案
- * 支持多 Agent 管理，每个 Agent 有独立的配置
- */
 export interface AgentProfile {
-	id: string; // UUID 或 'default'
-	name: string; // 名称，如 "通用助手"、"代码专家"
-	description?: string; // Agent 描述
-	icon?: string; // Emoji 或图标
-
-	// 模型配置
-	model?: string; // provider/model 格式
+	id: string;
+	name: string;
+	description?: string;
+	icon?: string;
+	model?: string;
 	temperature?: number;
 	maxTokens?: number;
-
-	// 行为配置
-	systemPrompt?: string; // 系统提示词
-	maxIterations: number; // 默认 30
-	timeout: number; // 默认 300000
-
-	// 工具配置
+	systemPrompt?: string;
+	maxIterations: number;
+	timeout: number;
 	tools?: {
-		enabled?: string[]; // 启用的工具（空数组=全部启用）
-		disabled?: string[]; // 禁用的工具
+		enabled?: string[];
+		disabled?: string[];
 	};
-
-	// 元数据
 	createdAt: string;
 	updatedAt: string;
-	isBuiltin?: boolean; // 内置 Agent 不可删除
+	isBuiltin?: boolean;
 }
 
-/**
- * Agent 导出格式
- */
 export interface AgentExportData {
 	version: number;
 	agent: {
@@ -311,10 +257,26 @@ export interface AgentExportData {
 	};
 }
 
-/**
- * Agent 列表响应
- */
 export interface AgentListResponse {
 	agents: AgentProfile[];
-	currentId?: string; // 当前选中的 Agent ID
+	currentId?: string;
+}
+
+// ==================== Gateway 相关 ====================
+
+export interface Gateway {
+	config: any;
+	providerManager: any;
+	toolRegistry: any;
+	agent: any;
+	sessionManager: any;
+	agentProfiles: any;
+	cronManager: any;
+	server: any;
+	start(): Promise<void>;
+	stop(): Promise<void>;
+	chat(message: string, options?: any): AsyncGenerator<any>;
+	interrupt(reason?: string): Promise<void>;
+	executeTool(toolName: string, params: Record<string, unknown>): Promise<unknown>;
+	getStatus(): Record<string, unknown>;
 }

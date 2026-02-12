@@ -1010,33 +1010,11 @@ export class ComputerTool extends BaseTool {
 					};
 				}
 
-				// 智能选择最合适的元素
-				// 优先级: Button > MenuItem > 其他可点击类型 > Window/Pane
-				const priorityTypes = [
-					'Button',
-					'MenuItem',
-					'Hyperlink',
-					'ListItem',
-					'TabItem',
-					'CheckBox',
-					'RadioButton',
-				];
-				const sortedElements = matchedElements.sort((a, b) => {
-					const aPriority = priorityTypes.indexOf(a.type);
-					const bPriority = priorityTypes.indexOf(b.type);
+				// 返回匹配的元素列表，让 AI 自己判断点击哪个
+				// 不进行优先级排序，保留所有匹配元素供 AI 决策
+				const sortedElements = matchedElements.sort((a, b) => a.name.length - b.name.length);
 
-					// 如果都是优先类型，选择优先级高的
-					if (aPriority !== -1 && bPriority !== -1) {
-						return aPriority - bPriority;
-					}
-					// 优先类型 > 非优先类型
-					if (aPriority !== -1) return -1;
-					if (bPriority !== -1) return 1;
-
-					// 都不是优先类型，选择名称最短的
-					return a.name.length - b.name.length;
-				});
-
+				// 如果有多个匹配，返回第一个（最短名称，通常是最精确的匹配）
 				const targetElement = sortedElements[0];
 				const [clickX, clickY] = targetElement.center;
 

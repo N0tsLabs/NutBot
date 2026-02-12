@@ -38,9 +38,27 @@ async function startInteractiveChat(options: { port: number; host: string; verbo
 
 	let isProcessing = false;
 
-	// 创建一个持久的 session 用于保持对话上下文
-	const session = gateway.sessionManager.createSession();
-	const sessionId = session.id;
+	// 尝试加载最近使用的 session，或创建新 session
+	let currentSessionId: string | null = null;
+
+	// 获取或创建 session
+	function getSessionId(): string {
+		if (currentSessionId) {
+			return currentSessionId;
+		}
+		// 列出所有 session，找到最近更新的
+		const sessions = gateway.sessionManager.listSessions();
+		if (sessions.length > 0) {
+			// 按更新时间排序，取最新的
+			sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+			currentSessionId = sessions[0].id;
+		}
+		if (!currentSessionId) {
+			const session = gateway.sessionManager.createSession();
+			currentSessionId = session.id;
+		}
+		return currentSessionId;
+	}
 
 	// 显示用户输入提示
 	const showPrompt = () => {
@@ -177,7 +195,7 @@ async function startInteractiveChat(options: { port: number; host: string; verbo
 		let lastThinking = '';
 
 		try {
-			for await (const chunk of gateway.chat(trimmed, { sessionId })) {
+			for await (const chunk of gateway.chat(trimmed, { sessionId: getSessionId() })) {
 				switch (chunk.type) {
 					case 'thinking':
 						// 显示迭代信息
@@ -478,7 +496,7 @@ program.parse();
 export { gateway, Gateway } from './gateway/index.js';
 export { ProviderManager, BaseProvider, OpenAIProvider, AnthropicProvider } from './providers/index.js';
 export { ToolRegistry, BaseTool } from './tools/index.js';
-export { Agent, SessionManager } from './agent/index.js';
+export { default as Agent, default as SessionManager } from './agent/index.js';
 export { CronManager } from './cron/index.js';
 export { configManager } from './utils/config.js';
 export { logger } from './utils/logger.js';

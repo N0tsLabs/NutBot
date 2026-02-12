@@ -1,5 +1,89 @@
 <template>
-	<div class="chat-container">
+	<div class="chat-layout">
+		<!-- 侧边栏 -->
+		<aside v-if="showSidebar" class="sidebar">
+			<div class="sidebar-header">
+				<span class="sidebar-title">聊天历史</span>
+				<button class="sidebar-toggle" @click="showSidebar = false" title="收起侧边栏">
+					&lt;
+				</button>
+			</div>
+
+			<!-- 新建对话按钮 -->
+			<button class="new-chat-btn" @click="createNewChat">
+				<span>+</span> 新建对话
+			</button>
+
+			<!-- 会话列表 -->
+			<div class="session-list">
+				<div
+					v-for="session in store.sessions"
+					:key="session.id"
+					class="session-item"
+					:class="{ active: isCurrentSession(session.id) }"
+					@click="selectSession(session.id)"
+				>
+					<div class="session-info">
+						<span class="session-icon">
+							{{ session.id === store.currentSessionId ? '💬' : '📝' }}
+						</span>
+						<div class="session-details">
+							<span class="session-title" :title="session.title">
+								{{ getShortTitle(session.title) }}
+							</span>
+							<span class="session-time">{{ formatTime(session.updatedAt) }}</span>
+						</div>
+					</div>
+					<button
+						class="session-delete"
+						@click="deleteSession(session.id, $event)"
+						title="删除会话"
+					>
+						×
+					</button>
+				</div>
+
+				<!-- 空状态 -->
+				<div v-if="!store.sessions || store.sessions.length === 0" class="sidebar-empty">
+					暂无历史对话
+				</div>
+			</div>
+
+			<!-- 侧边栏底部 -->
+			<div class="sidebar-footer">
+				<button
+					class="clear-all-btn"
+					@click="handleClearAllSessions"
+					:disabled="!store.sessions || store.sessions.length === 0"
+				>
+					清空全部对话
+				</button>
+			</div>
+		</aside>
+
+		<!-- 隐藏侧边栏时显示的展开按钮 -->
+		<div v-if="!showSidebar" class="sidebar-collapsed">
+			<button class="sidebar-expand-btn" @click="showSidebar = true" title="显示侧边栏">
+				&gt;
+			</button>
+		</div>
+
+		<!-- 确认清空模态框 -->
+		<div v-if="confirmClearAll" class="confirm-modal-overlay" @click="confirmClearAll = false">
+			<div class="confirm-modal" @click.stop>
+				<div class="confirm-modal-title">确认清空</div>
+				<div class="confirm-modal-body">
+					确定要删除所有聊天历史吗？此操作不可恢复。
+				</div>
+				<div class="confirm-modal-footer">
+					<button class="btn btn-secondary" @click="confirmClearAll = false">取消</button>
+					<button class="btn btn-danger" @click="confirmClearAllSessions">确定删除</button>
+				</div>
+			</div>
+		</div>
+
+		<!-- 聊天主容器 -->
+		<div class="chat-container">
 		<!-- 头部 -->
 		<header class="chat-header">
 			<div class="chat-header-left">
@@ -318,6 +402,7 @@
 			</div>
 		</div>
 	</div>
+</div>
 </template>
 
 <script setup>
@@ -341,6 +426,79 @@ const selectAgent = async (id) => {
 		console.error('Failed to set agent:', error);
 	}
 	showAgentDropdown.value = false;
+};
+
+// ========== 会话侧边栏 ==========
+const showSidebar = ref(true);
+const confirmClearAll = ref(false);
+
+// 创建新对话
+const createNewChat = async () => {
+	await store.createSession();
+};
+
+// 选择会话
+const selectSession = (sessionId) => {
+	store.selectSession(sessionId);
+};
+
+// 删除单个会话
+const deleteSession = async (sessionId, event) => {
+	event.stopPropagation();
+	event.preventDefault();
+	if (sessionId === store.currentSessionId) {
+		const otherSession = store.sessions.find(s => s.id !== sessionId);
+		if (otherSession) {
+			store.selectSession(otherSession.id);
+		} else {
+			await store.createSession();
+		}
+	}
+	await store.deleteSession(sessionId);
+};
+
+// 确认清空全部会话
+const handleClearAllSessions = () => {
+	confirmClearAll.value = true;
+};
+
+// 确认执行清空
+const confirmClearAllSessions = async () => {
+	await store.clearAllSessions();
+	confirmClearAll.value = false;
+	await store.createSession();
+};
+
+// 格式化时间
+const formatTime = (dateStr) => {
+	try {
+		const date = new Date(dateStr);
+		const now = new Date();
+		const diff = now.getTime() - date.getTime();
+		const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+		if (days === 0) {
+			return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+		} else if (days === 1) {
+			return '昨天';
+		} else if (days < 7) {
+			return `${days} 天前`;
+		} else {
+			return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+		}
+	} catch {
+		return '';
+	}
+};
+
+// 获取简短标题
+const getShortTitle = (title, maxLen = 12) => {
+	if (!title) return '新对话';
+	return title.length > maxLen ? title.substring(0, maxLen) + '...' : title;
+};
+
+// 判断是否为当前会话
+const isCurrentSession = (sessionId) => {
+	return sessionId === store.currentSessionId;
 };
 
 // 点击外部关闭下拉菜单
@@ -880,6 +1038,11 @@ const send = async () => {
 	const message = input.value.trim();
 	if (!message || sending.value) return;
 
+	// 如果没有会话，先创建
+	if (!store.currentSessionId) {
+		await store.createSession();
+	}
+
 	sending.value = true;
 
 	try {
@@ -919,16 +1082,24 @@ watch(
 onMounted(async () => {
 	await store.loadConfig();
 	await store.loadAgents(); // 加载 Agent Profiles
-	store.loadSessions();
-	if (!store.currentSessionId) {
-		store.createSession();
-	}
+	await store.loadSessions(); // 确保会话加载完成后再继续
+	// 不自动创建会话，发送消息时才创建
 });
 </script>
 
 <style scoped>
+.chat-layout {
+	display: flex;
+	flex: 1;
+	height: 100vh;
+	background-color: var(--bg-primary);
+}
+
 .chat-container {
-	@apply flex-1 flex flex-col h-screen;
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
 	background-color: var(--bg-primary);
 }
 
@@ -1779,5 +1950,279 @@ onMounted(async () => {
 .security-modal-footer {
 	@apply p-4 border-t flex justify-end gap-3;
 	border-color: var(--border-color);
+}
+
+/* ========== 侧边栏样式 ========== */
+.chat-layout {
+	display: flex;
+	flex: 1;
+	height: 100vh;
+	background-color: var(--bg-primary);
+}
+
+.sidebar {
+	width: 260px;
+	min-width: 260px;
+	height: 100%;
+	background-color: var(--bg-secondary);
+	border-right: 1px solid var(--border-color);
+	display: flex;
+	flex-direction: column;
+}
+
+.sidebar-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 16px;
+	border-bottom: 1px solid var(--border-color);
+}
+
+.sidebar-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text-primary);
+}
+
+.sidebar-toggle {
+	width: 28px;
+	height: 28px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: var(--bg-tertiary);
+	border: 1px solid var(--border-color);
+	border-radius: 6px;
+	color: var(--text-secondary);
+	cursor: pointer;
+}
+
+.sidebar-toggle:hover {
+	background-color: var(--bg-hover);
+	color: var(--accent);
+}
+
+.new-chat-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	margin: 12px 12px 8px;
+	padding: 10px 16px;
+	background-color: var(--accent);
+	border: none;
+	border-radius: 8px;
+	color: white;
+	font-size: 13px;
+	cursor: pointer;
+}
+
+.new-chat-btn:hover {
+	background-color: #4f46e5;
+}
+
+.session-list {
+	flex: 1;
+	overflow-y: auto;
+	padding: 8px;
+}
+
+.session-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 12px;
+	margin-bottom: 4px;
+	background-color: transparent;
+	border-radius: 8px;
+	cursor: pointer;
+}
+
+.session-item:hover {
+	background-color: var(--bg-hover);
+}
+
+.session-item.active {
+	background-color: var(--accent-subtle);
+	border: 1px solid var(--accent);
+}
+
+.session-info {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex: 1;
+	min-width: 0;
+}
+
+.session-icon {
+	font-size: 16px;
+}
+
+.session-details {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.session-title {
+	font-size: 13px;
+	color: var(--text-primary);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.session-time {
+	font-size: 11px;
+	color: var(--text-muted);
+	margin-top: 2px;
+}
+
+.session-delete {
+	width: 24px;
+	height: 24px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: transparent;
+	border: none;
+	border-radius: 4px;
+	color: var(--text-muted);
+	font-size: 16px;
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity 0.15s;
+}
+
+.session-item:hover .session-delete {
+	opacity: 1;
+}
+
+.session-delete:hover {
+	background-color: rgba(239, 68, 68, 0.1);
+	color: #ef4444;
+}
+
+.sidebar-empty {
+	padding: 20px;
+	text-align: center;
+	font-size: 13px;
+	color: var(--text-muted);
+}
+
+.sidebar-footer {
+	padding: 12px;
+	border-top: 1px solid var(--border-color);
+}
+
+.clear-all-btn {
+	width: 100%;
+	padding: 8px 12px;
+	background-color: transparent;
+	border: 1px solid var(--border-color);
+	border-radius: 6px;
+	color: var(--text-secondary);
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.clear-all-btn:hover:not(:disabled) {
+	background-color: rgba(239, 68, 68, 0.1);
+	border-color: #ef4444;
+	color: #ef4444;
+}
+
+.clear-all-btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.sidebar-collapsed {
+	position: relative;
+	width: 0;
+	overflow: hidden;
+	transition: width 0.2s ease;
+}
+
+.sidebar-expand-btn {
+	position: absolute;
+	top: 16px;
+	left: 0;
+	z-index: 40;
+	width: 28px;
+	height: 28px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	border-radius: 6px;
+	color: var(--text-secondary);
+	font-size: 14px;
+	cursor: pointer;
+}
+
+.sidebar-expand-btn:hover {
+	background-color: var(--bg-hover);
+	color: var(--accent);
+}
+
+/* 确认模态框 */
+.confirm-modal-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 50;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: rgba(0, 0, 0, 0.8);
+}
+
+.confirm-modal {
+	border-radius: 12px;
+	box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+	width: 100%;
+	max-width: 320px;
+	margin: 16px;
+	display: flex;
+	flex-direction: column;
+	background-color: var(--bg-secondary);
+}
+
+.confirm-modal-title {
+	padding: 16px;
+	font-size: 18px;
+	font-weight: bold;
+	border-bottom: 1px solid var(--border-color);
+	color: var(--text-primary);
+}
+
+.confirm-modal-body {
+	padding: 16px;
+	font-size: 14px;
+	color: var(--text-secondary);
+}
+
+.confirm-modal-footer {
+	padding: 16px;
+	border-top: 1px solid var(--border-color);
+	display: flex;
+	justify-content: flex-end;
+	gap: 12px;
+}
+
+.btn-danger {
+	background-color: #ef4444;
+	color: white;
+	border: none;
+	padding: 8px 16px;
+	border-radius: 6px;
+	font-size: 13px;
+	cursor: pointer;
+}
+
+.btn-danger:hover {
+	background-color: #dc2626;
 }
 </style>

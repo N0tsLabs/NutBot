@@ -1,6 +1,10 @@
 /**
- * Prompt JSON 解析器
- * 解析 AI 以 JSON 格式返回的工具调用
+ * Prompt JSON 解析器 - 增强版
+ * 
+ * 核心改进：
+ * 1. 更强的 JSON 容错能力
+ * 2. 多种提取方式
+ * 3. 工具名验证
  */
 
 import { logger } from '../utils/logger.js';
@@ -20,53 +24,90 @@ export interface ParsedResponse {
 }
 
 /**
- * 从 AI 响应中提取 JSON
+ * 提取 JSON 内容
  */
 function extractJSON(text: string): string | null {
-	// 尝试多种方式提取 JSON
-
-	// 1. 尝试直接解析整个文本
+	// 1. 尝试直接解析
 	try {
-		JSON.parse(text.trim());
+		const parsed = JSON.parse(text.trim());
 		return text.trim();
-	} catch {
-		// 继续尝试其他方式
-	}
+	} catch { /* continue */ }
 
 	// 2. 查找 ```json ... ``` 代码块
 	const jsonBlockMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
 	if (jsonBlockMatch) {
-		return jsonBlockMatch[1].trim();
+		const content = jsonBlockMatch[1].trim();
+		try {
+			JSON.parse(content);
+			return content;
+		} catch { /* continue */ }
 	}
 
-	// 3. 查找 { ... } 块（贪婪匹配最外层）
+	// 3. 查找第一个 { ... } 块
 	const braceMatch = text.match(/\{[\s\S]*\}/);
 	if (braceMatch) {
-		// 验证是否为有效 JSON
+		let content = braceMatch[0];
+		
+		// 修复常见问题
+		content = content.replace(/,\s*([}\]])/g, '$1'); // 移除尾部逗号
+		content = content.replace(/([{,]\s*)(\w+)\s*:\s*"/g, '$1"$2":"'); // 修复属性名引号
+		content = content.replace(/:\s*"([^"]*)"\s*"/g, ': "$1", "'); // 修复值引号
+		
 		try {
-			JSON.parse(braceMatch[0]);
-			return braceMatch[0];
-		} catch {
-			// 尝试修复常见问题
-			let fixed = braceMatch[0];
-			// 移除尾部多余的逗号
-			fixed = fixed.replace(/,(\s*[}\]])/g, '$1');
-			try {
-				JSON.parse(fixed);
-				return fixed;
-			} catch {
-				// 继续
-			}
-		}
+			JSON.parse(content);
+			return content;
+		} catch { /* continue */ }
 	}
 
 	return null;
 }
 
 /**
+ * 从纯文本提取工具调用
+ */
+function extractFromPlainText(text: string, availableTools: any[]): ParsedToolCall[] {
+	const toolCalls: ParsedToolCall[] = [];
+
+	// 工具名列表
+	const toolNames = availableTools.map(t => t.name);
+
+	// 查找 "使用 xxx 工具" 模式
+	for (const name of toolNames) {
+		const patterns = [
+			new RegExp(`(?:使用|调用|执行|运行)\\s*[：:]*\\s*${name}\\s*(?:工具)?`, 'i'),
+			new RegExp(`${name}\\s*[：:]*\\s*({[^}]*})`, 'i'),
+			new RegExp(`(?:工具[：:]*)?${name}\\s*[：:]*\\s*({[^}]*})`, 'i'),
+		];
+
+		for (const pattern of patterns) {
+			const match = text.match(pattern);
+			if (match) {
+				// 尝试提取参数
+				let args = {};
+				const argMatch = text.match(new RegExp(`${name}[^]*?({[^}]*})`));
+				if (argMatch) {
+					try {
+						args = JSON.parse(argMatch[1]);
+					} catch { /* ignore */ }
+				}
+
+				toolCalls.push({ name, arguments: args });
+				log.debug(`从文本提取工具: ${name}`);
+				break;
+			}
+		}
+	}
+
+	return toolCalls;
+}
+
+/**
  * 解析 AI 响应
  */
-export function parsePromptResponse(text: string): ParsedResponse {
+export function parsePromptResponse(
+	text: string,
+	availableTools: ParsedToolCall[] | any[] = []
+): ParsedResponse {
 	const result: ParsedResponse = {
 		thinking: '',
 		toolCalls: [],
@@ -78,78 +119,79 @@ export function parsePromptResponse(text: string): ParsedResponse {
 		return result;
 	}
 
-	// 尝试提取 JSON
+	// 1. 尝试提取 JSON
 	const jsonStr = extractJSON(text);
 
-	if (!jsonStr) {
-		// 没有找到 JSON，整个文本作为响应
-		log.debug('未找到 JSON，作为纯文本响应处理');
-		result.response = text.trim();
-		return result;
-	}
+	if (jsonStr) {
+		try {
+			const parsed = JSON.parse(jsonStr);
 
-	try {
-		const parsed = JSON.parse(jsonStr);
+			// 提取 thinking
+			if (parsed.thinking || parsed.thought || parsed.reasoning) {
+				result.thinking = parsed.thinking || parsed.thought || parsed.reasoning || '';
+			}
 
-		// 提取 thinking
-		if (parsed.thinking) {
-			result.thinking = String(parsed.thinking);
-		}
+			// 提取工具调用（多种格式）
+			const rawToolCalls = parsed.tool_calls || parsed.toolCalls || 
+				parsed.tools || parsed.tool || parsed.actions || [];
 
-		// 提取 tool_calls
-		if (parsed.tool_calls && Array.isArray(parsed.tool_calls)) {
-			for (const tc of parsed.tool_calls) {
-				if (tc.name) {
+			if (Array.isArray(rawToolCalls)) {
+				for (const tc of rawToolCalls) {
+					if (tc.name) {
+						result.toolCalls.push({
+							name: String(tc.name),
+							arguments: tc.arguments || tc.args || tc.params || tc.input || {},
+						});
+					}
+				}
+			} else if (typeof rawToolCalls === 'object' && rawToolCalls !== null) {
+				// 单个工具调用
+				if (rawToolCalls.name) {
 					result.toolCalls.push({
-						name: String(tc.name),
-						arguments: tc.arguments || tc.args || tc.params || {},
+						name: String(rawToolCalls.name),
+						arguments: rawToolCalls.arguments || {},
 					});
 				}
 			}
-		}
-		// 兼容单个工具调用
-		else if (parsed.tool_call && parsed.tool_call.name) {
-			result.toolCalls.push({
-				name: String(parsed.tool_call.name),
-				arguments: parsed.tool_call.arguments || parsed.tool_call.args || {},
-			});
-		}
-		// 兼容简化格式
-		else if (parsed.tool && parsed.tool.name) {
-			result.toolCalls.push({
-				name: String(parsed.tool.name),
-				arguments: parsed.tool.arguments || parsed.tool.args || {},
-			});
-		}
 
-		// 提取 response
-		if (parsed.response) {
-			result.response = String(parsed.response);
-		} else if (parsed.message) {
-			result.response = String(parsed.message);
-		} else if (parsed.content) {
-			result.response = String(parsed.content);
-		} else if (parsed.answer) {
-			result.response = String(parsed.answer);
+			// 提取响应
+			if (parsed.response || parsed.reply || parsed.message || 
+				parsed.answer || parsed.result || parsed.content) {
+				result.response = String(
+					parsed.response || parsed.reply || parsed.message || 
+					parsed.answer || parsed.result || parsed.content
+				);
+			}
+
+			log.debug(`JSON解析成功: tools=${result.toolCalls.length}, response=${result.response?.length || 0}`);
+			return result;
+		} catch (e) {
+			log.debug(`JSON解析失败: ${e}，尝试其他方式`);
 		}
-
-		log.debug(`解析成功: thinking=${result.thinking.length}字, tools=${result.toolCalls.length}, response=${result.response?.length || 0}字`);
-
-	} catch (e) {
-		log.warn(`JSON 解析失败: ${e}`);
-		// 解析失败，整个文本作为响应
-		result.response = text.trim();
 	}
 
+	// 2. 从纯文本提取工具调用
+	if (availableTools.length > 0) {
+		const plainTextTools = extractFromPlainText(text, availableTools);
+		if (plainTextTools.length > 0) {
+			result.toolCalls = plainTextTools;
+			log.debug(`从文本提取工具: ${plainTextTools.length}个`);
+			return result;
+		}
+	}
+
+	// 3. 没有找到工具调用，整个文本作为响应
+	result.response = text.trim();
+	log.debug('无工具调用，作为纯文本处理');
 	return result;
 }
 
 /**
  * 生成工具调用格式的 System Prompt 部分
- * 包含每个工具的参数说明，帮助 AI 正确生成参数
  */
-export function generateToolCallFormatPrompt(tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>): string {
-	// 生成工具列表和参数说明
+export function generateToolCallFormatPrompt(
+	tools: Array<{ name: string; description: string; parameters: any }>
+): string {
 	const toolList = tools.map(t => {
 		const params = t.parameters;
 		let paramsStr = '';
@@ -159,15 +201,11 @@ export function generateToolCallFormatPrompt(tools: Array<{ name: string; descri
 			for (const [key, value] of Object.entries(params)) {
 				const paramInfo = value as { type?: string; description?: string; required?: boolean; enum?: string[] };
 				let desc = paramInfo?.description || '';
-				if (paramInfo?.required) {
-					desc = `(必填) ${desc}`;
-				}
-				if (paramInfo?.enum) {
-					desc = `${desc} 可选值: ${paramInfo.enum.join(', ')}`;
-				}
+				if (paramInfo?.required) desc = `(必填) ${desc}`;
+				if (paramInfo?.enum) desc = `${desc} 可选值: ${paramInfo.enum.join(', ')}`;
 				paramList.push(`    - ${key}: ${desc}`);
 			}
-			paramsStr = `\n${paramList.join('\n')}`;
+			if (paramList.length > 0) paramsStr = `\n${paramList.join('\n')}`;
 		}
 
 		return `- **${t.name}**: ${t.description}${paramsStr}`;
@@ -176,22 +214,33 @@ export function generateToolCallFormatPrompt(tools: Array<{ name: string; descri
 	return `
 ## 工具调用格式
 
-**调用工具时**（必须包含 thinking）：
+【调用工具时】（必须包含 thinking）：
 \`\`\`json
-{"thinking": "为什么这样做", "tool_calls": [{"name": "工具名", "arguments": {"参数": "值"}}]}
+{
+  "thinking": "为什么这样做",
+  "tool_calls": [
+    {"name": "工具名", "arguments": {"参数": "值"}}
+  ]
+}
 \`\`\`
 
-**直接回复时**：
+【直接回复时】：
 \`\`\`json
-{"thinking": "思考过程", "response": "回复内容"}
+{
+  "thinking": "思考过程",
+  "response": "回复内容"
+}
 \`\`\`
 
-**重要规则**：
-1. 必须用工具名称，不要用中文描述！
-2. 必须用 JSON 格式输出！
-3. 不要在 JSON 外写任何文字！
-4. 工具参数必须完整填写，required 参数不能省略！
+【重要规则】：
+1. 必须用工具名称（英文），不要用中文描述
+2. 必须用 JSON 格式输出
+3. 不要在 JSON 外写任何文字
+4. 工具参数必须完整填写
 
 ### 可用工具
-${toolList}`;
+${toolList}
+`;
 }
+
+export { extractJSON, extractFromPlainText };

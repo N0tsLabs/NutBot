@@ -62,13 +62,17 @@ export const useAppStore = defineStore('app', () => {
 		try {
 			const startTime = Date.now();
 
-			// 并行检查浏览器扩展状态
+			// 并行检查浏览器扩展状态和 SoM 服务状态
 			let browserStatus = { connected: false, targets: 0 };
+			let somConnected = false;
+
 			try {
-				const statusRes = await fetch('/api/status', {
-					signal: AbortSignal.timeout(2000), // 2秒超时
-				});
-				if (statusRes.ok) {
+				const [statusRes, ocrRes] = await Promise.all([
+					fetch('/api/status', { signal: AbortSignal.timeout(2000) }),
+					fetch('/api/ocr/status', { signal: AbortSignal.timeout(2000) }).catch(() => null),
+				]);
+
+				if (statusRes && statusRes.ok) {
 					const data = await statusRes.json();
 					const cdpData = data.cdpRelay || data;
 					browserStatus = {
@@ -76,17 +80,24 @@ export const useAppStore = defineStore('app', () => {
 						targets: cdpData?.extension?.targets || cdpData?.targets || 0,
 					};
 				}
+
+				// 检查 SoM 服务实际状态
+				if (ocrRes && ocrRes.ok) {
+					const somData = await ocrRes.json();
+					somConnected = somData.connected || somData.available || false;
+				}
 			} catch (e) {
-				// 获取失败，浏览器扩展可能未运行
+				// 获取失败，浏览器扩展和 SoM 可能未运行
 				browserStatus = { connected: false, targets: 0 };
+				somConnected = false;
 			}
 
 			const latency = Date.now() - startTime;
 
 			connectionStatus.value = {
 				som: {
-					connected: connected.value,
-					latency: connected.value ? latency : null,
+					connected: somConnected && connected.value,  // SoM 服务 + WebSocket 连接
+					latency: (somConnected && connected.value) ? latency : null,
 				},
 				browser: browserStatus,
 				lastUpdate: new Date().toISOString(),
@@ -108,6 +119,64 @@ export const useAppStore = defineStore('app', () => {
 
 	const setWebSocket = (websocket) => {
 		ws.value = websocket;
+	};
+
+	// 提取工具结果的简洁描述
+	const extractToolResultContent = (toolName, result) => {
+		if (!result) return null;
+
+		try {
+			// browser 工具
+			if (toolName === 'browser') {
+				const br = typeof result === 'string' ? JSON.parse(result) : result;
+				if (!br.success) return `操作失败`;
+
+				// 如果有 aiSummary（snapshot 操作）
+				if (br.aiSummary) {
+					return br.aiSummary;
+				}
+
+				// 根据 action 生成描述
+				const action = br.action;
+				if (action === 'goto') return `已访问 ${br.url || ''}`;
+				if (action === 'open') return '浏览器已打开';
+				if (action === 'close') return '浏览器已关闭';
+				if (action === 'screenshot') return '截图已保存';
+				if (action === 'click') return '已点击元素';
+				if (action === 'type') return '已输入文本';
+				if (action === 'scroll') return '已滚动页面';
+				if (action === 'search') return `已搜索: ${br.url || ''}`;
+
+				return br.message || '操作完成';
+			}
+
+			// web 工具
+			if (toolName === 'web') {
+				const wr = typeof result === 'string' ? JSON.parse(result) : result;
+				if (wr.success) {
+					return `已获取网页内容 (${wr.charCount || 0} 字符)`;
+				}
+				return `网页获取失败`;
+			}
+
+			// exec 工具
+			if (toolName === 'exec') {
+				const er = typeof result === 'string' ? JSON.parse(result) : result;
+				if (er.success) {
+					const output = er.stdout || er.output || '';
+					if (output.length > 200) {
+						return output.substring(0, 200) + '...\n(命令执行成功)';
+					}
+					return output || '命令执行成功';
+				}
+				return `命令执行失败: ${er.error || '未知错误'}`;
+			}
+
+			// 其他工具
+			return JSON.stringify(result).substring(0, 200);
+		} catch {
+			return String(result).substring(0, 200);
+		}
 	};
 
 	const handleMessage = (message) => {
@@ -216,9 +285,10 @@ export const useAppStore = defineStore('app', () => {
 					runningTool.result = chunk.result;
 					runningTool.duration = Date.now() - runningTool.startTime;
 				}
-				// 更新消息中的工具调用记录
-				if (lastMessage && lastMessage.toolCalls) {
-					const toolCall = lastMessage.toolCalls.find((t) => t.name === chunk.tool && t.status === 'running');
+
+				// 更新最后一条助手消息的工具调用状态（合并到同一条消息）
+				if (lastMessage && lastMessage.role === 'assistant') {
+					const toolCall = lastMessage.toolCalls?.find((t) => t.name === chunk.tool && t.status === 'running');
 					if (toolCall) {
 						toolCall.status = 'success';
 						toolCall.result = chunk.result;
@@ -239,9 +309,10 @@ export const useAppStore = defineStore('app', () => {
 					errorTool.error = chunk.error;
 					errorTool.duration = Date.now() - errorTool.startTime;
 				}
-				// 更新消息中的工具调用记录
-				if (lastMessage && lastMessage.toolCalls) {
-					const toolCall = lastMessage.toolCalls.find((t) => t.name === chunk.tool && t.status === 'running');
+
+				// 更新最后一条助手消息的工具调用状态（合并到同一条消息）
+				if (lastMessage && lastMessage.role === 'assistant') {
+					const toolCall = lastMessage.toolCalls?.find((t) => t.name === chunk.tool && t.status === 'running');
 					if (toolCall) {
 						toolCall.status = 'error';
 						toolCall.result = { error: chunk.error };
@@ -456,9 +527,49 @@ export const useAppStore = defineStore('app', () => {
 	// 加载数据
 	const loadSessions = async () => {
 		try {
-			sessions.value = await api.get('/api/sessions');
+			const list = await api.get('/api/sessions');
+			sessions.value = list;
+
+			// 尝试恢复最近的 sessionId
+			const savedId = localStorage.getItem('nutbot_currentSessionId');
+			if (savedId && list.find(s => s.id === savedId)) {
+				currentSessionId.value = savedId;
+				// 加载该会话的历史
+				try {
+					messages.value = await api.get(`/api/sessions/${savedId}/history`);
+					console.log(`[loadSessions] 成功加载 ${messages.value.length} 条历史消息`);
+				} catch (e) {
+					console.warn(`[loadSessions] 会话历史加载失败: ${e.message}`);
+					// 不要清空消息，保留当前状态
+				}
+			} else if (list.length > 0) {
+				// 如果没有保存的，选择最近更新的
+				const sorted = [...list].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+				currentSessionId.value = sorted[0].id;
+				localStorage.setItem('nutbot_currentSessionId', sorted[0].id);
+				try {
+					messages.value = await api.get(`/api/sessions/${sorted[0].id}/history`);
+				} catch (e) {
+					console.warn(`[loadSessions] 会话历史加载失败: ${e.message}`);
+					messages.value = [];
+				}
+			} else {
+				// 没有会话，创建一个新会话
+				await createSession();
+			}
 		} catch (error) {
-			console.error('Failed to load sessions:', error);
+			console.error('[loadSessions] 加载会话列表失败:', error);
+			// 出错时如果当前有会话，尝试加载它的历史
+			if (currentSessionId.value && sessions.value.find(s => s.id === currentSessionId.value)) {
+				try {
+					messages.value = await api.get(`/api/sessions/${currentSessionId.value}/history`);
+				} catch {
+					// 仍然失败则不清空消息
+				}
+			} else {
+				// 没有会话，创建一个新会话
+				await createSession();
+			}
 		}
 	};
 
@@ -584,19 +695,70 @@ export const useAppStore = defineStore('app', () => {
 		}
 	};
 
-	const createSession = () => {
-		const newSession = {
-			id: Date.now().toString(),
-			title: 'New Chat',
-			createdAt: new Date().toISOString(),
-		};
-		sessions.value.unshift(newSession);
-		currentSessionId.value = newSession.id;
-		messages.value = [];
+	const createSession = async () => {
+		try {
+			// 调用后端 API 创建会话，确保前后端使用相同的 ID
+			const session = await api.post('/api/sessions', { title: 'New Chat' });
+			sessions.value.unshift(session);
+			currentSessionId.value = session.id;
+			localStorage.setItem('nutbot_currentSessionId', session.id);
+			messages.value = [];
+		} catch (error) {
+			console.error('Failed to create session:', error);
+			// 回退到本地创建
+			const newSession = {
+				id: Date.now().toString(),
+				title: 'New Chat',
+				createdAt: new Date().toISOString(),
+			};
+			sessions.value.unshift(newSession);
+			currentSessionId.value = newSession.id;
+			localStorage.setItem('nutbot_currentSessionId', newSession.id);
+			messages.value = [];
+		}
+	};
+
+	const deleteSession = async (id) => {
+		try {
+			await api.del(`/api/sessions/${id}`);
+			// 从列表中移除
+			const index = sessions.value.findIndex(s => s.id === id);
+			if (index !== -1) {
+				sessions.value.splice(index, 1);
+			}
+			// 如果删除的是当前会话，切换到第一个或创建新会话
+			if (currentSessionId.value === id) {
+				if (sessions.value.length > 0) {
+					await selectSession(sessions.value[0].id);
+				} else {
+					createSession();
+				}
+			}
+		} catch (error) {
+			console.error('Failed to delete session:', error);
+			throw error;
+		}
+	};
+
+	const clearAllSessions = async () => {
+		try {
+			await api.del('/api/sessions');
+			sessions.value = [];
+			currentSessionId.value = null;
+			messages.value = [];
+			localStorage.removeItem('nutbot_currentSessionId');
+			// 调用 loadSessions，它会在列表为空时自动创建新会话
+			// 确保清空操作完全生效后再获取最新列表
+			await loadSessions();
+		} catch (error) {
+			console.error('Failed to clear sessions:', error);
+			throw error;
+		}
 	};
 
 	const selectSession = async (id) => {
 		currentSessionId.value = id;
+		localStorage.setItem('nutbot_currentSessionId', id);
 		try {
 			messages.value = await api.get(`/api/sessions/${id}/history`);
 		} catch (error) {
@@ -678,6 +840,8 @@ export const useAppStore = defineStore('app', () => {
 		loadTools,
 		loadConfig,
 		createSession,
+		deleteSession,
+		clearAllSessions,
 		selectSession,
 		sendDebugResponse,
 		sendSecurityResponse,

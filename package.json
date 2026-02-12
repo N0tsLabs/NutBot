@@ -1,121 +1,121 @@
 {
-  "name": "nutbot",
-  "version": "0.1.0",
-  "description": "AI驱动的自动化机器人 - 支持桌面自动化、浏览器控制、MCP协议",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "type": "module",
-  "bin": {
-    "nutbot": "./bin/nutbot.js"
-  },
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    },
-    "./client": {
-      "import": "./dist/client.js"
-    }
-  },
-  "files": [
-    "dist",
-    "bin",
-    "web/dist",
-    "config",
-    "README.md",
-    "LICENSE"
-  ],
-  "scripts": {
-    "start": "node bin/nutbot.js start",
-    "dev": "tsx watch src/index.ts start",
-    "start:chat": "tsx src/index.ts start --interactive",
-    "build": "npm run build:server && npm run build:web",
-    "build:server": "tsup src/index.ts --format esm --dts --clean",
-    "build:web": "cd web && npm run build",
-    "test": "vitest run",
-    "test:prompt": "node test/test-prompt-parser.js",
-    "test:streaming": "node test/test-streaming.js",
-    "lint": "prettier --write \"src/**/*.ts\" \"web/src/**/*.{vue,js,ts,css}\" \"test/**/*.ts\"",
-    "lint:check": "prettier --check \"src/**/*.ts\" \"web/src/**/*.{vue,js,ts,css}\" \"test/**/*.ts\"",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
-  },
-  "keywords": [
-    "ai",
-    "automation",
-    "bot",
-    "mcp",
-    "model-context-protocol",
-    "playwright",
-    "browser-automation",
-    "desktop-automation",
-    "agent",
-    "llm",
-    "openai",
-    "anthropic",
-    "claude",
-    "fastify",
-    "typescript"
-  ],
-  "author": "N0ts",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/user/nutbot.git"
-  },
-  "homepage": "https://github.com/user/nutbot#readme",
-  "bugs": {
-    "url": "https://github.com/user/nutbot/issues"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.32.0",
-    "@fastify/cors": "^10.0.0",
-    "@fastify/static": "^8.0.0",
-    "@fastify/websocket": "^11.0.0",
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "@nut-tree-fork/nut-js": "^4.2.6",
-    "blessed": "^0.1.81",
-    "chalk": "^5.3.0",
-    "commander": "^12.1.0",
-    "croner": "^8.1.0",
-    "docx": "^8.5.0",
-    "dotenv": "^16.4.5",
-    "fastify": "^5.0.0",
-    "fs-extra": "^11.2.0",
-    "mammoth": "^1.6.0",
-    "node-notifier": "^10.0.1",
-    "ora": "^8.1.0",
-    "pdf-parse": "^1.1.1",
-    "playwright": "^1.58.2",
-    "screenshot-desktop": "^1.15.0",
-    "systeminformation": "^5.30.6",
-    "uuid": "^10.0.0",
-    "ws": "^8.19.0",
-    "xlsx": "^0.18.5",
-    "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "@types/blessed": "^0.1.27",
-    "@types/fs-extra": "^11.0.4",
-    "@types/node": "^22.7.0",
-    "@types/node-notifier": "^8.0.5",
-    "@types/ws": "^8.5.12",
-    "eslint": "^9.12.0",
-    "nodemon": "^3.1.11",
-    "prettier": "^3.8.1",
-    "sharp": "^0.34.5",
-    "tesseract.js": "^7.0.0",
-    "tsup": "^8.3.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
-  },
-  "peerDependenciesMeta": {
-    "playwright": {
-      "optional": true
-    }
-  }
+	"name": "nutbot",
+	"version": "0.1.0",
+	"description": "AI驱动的自动化机器人 - 支持桌面自动化、浏览器控制、MCP协议",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"type": "module",
+	"bin": {
+		"nutbot": "./bin/nutbot.js"
+	},
+	"exports": {
+		".": {
+			"import": "./dist/index.js",
+			"types": "./dist/index.d.ts"
+		},
+		"./client": {
+			"import": "./dist/client.js"
+		}
+	},
+	"files": [
+		"dist",
+		"bin",
+		"web/dist",
+		"config",
+		"README.md",
+		"LICENSE"
+	],
+	"scripts": {
+		"start": "node bin/nutbot.js start",
+		"dev": "tsx watch src/index.ts start",
+		"start:chat": "tsx src/index.ts start --interactive",
+		"build": "npm run build:server && npm run build:web",
+		"build:server": "tsup src/index.ts --format esm --dts --clean",
+		"build:web": "cd web && npm run build",
+		"test": "vitest run",
+		"test:prompt": "node test/test-prompt-parser.js",
+		"test:streaming": "node test/test-streaming.js",
+		"lint": "prettier --write \"src/**/*.ts\" \"web/src/**/*.{vue,js,ts,css}\" \"test/**/*.ts\"",
+		"lint:check": "prettier --check \"src/**/*.ts\" \"web/src/**/*.{vue,js,ts,css}\" \"test/**/*.ts\"",
+		"typecheck": "tsc --noEmit",
+		"prepublishOnly": "npm run build"
+	},
+	"keywords": [
+		"ai",
+		"automation",
+		"bot",
+		"mcp",
+		"model-context-protocol",
+		"playwright",
+		"browser-automation",
+		"desktop-automation",
+		"agent",
+		"llm",
+		"openai",
+		"anthropic",
+		"claude",
+		"fastify",
+		"typescript"
+	],
+	"author": "N0ts",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/user/nutbot.git"
+	},
+	"homepage": "https://github.com/user/nutbot#readme",
+	"bugs": {
+		"url": "https://github.com/user/nutbot/issues"
+	},
+	"engines": {
+		"node": ">=18.0.0"
+	},
+	"dependencies": {
+		"@anthropic-ai/sdk": "^0.32.0",
+		"@fastify/cors": "^10.0.0",
+		"@fastify/static": "^8.0.0",
+		"@fastify/websocket": "^11.0.0",
+		"@modelcontextprotocol/sdk": "^1.0.0",
+		"@nut-tree-fork/nut-js": "^4.2.6",
+		"blessed": "^0.1.81",
+		"chalk": "^5.3.0",
+		"commander": "^12.1.0",
+		"croner": "^8.1.0",
+		"docx": "^8.5.0",
+		"dotenv": "^16.4.5",
+		"fastify": "^5.0.0",
+		"fs-extra": "^11.2.0",
+		"mammoth": "^1.6.0",
+		"node-notifier": "^10.0.1",
+		"ora": "^8.1.0",
+		"pdf-parse": "^1.1.1",
+		"playwright": "^1.58.2",
+		"screenshot-desktop": "^1.15.0",
+		"systeminformation": "^5.30.6",
+		"uuid": "^10.0.0",
+		"ws": "^8.19.0",
+		"xlsx": "^0.18.5",
+		"zod": "^3.23.8"
+	},
+	"devDependencies": {
+		"@types/blessed": "^0.1.27",
+		"@types/fs-extra": "^11.0.4",
+		"@types/node": "^22.7.0",
+		"@types/node-notifier": "^8.0.5",
+		"@types/ws": "^8.5.12",
+		"eslint": "^9.12.0",
+		"nodemon": "^3.1.11",
+		"prettier": "^3.8.1",
+		"sharp": "^0.34.5",
+		"tesseract.js": "^7.0.0",
+		"tsup": "^8.3.0",
+		"tsx": "^4.19.0",
+		"typescript": "^5.6.0",
+		"vitest": "^2.1.0"
+	},
+	"peerDependenciesMeta": {
+		"playwright": {
+			"optional": true
+		}
+	}
 }
