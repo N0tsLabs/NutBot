@@ -109,10 +109,29 @@
 						</div>
 					</div>
 				</div>
-				<!-- 当前模型显示 -->
-				<div class="current-model" :title="currentModelDisplay">
+				<!-- 当前模型显示（可点击切换） -->
+				<div class="current-model" :title="currentModelDisplay" @click="showModelDropdown = !showModelDropdown">
 					<span class="model-icon">🧠</span>
 					<span class="model-name">{{ currentModelShortName }}</span>
+					<span class="model-arrow">▼</span>
+					<!-- 模型选择下拉框 -->
+					<div v-if="showModelDropdown" class="model-dropdown" @click.stop>
+						<div class="model-dropdown-header">选择默认模型</div>
+						<div
+							v-for="model in enabledModels"
+							:key="model.id"
+							class="model-dropdown-item"
+							:class="{ active: defaultModelId === model.id }"
+							@click="selectDefaultModel(model.id)"
+						>
+							<span class="model-dropdown-name">{{ model.name }}</span>
+							<span class="model-dropdown-provider">({{ model.providerId }})</span>
+							<span v-if="defaultModelId === model.id" class="model-dropdown-check">✓</span>
+						</div>
+						<div v-if="enabledModels.length === 0" class="model-dropdown-empty">
+							暂无可用模型，请先在 Provider 页面添加
+						</div>
+					</div>
 				</div>
 			</div>
 			<button @click="store.createSession()" class="btn btn-secondary">新对话</button>
@@ -409,11 +428,47 @@
 import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue';
 import { marked } from 'marked';
 import { useAppStore } from '../stores/app';
+import api from '../utils/api';
+import toast from '../utils/toast';
 
 const store = useAppStore();
 
 // Agent 选择器
 const showAgentDropdown = ref(false);
+
+// 模型选择器
+const showModelDropdown = ref(false);
+const modelLibrary = ref({ models: [], defaultModelId: null });
+
+// 加载模型库
+const loadModelLibrary = async () => {
+	try {
+		const result = await api.get('/api/models');
+		modelLibrary.value = result;
+	} catch (error) {
+		console.error('加载模型库失败:', error);
+	}
+};
+
+// 启用的模型列表
+const enabledModels = computed(() => {
+	return modelLibrary.value.models.filter(m => m.enabled);
+});
+
+// 默认模型 ID
+const defaultModelId = computed(() => modelLibrary.value.defaultModelId);
+
+// 选择默认模型
+const selectDefaultModel = async (modelId) => {
+	try {
+		await api.post('/api/models/default', { modelId });
+		modelLibrary.value.defaultModelId = modelId;
+		toast.success('默认模型已更新');
+	} catch (error) {
+		toast.error('设置默认模型失败: ' + error.message);
+	}
+	showModelDropdown.value = false;
+};
 
 const currentAgent = computed(() => {
 	return store.agents.find(a => a.id === store.currentAgentId);
@@ -506,6 +561,9 @@ const handleClickOutside = (event) => {
 	if (showAgentDropdown.value && !event.target.closest('.agent-selector')) {
 		showAgentDropdown.value = false;
 	}
+	if (showModelDropdown.value && !event.target.closest('.current-model')) {
+		showModelDropdown.value = false;
+	}
 };
 
 onMounted(() => {
@@ -516,13 +574,17 @@ onUnmounted(() => {
 	document.removeEventListener('click', handleClickOutside);
 });
 
-// 当前模型显示（优先使用 Agent 配置的模型，否则使用全局默认模型）
+// 当前模型显示（优先使用 modelLibrary 中的默认模型）
 const currentModelRef = computed(() => {
-	// 优先使用当前 Agent 配置的模型
+	// 优先使用 modelLibrary 中设置的默认模型
+	if (modelLibrary.value.defaultModelId) {
+		return modelLibrary.value.defaultModelId;
+	}
+	// 否则使用当前 Agent 配置的模型
 	if (currentAgent.value?.model) {
 		return currentAgent.value.model;
 	}
-	// 否则使用全局默认模型
+	// 最后使用全局默认模型
 	return store.config?.agent?.defaultModel || '';
 });
 
@@ -763,8 +825,10 @@ const getToolAction = (tool) => {
 	if (!tool) return '';
 	try {
 		const args = typeof tool.arguments === 'string' ? JSON.parse(tool.arguments) : tool.arguments;
+		const method = args?.method || args?.action || '';
+		
 		if (tool.name === 'browser') {
-			switch (args?.action) {
+			switch (method) {
 				case 'open':
 					return '打开浏览器';
 				case 'goto': {
@@ -772,15 +836,24 @@ const getToolAction = (tool) => {
 					const host = url.match(/https?:\/\/([^\/]+)/)?.[1] || url.substring(0, 30);
 					return `访问 ${host}`;
 				}
+				case 'state':
 				case 'snapshot':
 				case 'snapshoot':
-					return '获取页面元素';
+					return '获取页面状态';
 				case 'click':
 					return `点击元素 #${args.ref}`;
 				case 'type':
 					return `输入 "${(args.text || '').substring(0, 20)}"`;
 				case 'press':
 					return `按键 [${args.key}]`;
+				case 'scroll':
+					return `滚动页面`;
+				case 'tabs':
+					return '获取标签页列表';
+				case 'switch_tab':
+					return '切换标签页';
+				case 'back':
+					return '后退';
 				case 'wait':
 					return `等待${args.waitFor === 'network' ? '网络' : '加载'}`;
 				case 'close':
@@ -788,18 +861,52 @@ const getToolAction = (tool) => {
 				case 'evaluate':
 					return '执行脚本';
 				default:
-					return args?.action || '操作';
+					return method || '浏览器操作';
+			}
+		}
+		if (tool.name === 'screenshot') {
+			switch (method) {
+				case 'capture':
+					return '截取屏幕';
+				case 'save':
+					return '保存截图';
+				case 'list_screens':
+					return '获取截图列表';
+				default:
+					return '截图操作';
+			}
+		}
+		if (tool.name === 'computer') {
+			switch (method) {
+				case 'mouse_move':
+					return `移动鼠标到 (${args.x}, ${args.y})`;
+				case 'left_click':
+					return '左键点击';
+				case 'right_click':
+					return '右键点击';
+				case 'double_click':
+					return '双击';
+				case 'scroll':
+					return `滚动 ${args.direction || ''}`;
+				case 'type':
+					return `输入 "${(args.text || '').substring(0, 20)}"`;
+				case 'key':
+					return `按键 [${args.key}]`;
+				case 'hotkey':
+					return `快捷键 [${args.keys?.join('+') || args.hotkey}]`;
+				case 'cursor_position':
+					return '获取鼠标位置';
+				case 'list_elements':
+					return '获取界面元素';
+				case 'click_element':
+					return `点击元素 #${args.element_id}`;
+				default:
+					return method || '电脑操作';
 			}
 		}
 		if (tool.name === 'exec') {
 			const cmd = args?.command || '';
 			return `执行 ${cmd.substring(0, 30)}${cmd.length > 30 ? '...' : ''}`;
-		}
-		if (tool.name === 'screenshot') {
-			return '截取屏幕';
-		}
-		if (tool.name === 'web') {
-			return `搜索 ${args?.query?.substring(0, 20) || ''}`;
 		}
 		return tool.name;
 	} catch {
@@ -811,23 +918,53 @@ const getToolAction = (tool) => {
 const getToolDescription = (toolName, args) => {
 	try {
 		const parsedArgs = typeof args === 'string' ? JSON.parse(args) : args;
+		const method = parsedArgs?.method || parsedArgs?.action || '';
+		
 		if (toolName === 'browser') {
 			const actionMap = {
 				open: '打开浏览器',
 				goto: '访问网页',
+				state: '获取页面状态',
 				snapshot: '获取页面元素',
 				snapshoot: '获取页面元素',
 				click: '点击元素',
 				type: '输入文本',
 				press: '按键',
+				scroll: '滚动页面',
+				tabs: '获取标签页',
+				switch_tab: '切换标签页',
+				back: '后退',
 				wait: '等待页面加载',
 				close: '关闭浏览器',
 				evaluate: '执行脚本',
 			};
-			return actionMap[parsedArgs?.action] || '执行操作';
+			return actionMap[method] || '浏览器操作';
+		}
+		if (toolName === 'screenshot') {
+			const actionMap = {
+				capture: '截取屏幕',
+				save: '保存截图',
+				list_screens: '获取截图列表',
+			};
+			return actionMap[method] || '截图操作';
+		}
+		if (toolName === 'computer') {
+			const actionMap = {
+				mouse_move: '移动鼠标',
+				left_click: '左键点击',
+				right_click: '右键点击',
+				double_click: '双击',
+				scroll: '滚动',
+				type: '输入文本',
+				key: '按键',
+				hotkey: '快捷键',
+				cursor_position: '获取鼠标位置',
+				list_elements: '获取界面元素',
+				click_element: '点击元素',
+			};
+			return actionMap[method] || '电脑操作';
 		}
 		if (toolName === 'exec') return '执行命令';
-		if (toolName === 'screenshot') return '截取屏幕';
 		return `执行 ${toolName}`;
 	} catch {
 		return `执行 ${toolName}`;
@@ -1015,23 +1152,55 @@ const handlePaste = (event) => {
 
 // 停止聊天
 const stopChat = () => {
-	if (sending.value) {
-		sending.value = false;
+	console.log('[Chat] stopChat() 被调用，当前状态:', {
+		sending: sending.value,
+		wsReadyState: store.ws?.readyState,
+		hasActiveChat: hasActiveChat.value
+	});
+	
+	// 添加用户反馈
+	store.currentStatus = { type: 'status', message: '正在停止...' };
+	
+	// 直接发送中断消息，不再检查 sending.value
+	// 因为中断的目的就是取消正在进行的操作
+	if (store.ws) {
+		const wsState = store.ws.readyState;
+		console.log('[Chat] WebSocket 状态:', wsState, '(0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED)');
 		
-		// 发送中断消息到后端
-		if (store.ws && store.ws.readyState === 1) {
+		if (wsState === 1) { // WebSocket.OPEN
+			console.log('[Chat] 发送中断消息...');
 			store.ws.send(JSON.stringify({
 				type: 'chat_interrupt',
 				payload: {
 					reason: 'user_requested',
 				},
 			}));
+			console.log('[Chat] 中断消息已发送');
+		} else if (wsState === 0) { // WebSocket.CONNECTING
+			console.log('[Chat] WebSocket 正在连接，等待连接后发送中断');
+			// 等待连接打开后发送
+			store.ws.addEventListener('open', () => {
+				console.log('[Chat] WebSocket 已连接，发送中断消息');
+				store.ws.send(JSON.stringify({
+					type: 'chat_interrupt',
+					payload: {
+						reason: 'user_requested',
+					},
+				}));
+			}, { once: true });
+		} else {
+			console.warn('[Chat] WebSocket 未连接，无法发送中断消息');
 		}
-		
-		// 重置当前状态
-		store.currentStatus = null;
-		store.toolExecutions = [];
+	} else {
+		console.warn('[Chat] WebSocket 对象不存在');
 	}
+	
+	// 立即重置状态
+	sending.value = false;
+	store.currentStatus = null;
+	store.toolExecutions = [];
+	
+	console.log('[Chat] stopChat() 完成');
 };
 
 const send = async () => {
@@ -1083,6 +1252,7 @@ onMounted(async () => {
 	await store.loadConfig();
 	await store.loadAgents(); // 加载 Agent Profiles
 	await store.loadSessions(); // 确保会话加载完成后再继续
+	await loadModelLibrary(); // 加载模型库
 	// 不自动创建会话，发送消息时才创建
 });
 </script>
@@ -1167,7 +1337,13 @@ onMounted(async () => {
 	background-color: var(--bg-tertiary);
 	border: 1px solid var(--border-color);
 	border-radius: 8px;
-	cursor: default;
+	cursor: pointer;
+	position: relative;
+	transition: background-color 0.15s;
+}
+
+.current-model:hover {
+	background-color: var(--bg-hover);
 }
 
 .current-model .model-icon {
@@ -1182,6 +1358,12 @@ onMounted(async () => {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	font-family: ui-monospace, monospace;
+}
+
+.current-model .model-arrow {
+	font-size: 10px;
+	color: var(--text-muted);
+	margin-left: 2px;
 }
 
 .agent-dropdown {
@@ -1229,6 +1411,71 @@ onMounted(async () => {
 .agent-dropdown-check {
 	font-size: 12px;
 	color: var(--accent);
+}
+
+/* 模型下拉框样式 */
+.model-dropdown {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	z-index: 50;
+	min-width: 220px;
+	margin-top: 4px;
+	padding: 6px;
+	background-color: var(--bg-secondary);
+	border: 1px solid var(--border-color);
+	border-radius: 10px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.model-dropdown-header {
+	padding: 8px 10px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-muted);
+	border-bottom: 1px solid var(--border-color);
+	margin-bottom: 4px;
+}
+
+.model-dropdown-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background 0.15s;
+}
+
+.model-dropdown-item:hover {
+	background-color: var(--bg-hover);
+}
+
+.model-dropdown-item.active {
+	background-color: var(--accent-subtle);
+}
+
+.model-dropdown-name {
+	flex: 1;
+	font-size: 13px;
+	color: var(--text-primary);
+}
+
+.model-dropdown-provider {
+	font-size: 11px;
+	color: var(--text-muted);
+}
+
+.model-dropdown-check {
+	font-size: 12px;
+	color: var(--accent);
+}
+
+.model-dropdown-empty {
+	padding: 12px;
+	text-align: center;
+	font-size: 12px;
+	color: var(--text-muted);
 }
 
 .current-model-badge {

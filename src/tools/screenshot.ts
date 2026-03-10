@@ -243,12 +243,13 @@ export class ScreenshotTool extends BaseTool {
 		coordinateHelp: string;
 		// OCR-SoM 相关
 		ocrEnabled?: boolean;
-		markedImage?: string;
+		// 【优化】移除 markedImage，减少数据传输量
+		// markedImage?: string;
 		elements?: Array<{
 			id: number;
 			text: string;
 			center: [number, number];
-			mouseCenter: [number, number]; // 鼠标坐标系的中心点
+			// 【优化】移除 mouseCenter 和 box，AI 只需要 center 坐标
 		}>;
 		elementsHelp?: string;
 		ocrError?: string;  // OCR 错误信息
@@ -306,12 +307,12 @@ export class ScreenshotTool extends BaseTool {
 			scale: number;
 			coordinateHelp: string;
 			ocrEnabled?: boolean;
-			markedImage?: string;
+			// 【优化】移除 markedImage，减少数据传输量
 			elements?: Array<{
 				id: number;
 				text: string;
 				center: [number, number];
-				mouseCenter: [number, number];
+				// 【优化】移除 mouseCenter，AI 只需要 center 坐标
 			}>;
 			elementsHelp?: string;
 		} = {
@@ -332,7 +333,10 @@ export class ScreenshotTool extends BaseTool {
 		
 		if (ocrEnabled) {
 			this.logger.info('调用 OCR-SoM 识别屏幕元素...');
-			const somResult = await ocrSomService.analyze(base64, { returnImage: true });
+			
+			// 【优化】默认不返回标注图，大幅减少数据量（标注图约 200KB-500KB base64）
+			// AI 只需要元素列表即可定位和点击，无需可视化标注图
+			const somResult = await ocrSomService.analyze(base64, { returnImage: false });
 			
 			// 检查是否有致命错误
 			if (!somResult.success && somResult.fatal) {
@@ -348,24 +352,34 @@ export class ScreenshotTool extends BaseTool {
 			
 			if (somResult.success && somResult.elements.length > 0) {
 				result.ocrEnabled = true;
-				result.markedImage = somResult.marked_image;
+				// 【优化】不再返回 markedImage，减少数据传输量
+				// result.markedImage = somResult.marked_image;
 				
 				// 格式化元素列表
-				// center 是图片坐标，computer 工具会自动转换为鼠标坐标
-				result.elements = somResult.elements.map(el => {
-					const [x1, y1, x2, y2] = el.box;
-					const centerX = Math.round((x1 + x2) / 2);
-					const centerY = Math.round((y1 + y2) / 2);
-					return {
-						id: el.id,
-						type: el.type,
-						text: el.text || '(无文字)',
-						center: [centerX, centerY] as [number, number],
-						box: el.box,
-					};
-				});
+				// 【优化】精简元素数据：截断长文本、移除 box 字段（AI 只需要 center）
+				// 【优化】过滤太小的元素（宽高都小于 5px 的通常是噪点）
+				result.elements = somResult.elements
+					.filter(el => {
+						const [x1, y1, x2, y2] = el.box;
+						const width = x2 - x1;
+						const height = y2 - y1;
+						// 保留至少一个维度大于 5px 的元素
+						return width >= 5 || height >= 5;
+					})
+					.map(el => {
+						const [x1, y1, x2, y2] = el.box;
+						const centerX = Math.round((x1 + x2) / 2);
+						const centerY = Math.round((y1 + y2) / 2);
+						return {
+							id: el.id,
+							// 【优化】截断长文本，避免元素列表过大（保留前 50 个字符）
+							text: (el.text || '(无文字)').slice(0, 50),
+							center: [centerX, centerY] as [number, number],
+							// 【优化】移除 box 字段，AI 点击只需要 center 坐标
+						};
+					});
 
-				this.logger.info(`OCR-SoM 识别到 ${result.elements.length} 个元素`);
+				this.logger.info(`OCR-SoM 识别到 ${result.elements.length} 个元素（已过滤小元素）`);
 			} else if (!somResult.success) {
 				// 非致命错误，只记录警告
 				this.logger.warn('OCR-SoM 调用失败:', somResult.error);

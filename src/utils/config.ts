@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { deepMerge } from './helpers.js';
-import type { AppConfig, ProviderConfig } from '../types/index.js';
+import type { AppConfig, ProviderConfig, ModelConfig } from '../types/index.js';
 
 // 加载.env文件
 import { config as dotenvConfig } from 'dotenv';
@@ -53,7 +53,17 @@ class ConfigManager {
 		}
 
 		// 合并配置：默认 + 用户
-		this.config = deepMerge(this.defaultConfig, userConfig) as AppConfig;
+		this.config = deepMerge(this.defaultConfig as unknown as Record<string, unknown>, userConfig as unknown as Record<string, unknown>) as unknown as AppConfig;
+
+		// 处理用户删除的 provider（用户配置中显式设置为 null 的 key）
+		if (userConfig.providers && this.config.providers) {
+			for (const [key, value] of Object.entries(userConfig.providers)) {
+				if (value === null && this.config.providers[key]) {
+					delete this.config.providers[key];
+					console.log(`[Config] 已删除 provider: ${key}`);
+				}
+			}
+		}
 
 		// 处理环境变量替换
 		this.replaceEnvironmentVariables();
@@ -235,13 +245,21 @@ class ConfigManager {
 	): Record<string, unknown> {
 		const result: Record<string, unknown> = {};
 
-		// 遍历当前配置的所有 key
-		for (const key of Object.keys(currentObj)) {
+		// 获取所有 key（包括默认配置和当前配置）
+		const allKeys = new Set([...Object.keys(defaultObj), ...Object.keys(currentObj)]);
+
+		for (const key of allKeys) {
 			const defaultVal = defaultObj[key];
 			const currentVal = currentObj[key];
 
 			// 跳过 $schema
 			if (key === '$schema') continue;
+
+			// 如果当前配置中没有这个 key（被删除了），需要标记为删除
+			if (!(key in currentObj)) {
+				result[key] = null; // 使用 null 标记删除
+				continue;
+			}
 
 			// 如果默认配置中没有这个 key，直接保存
 			if (defaultVal === undefined) {
@@ -249,8 +267,14 @@ class ConfigManager {
 				continue;
 			}
 
-			// 如果当前值是 null 或 undefined，跳过
-			if (currentVal === null || currentVal === undefined) {
+			// 如果当前值是 null，表示删除
+			if (currentVal === null) {
+				result[key] = null;
+				continue;
+			}
+
+			// 如果当前值是 undefined，跳过
+			if (currentVal === undefined) {
 				continue;
 			}
 
@@ -326,7 +350,7 @@ class ConfigManager {
 	 */
 	reset(): void {
 		if (this.defaultConfig) {
-			this.config = deepMerge({} as AppConfig, this.defaultConfig);
+			this.config = deepMerge({} as unknown as Record<string, unknown>, this.defaultConfig as unknown as Record<string, unknown>) as unknown as AppConfig;
 		}
 	}
 
@@ -402,6 +426,106 @@ class ConfigManager {
 	 */
 	getProviders(): Record<string, ProviderConfig> {
 		return this.config?.providers || {};
+	}
+
+	// ==================== 模型库管理 ====================
+
+	/**
+	 * 获取模型库
+	 */
+	getModelLibrary(): { models: ModelConfig[]; defaultModelId?: string } {
+		return {
+			models: this.config?.modelLibrary?.models || [],
+			defaultModelId: this.config?.modelLibrary?.defaultModelId,
+		};
+	}
+
+	/**
+	 * 添加模型到模型库
+	 */
+	addModel(model: ModelConfig): void {
+		if (!this.config) return;
+		if (!this.config.modelLibrary) {
+			this.config.modelLibrary = { models: [] };
+		}
+		// 检查是否已存在
+		const exists = this.config.modelLibrary.models.some(m => m.id === model.id);
+		if (exists) {
+			throw new Error(`Model ${model.id} already exists`);
+		}
+		this.config.modelLibrary.models.push(model);
+		this.save();
+		console.log(`[Config] Model "${model.id}" 已添加到模型库`);
+	}
+
+	/**
+	 * 更新模型
+	 */
+	updateModel(modelId: string, updates: Partial<ModelConfig>): void {
+		if (!this.config?.modelLibrary?.models) return;
+		const index = this.config.modelLibrary.models.findIndex(m => m.id === modelId);
+		if (index === -1) {
+			throw new Error(`Model ${modelId} not found`);
+		}
+		this.config.modelLibrary.models[index] = {
+			...this.config.modelLibrary.models[index],
+			...updates,
+		};
+		this.save();
+		console.log(`[Config] Model "${modelId}" 已更新`);
+	}
+
+	/**
+	 * 删除模型
+	 */
+	removeModel(modelId: string): void {
+		if (!this.config?.modelLibrary?.models) return;
+		const index = this.config.modelLibrary.models.findIndex(m => m.id === modelId);
+		if (index === -1) {
+			throw new Error(`Model ${modelId} not found`);
+		}
+		this.config.modelLibrary.models.splice(index, 1);
+		// 如果删除的是默认模型，清除默认设置
+		if (this.config.modelLibrary.defaultModelId === modelId) {
+			this.config.modelLibrary.defaultModelId = undefined;
+		}
+		this.save();
+		console.log(`[Config] Model "${modelId}" 已从模型库删除`);
+	}
+
+	/**
+	 * 设置默认模型
+	 */
+	setDefaultModel(modelId: string | undefined): void {
+		if (!this.config) return;
+		if (!this.config.modelLibrary) {
+			this.config.modelLibrary = { models: [] };
+		}
+		// 验证模型是否存在
+		if (modelId && !this.config.modelLibrary.models.some(m => m.id === modelId)) {
+			throw new Error(`Model ${modelId} not found`);
+		}
+		this.config.modelLibrary.defaultModelId = modelId;
+		this.save();
+		console.log(`[Config] 默认模型已设置为: ${modelId || 'none'}`);
+	}
+
+	/**
+	 * 批量添加模型
+	 */
+	addModels(models: ModelConfig[]): void {
+		if (!this.config) return;
+		if (!this.config.modelLibrary) {
+			this.config.modelLibrary = { models: [] };
+		}
+		for (const model of models) {
+			const exists = this.config.modelLibrary.models.some(m => m.id === model.id);
+			if (!exists) {
+				this.config.modelLibrary.models.push(model);
+			}
+		}
+		this.save();
+		console.log(`[Config] ${models.length} 个模型已添加到模型库`);
 	}
 }
 

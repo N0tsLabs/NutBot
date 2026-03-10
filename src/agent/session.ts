@@ -18,6 +18,7 @@ interface SessionOptions {
 	id?: string;
 	title?: string;
 	context?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
 }
 
 interface StoredSession {
@@ -173,6 +174,7 @@ export class SessionManager {
 		if (message.toolCalls !== undefined) msg.toolCalls = message.toolCalls;
 		// 保存 tool_call_id 到 metadata
 		if (message.toolCallId && message.role === 'tool') {
+			msg.metadata = msg.metadata || {};
 			msg.metadata.toolCallId = message.toolCallId;
 		}
 
@@ -181,14 +183,90 @@ export class SessionManager {
 
 		// 更新标题（第一条用户消息）
 		if (session.messages.length === 1 && message.role === 'user') {
-			const content = typeof message.content === 'string' 
-				? message.content 
+			const content = typeof message.content === 'string'
+				? message.content
 				: message.content.map(c => typeof c === 'string' ? c : c.text || '').join('');
 			session.title = content.substring(0, 50) + (content.length > 50 ? '...' : '');
 		}
 
 		this.saveSession(session);
 		return msg;
+	}
+
+	/**
+	 * 更新最后一条 assistant 消息的内容（用于添加 AI 总结）
+	 */
+	updateLastAssistantContent(sessionId: string, content: string): void {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+
+		// 从后往前找最后一条 assistant 消息
+		for (let i = session.messages.length - 1; i >= 0; i--) {
+			if (session.messages[i].role === 'assistant') {
+				session.messages[i].content = content;
+				session.updatedAt = new Date().toISOString();
+				this.saveSession(session);
+				this.logger.debug(`更新 assistant 消息内容成功`);
+				return;
+			}
+		}
+		this.logger.warn(`未找到 assistant 消息`);
+	}
+
+	/**
+	 * 添加 toolCall 到 assistant 消息
+	 */
+	addToolCall(
+		sessionId: string,
+		toolCall: { id: string; name: string; arguments: unknown; status: string }
+	): void {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+
+		// 从后往前找最近的 assistant 消息
+		for (let i = session.messages.length - 1; i >= 0; i--) {
+			const msg = session.messages[i];
+			if (msg.role === 'assistant') {
+				if (!msg.toolCalls) msg.toolCalls = [];
+				msg.toolCalls.push(toolCall);
+				this.saveSession(session);
+				this.logger.debug(`添加 toolCall ${toolCall.id} 成功`);
+				return;
+			}
+		}
+		this.logger.warn(`未找到 assistant 消息来添加 toolCall`);
+	}
+
+	/**
+	 * 更新 assistant 消息中的 toolCall，添加执行结果
+	 * 用于在 tool 执行完成后，将结果同步到 assistant 消息中
+	 */
+	updateToolCallResult(
+		sessionId: string,
+		toolCallId: string,
+		result: { success?: boolean; error?: string; [key: string]: unknown }
+	): void {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+
+		// 从后往前找最近的带 toolCalls 的 assistant 消息
+		for (let i = session.messages.length - 1; i >= 0; i--) {
+			const msg = session.messages[i];
+			if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+				// 找到对应的 toolCall
+				for (const tc of msg.toolCalls as any[]) {
+					if (tc.id === toolCallId) {
+						// 添加 status 和 result
+						(tc as any).status = result.success === false ? 'error' : 'success';
+						(tc as any).result = result;
+						this.saveSession(session);
+						this.logger.debug(`更新 toolCall ${toolCallId} 结果成功`);
+						return;
+					}
+				}
+			}
+		}
+		this.logger.warn(`未找到对应的 assistant 消息: ${toolCallId}`);
 	}
 
 	/**
@@ -299,7 +377,15 @@ export class SessionManager {
 				const aiMsg: ChatMessage = { role: 'assistant', content: msg.content as string || '' };
 				// 总是添加 tool_calls（即使为空数组也需要保留给 OpenAI 验证）
 				if (msg.toolCalls !== undefined) {
-					aiMsg.tool_calls = msg.toolCalls;
+					// 转换为 OpenAI 格式（扁平格式 -> function 嵌套）
+					aiMsg.tool_calls = (msg.toolCalls as any[]).map(tc => ({
+						id: tc.id,
+						type: 'function',
+						function: {
+							name: tc.name,
+							arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments),
+						},
+					}));
 				}
 				formattedMessages.push(aiMsg);
 			} else if (msgRole === 'tool') {
@@ -381,7 +467,8 @@ export class SessionManager {
 
 	/**
 	 * 获取会话消息历史
-	 * 只返回 user 和 assistant 消息，不返回 tool 消息（tool 信息已包含在 assistant 的 toolCalls 中）
+	 * 返回 user 和 assistant 消息（tool 结果已嵌入到 assistant 的 toolCalls 中）
+	 * 直接返回存储的扁平格式，与前端渲染一致
 	 */
 	getHistory(id: string): Array<{
 		id: string;
@@ -389,21 +476,25 @@ export class SessionManager {
 		content: string;
 		timestamp: string;
 		toolCalls?: unknown[];
+		toolCallId?: string;
+		metadata?: Record<string, unknown>;
 	}> {
 		const session = this.sessions.get(id);
 		if (!session) {
 			throw new Error(`Session not found: ${id}`);
 		}
 
-		// 只返回 user 和 assistant 消息，隐藏 tool 消息
+		// 返回 user 和 assistant 消息（tool 消息已通过 updateToolCallResult 更新到 assistant 中）
 		return session.messages
 			.filter(msg => msg.role === 'user' || msg.role === 'assistant')
 			.map(msg => ({
-				id: msg.id,
+				id: msg.id || '',
 				role: msg.role,
 				content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
 				timestamp: msg.timestamp,
-				toolCalls: msg.toolCalls,
+				toolCalls: msg.toolCalls, // 直接返回，格式与前端一致
+				toolCallId: msg.metadata?.toolCallId as string | undefined,
+				metadata: msg.metadata,
 			}));
 	}
 

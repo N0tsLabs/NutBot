@@ -64,15 +64,11 @@
 		},
 		"browser": {
 			"enabled": true,
+			"browserPath": null,
 			"headless": false,
 			"timeout": 60000,
-			"userDataDir": null,
-			"browserPath": null,
-			"debugPort": 9223,
-			"useIsolatedProfile": false,
-			"isolatedProfileDir": null,
-			"autoStart": true,
-			"smartDetection": true
+			"identity": "NutBot",
+			"disableImages": false
 		},
 		"desktop": {
 			"enabled": true,
@@ -83,10 +79,6 @@
 			"enabled": true,
 			"quality": 80,
 			"format": "png"
-		},
-		"web": {
-			"enabled": true,
-			"timeout": 10000
 		}
 	},
 	"mcp": {

@@ -77,7 +77,7 @@ async function startInteractiveChat(options: { port: number; host: string; verbo
 	// 操作翻译
 	const actionMap: Record<string, string> = {
 		goto: '打开',
-		snapshot: '获取页面',
+		state: '获取页面',
 		click: '点击',
 		type: '输入',
 		fill: '填写',
@@ -495,7 +495,7 @@ program.parse();
 // 导出
 export { gateway, Gateway } from './gateway/index.js';
 export { ProviderManager, BaseProvider, OpenAIProvider, AnthropicProvider } from './providers/index.js';
-export { ToolRegistry, BaseTool } from './tools/index.js';
+export { ToolRegistry, BaseTool, BrowserTool } from './tools/index.js';
 export { default as Agent, default as SessionManager } from './agent/index.js';
 export { CronManager } from './cron/index.js';
 export { configManager } from './utils/config.js';

@@ -160,7 +160,7 @@ export class AgentProfileManager {
 			name: data.name || '新建 Agent',
 			description: data.description,
 			icon: data.icon || '🤖',
-			model: data.model,
+			// model 已从 Agent 移除，使用全局模型库配置
 			temperature: data.temperature,
 			maxTokens: data.maxTokens,
 			systemPrompt: data.systemPrompt,
@@ -301,7 +301,6 @@ export class AgentProfileManager {
 	 * 获取 Agent 配置用于运行
 	 */
 	getRunConfig(id?: string): {
-		model?: string;
 		systemPrompt?: string;
 		maxIterations: number;
 		timeout: number;
@@ -318,7 +317,7 @@ export class AgentProfileManager {
 		}
 
 		return {
-			model: agent.model,
+			// model 已从 Agent 移除，使用全局模型库配置
 			systemPrompt: agent.systemPrompt,
 			maxIterations: agent.maxIterations,
 			timeout: agent.timeout,

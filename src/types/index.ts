@@ -10,11 +10,11 @@ export interface ProviderConfig {
 	type: 'openai' | 'anthropic';
 	baseUrl?: string;
 	apiKey?: string;
-	models?: string[];
-	defaultModel?: string;
 	enabled?: boolean;
 	timeout?: number;
 	headers?: Record<string, string>;
+	models?: string[];
+	supportsVision?: boolean;
 }
 
 export interface ProviderInfo {
@@ -22,12 +22,29 @@ export interface ProviderInfo {
 	name: string;
 	type: string;
 	baseUrl?: string;
-	models: string[];
-	defaultModel: string | null;
 	enabled: boolean;
-	supportsVision: boolean;
-	visionModels?: string[];
-	isDefault?: boolean;
+}
+
+// ==================== 模型库相关 ====================
+
+export interface ModelConfig {
+	id: string;                    // 模型唯一标识
+	name: string;                  // 模型名称
+	enabled: boolean;              // 是否启用
+	isDefault?: boolean;           // 是否为默认模型
+	
+	// 关联供应商
+	providerId: string;            // 供应商 ID
+	
+	supportsVision?: boolean;      // 是否支持图像
+	supportsFunctionCall?: boolean; // 是否支持函数调用
+	supportsThinking?: boolean;    // 是否支持思考
+	description?: string;          // 模型描述
+}
+
+export interface ModelLibrary {
+	models: ModelConfig[];
+	defaultModelId?: string;
 }
 
 // ==================== Chat 相关 ====================
@@ -143,6 +160,10 @@ export interface AppConfig {
 		custom?: Record<string, unknown>;
 	};
 	providers: Record<string, ProviderConfig>;
+	modelLibrary?: {
+		models: ModelConfig[];
+		defaultModelId?: string;
+	};
 	data: {
 		directory: string;
 		sessions: string;
@@ -197,7 +218,8 @@ export interface AgentChunk {
 		| 'max_iterations'
 		| 'terminated'
 		| 'error'
-		| 'status';
+		| 'status'
+		| 'debug_confirm';
 	status?: string;
 	iteration?: number;
 	content?: string;
@@ -206,6 +228,9 @@ export interface AgentChunk {
 	args?: Record<string, unknown>;
 	result?: unknown;
 	error?: string;
+	thinking?: string;
+	description?: string;
+	confirmId?: string;
 }
 
 export interface AgentOptions {
@@ -223,7 +248,7 @@ export interface AgentProfile {
 	name: string;
 	description?: string;
 	icon?: string;
-	model?: string;
+	// model 字段已移除，改为使用全局模型库配置
 	temperature?: number;
 	maxTokens?: number;
 	systemPrompt?: string;

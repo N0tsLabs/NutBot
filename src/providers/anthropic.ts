@@ -26,7 +26,7 @@ export class AnthropicProvider extends BaseProvider {
 	/**
 	 * Claude 支持 Vision（Claude 3+）
 	 */
-	supportsVision(): boolean {
+	supportsVisionCapability(): boolean {
 		return true; // Claude 3/4 都支持 Vision
 	}
 
@@ -81,7 +81,7 @@ export class AnthropicProvider extends BaseProvider {
 		};
 
 		// 添加系统提示
-		const systemMessage = messages.find((m: any) => m.role === 'system');
+		const systemMessage = messages.find((m: any) => m.role === 'system') as { role: string; content: string } | undefined;
 		if (systemMessage && typeof systemMessage.content === 'string') {
 			body.system = systemMessage.content;
 		}
@@ -255,13 +255,57 @@ export class AnthropicProvider extends BaseProvider {
 	/**
 	 * 流式聊天（非流式包装）
 	 */
-	*stream(
+	stream(
 		modelRef: string | undefined,
 		messages: unknown[],
 		options?: ChatOptions
 	): AsyncGenerator<ChatChunk> {
 		// Anthropic 原生就是流式的，直接使用 chat
-		yield* this.chat(modelRef, messages, options);
+		return this.chat(modelRef, messages, options);
+	}
+
+	/**
+	 * 获取可用模型列表
+	 */
+	async listModels(forceRefresh?: boolean): Promise<string[]> {
+		// 如果配置中有模型列表且不需要强制刷新，直接返回
+		if (!forceRefresh && this.models.length > 0) {
+			return this.models;
+		}
+
+		const opts = this.getOptions();
+		const apiKey = opts.apiKey || this.config.get<string>('anthropic.apiKey');
+
+		if (!apiKey) {
+			throw new Error('Anthropic API key 未配置');
+		}
+
+		try {
+			const response = await fetch('https://api.anthropic.com/v1/models', {
+				method: 'GET',
+				headers: {
+					'x-api-key': apiKey,
+					'anthropic-version': '2023-06-01',
+				},
+			});
+
+			if (!response.ok) {
+				const errorText = await response.text().catch(() => '无响应内容');
+				throw new Error(`获取模型列表失败: ${response.status} - ${errorText}`);
+			}
+
+			const data = await response.json() as { data?: Array<{ id: string }> };
+			const models = (data.data || [])
+				.map(m => m.id)
+				.filter(id => id && id.includes('claude'))
+				.sort();
+
+			return models;
+		} catch (error) {
+			this.logger.error('获取模型列表失败:', error);
+			// 如果 API 调用失败，返回配置中的模型列表
+			return this.models;
+		}
 	}
 }
 

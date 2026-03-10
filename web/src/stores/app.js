@@ -35,7 +35,6 @@ export const useAppStore = defineStore('app', () => {
 	// ========== 连接状态管理 ==========
 	const connectionStatus = ref({
 		som: { connected: false, latency: null },
-		browser: { connected: false, targets: 0 },
 		lastUpdate: null,
 	});
 	const heartbeatTimer = ref(null);
@@ -62,33 +61,31 @@ export const useAppStore = defineStore('app', () => {
 		try {
 			const startTime = Date.now();
 
-			// 并行检查浏览器扩展状态和 SoM 服务状态
-			let browserStatus = { connected: false, targets: 0 };
+			// 只检查 SoM 服务状态，不再检查浏览器扩展状态
 			let somConnected = false;
 
 			try {
-				const [statusRes, ocrRes] = await Promise.all([
-					fetch('/api/status', { signal: AbortSignal.timeout(2000) }),
-					fetch('/api/ocr/status', { signal: AbortSignal.timeout(2000) }).catch(() => null),
-				]);
-
-				if (statusRes && statusRes.ok) {
-					const data = await statusRes.json();
-					const cdpData = data.cdpRelay || data;
-					browserStatus = {
-						connected: cdpData?.extension?.connected || cdpData?.connected || false,
-						targets: cdpData?.extension?.targets || cdpData?.targets || 0,
-					};
-				}
+				// 使用 AbortSignal.timeout 设置 2 秒超时
+				const ocrRes = await fetch('/api/ocr/status', { 
+					signal: AbortSignal.timeout(2000) 
+				}).catch((err) => {
+					// 优雅处理网络错误或超时
+					console.warn('[checkConnectionStatus] OCR 状态检查失败:', err?.message || err);
+					return null;
+				});
 
 				// 检查 SoM 服务实际状态
 				if (ocrRes && ocrRes.ok) {
-					const somData = await ocrRes.json();
-					somConnected = somData.connected || somData.available || false;
+					try {
+						const somData = await ocrRes.json();
+						somConnected = somData.connected || somData.available || false;
+					} catch (parseErr) {
+						console.warn('[checkConnectionStatus] 解析 OCR 状态响应失败:', parseErr);
+					}
 				}
 			} catch (e) {
-				// 获取失败，浏览器扩展和 SoM 可能未运行
-				browserStatus = { connected: false, targets: 0 };
+				// 获取失败，SoM 服务可能未运行
+				console.warn('[checkConnectionStatus] 检查过程出错:', e);
 				somConnected = false;
 			}
 
@@ -99,7 +96,6 @@ export const useAppStore = defineStore('app', () => {
 					connected: somConnected && connected.value,  // SoM 服务 + WebSocket 连接
 					latency: (somConnected && connected.value) ? latency : null,
 				},
-				browser: browserStatus,
 				lastUpdate: new Date().toISOString(),
 			};
 		} catch (error) {
@@ -150,13 +146,22 @@ export const useAppStore = defineStore('app', () => {
 				return br.message || '操作完成';
 			}
 
-			// web 工具
-			if (toolName === 'web') {
-				const wr = typeof result === 'string' ? JSON.parse(result) : result;
-				if (wr.success) {
-					return `已获取网页内容 (${wr.charCount || 0} 字符)`;
+			// screenshot 工具
+			if (toolName === 'screenshot') {
+				const sr = typeof result === 'string' ? JSON.parse(result) : result;
+				if (sr.success) {
+					return `截图成功: ${sr.filename || '已保存'}`;
 				}
-				return `网页获取失败`;
+				return `截图失败: ${sr.error || '未知错误'}`;
+			}
+
+			// computer 工具
+			if (toolName === 'computer') {
+				const cr = typeof result === 'string' ? JSON.parse(result) : result;
+				if (cr.success) {
+					return cr.message || '操作完成';
+				}
+				return `操作失败: ${cr.error || '未知错误'}`;
 			}
 
 			// exec 工具
@@ -351,7 +356,7 @@ export const useAppStore = defineStore('app', () => {
 					if (chunk.content) {
 						lastMessage.content = chunk.content;
 					}
-					lastMessage.error = chunk.reason === 'extension_not_connected' ? '浏览器扩展未连接，任务已终止' : '任务已终止';
+					lastMessage.error = '任务已终止';
 				}
 				// 清理工具执行状态
 				toolExecutions.value = [];

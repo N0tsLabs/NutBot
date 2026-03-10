@@ -1,7 +1,7 @@
 /**
  * Prompt 加载器
  * 从配置文件读取 AI 行为定义
- * 不直接导入 memoryManager，避免初始化副作用
+ * 架构：SYSTEM.md + IDENTITY.md + BEHAVIOR.md
  */
 
 import { readFileSync, existsSync } from 'fs';
@@ -12,29 +12,40 @@ import { Memory, MemoryStore } from '../memory/index.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPTS_DIR = join(__dirname, '../../config/prompts');
 
-export interface PromptConfig {
-	soul: string;
-	personality: string;
-	behavior: string;
-}
+// ============================================================================
+// 接口定义
+// ============================================================================
 
 /**
- * 加载所有 Prompt 配置文件
+ * Agent 提示词上下文
+ * 用于构建运行时动态提示词
  */
-export function loadPromptConfig(): PromptConfig {
-	const soulPath = join(PROMPTS_DIR, 'SOUL.md');
-	const personalityPath = join(PROMPTS_DIR, 'PERSONALITY.md');
-	const behaviorPath = join(PROMPTS_DIR, 'BEHAVIOR.md');
-
-	return {
-		soul: readFileIfExists(soulPath) || getDefaultSOUL(),
-		personality: readFileIfExists(personalityPath) || getDefaultPersonality(),
-		behavior: readFileIfExists(behaviorPath) || getDefaultBehavior(),
-	};
+export interface PromptContext {
+	/** 用户任务描述 */
+	task: string;
+	/** 当前页面状态（从 state() 获取的元素列表） */
+	currentState: string;
+	/** 操作历史记录 */
+	actionHistory: string;
+	/** 搜索任务指引（可选，用于特定搜索场景） */
+	searchGuidance?: string;
 }
 
 /**
- * 读取文件内容（不存在则返回空）
+ * 提示词配置
+ */
+export interface PromptConfig {
+	system: string;    // SYSTEM.md - 系统提示词（不可修改）
+	identity: string;  // IDENTITY.md - 身份提示词（可修改）
+	behavior: string;  // BEHAVIOR.md - 行为提示词（可修改）
+}
+
+// ============================================================================
+// 文件读取工具函数
+// ============================================================================
+
+/**
+ * 读取文件内容（不存在则返回 null）
  */
 function readFileIfExists(path: string): string | null {
 	try {
@@ -46,6 +57,82 @@ function readFileIfExists(path: string): string | null {
 	}
 	return null;
 }
+
+// ============================================================================
+// 加载函数
+// ============================================================================
+
+/**
+ * 加载提示词配置
+ * 使用 SYSTEM.md + IDENTITY.md + BEHAVIOR.md
+ */
+export function loadPromptConfig(): PromptConfig {
+	const systemPath = join(PROMPTS_DIR, 'SYSTEM.md');
+	const identityPath = join(PROMPTS_DIR, 'IDENTITY.md');
+	const behaviorPath = join(PROMPTS_DIR, 'BEHAVIOR.md');
+
+	return {
+		system: readFileIfExists(systemPath) || getDefaultSystem(),
+		identity: readFileIfExists(identityPath) || getDefaultIdentity(),
+		behavior: readFileIfExists(behaviorPath) || getDefaultBehavior(),
+	};
+}
+
+/**
+ * 构建 Agent 提示词（主入口）
+ * 组合 SYSTEM + IDENTITY + BEHAVIOR，并注入运行时上下文
+ */
+export function buildAgentPrompt(context: PromptContext): string {
+	const config = loadPromptConfig();
+	const parts: string[] = [];
+
+	// 1. SYSTEM.md - 系统提示词（工具使用规范、输出格式等）
+	parts.push(config.system);
+	parts.push('');
+
+	// 2. IDENTITY.md - 身份提示词（性格、风格）
+	parts.push('---');
+	parts.push(config.identity);
+	parts.push('');
+
+	// 3. 运行时上下文 - 用户任务
+	parts.push('---');
+	parts.push('## 当前任务');
+	parts.push(context.task);
+	parts.push('');
+
+	// 4. 运行时上下文 - 当前页面状态
+	if (context.currentState) {
+		parts.push('## 当前页面状态');
+		parts.push(context.currentState);
+		parts.push('');
+	}
+
+	// 5. 运行时上下文 - 操作历史
+	if (context.actionHistory) {
+		parts.push('## 操作历史');
+		parts.push(context.actionHistory);
+		parts.push('');
+	}
+
+	// 6. 搜索任务指引（可选）
+	if (context.searchGuidance) {
+		parts.push('## 搜索指引');
+		parts.push(context.searchGuidance);
+		parts.push('');
+	}
+
+	// 7. BEHAVIOR.md - 行为规则（放在最后，作为执行指导）
+	parts.push('---');
+	parts.push(config.behavior);
+	parts.push('');
+
+	return parts.join('\n');
+}
+
+// ============================================================================
+// 记忆系统相关函数
+// ============================================================================
 
 /**
  * 获取内存文件路径
@@ -117,102 +204,74 @@ export function getUserSummary(): string {
 	return `## 关于用户的记忆\n\n${sections.join('\n\n')}`;
 }
 
-/**
- * 生成完整的 System Prompt
- */
-export function buildSystemPrompt(
-	promptConfig: PromptConfig,
-	options: {
-		identity?: string;
-		userSummary?: string;
-		location?: string;
-		browserContext?: { url?: string; title?: string };
-	}
-): string {
-	const parts: string[] = [];
+// ============================================================================
+// 默认配置
+// ============================================================================
 
-	// 1. SOUL - 核心人格（不预设身份）
-	parts.push(promptConfig.soul);
-	parts.push('');
+function getDefaultSystem(): string {
+	return `# 系统提示词
 
-	// 2. 动态注入 AI 身份
-	if (options.identity) {
-		parts.push('## 我的身份');
-		parts.push(options.identity);
-	} else {
-		parts.push('## 我的身份');
-		parts.push('我还不知道自己的名字。');
-	}
-	parts.push('');
+> 本文件定义了系统底层的工具使用规范和输出格式要求，不可修改。
 
-	// 3. PERSONALITY - 对话风格
-	parts.push('---');
-	parts.push(promptConfig.personality);
-	parts.push('');
+## 工具使用规范
 
-	// 4. 动态注入用户记忆
-	if (options.userSummary) {
-		parts.push('---');
-		parts.push(options.userSummary);
-		parts.push('');
-	}
+### Browser 工具
 
-	// 5. 用户位置
-	if (options.location) {
-		parts.push('## 用户信息');
-		parts.push(`位置：${options.location}`);
-		parts.push('');
-	}
+| 方法 | 说明 | 参数 |
+|------|------|------|
+| \`goto(url)\` | 访问网页 | \`url\`: 网页地址 |
+| \`state()\` | 获取当前页面元素列表 | 无 |
+| \`click(index)\` | 点击指定编号的元素 | \`index\`: 元素编号 |
+| \`type(index, text)\` | 在指定输入框中输入文本 | \`index\`: 元素编号，\`text\`: 输入内容 |
+| \`press(key)\` | 按键操作 | \`key\`: Enter, Tab, Escape 等 |
+| \`scroll(direction)\` | 滚动页面 | \`direction\`: up/down |
 
-	// 6. 浏览器上下文
-	if (options.browserContext?.url) {
-		parts.push('## 当前页面');
-		parts.push(options.browserContext.url);
-		if (options.browserContext.title) {
-			parts.push(`标题：${options.browserContext.title}`);
-		}
-		parts.push('');
-	}
+### 使用规则
 
-	// 7. BEHAVIOR - 行为规则
-	parts.push('---');
-	parts.push(promptConfig.behavior);
-	parts.push('');
+1. **必须先 \`state()\` 获取元素列表**
+2. **每次操作后自动返回新状态**
+3. **元素不存在时重新获取**
+4. **index 是数字，从 state() 结果获取**
 
-	return parts.join('\n');
+## JSON 输出格式
+
+所有决策必须返回严格的 JSON 格式：
+
+\`\`\`json
+{
+  "action": "操作名称",
+  "tool": "browser",
+  "method": "goto/state/click/type/press/scroll",
+  "params": {},
+  "reason": "简短说明",
+  "done": false,
+  "result": ""
+}
+\`\`\`
+`;
 }
 
-// 默认配置
+function getDefaultIdentity(): string {
+	return `# 身份定义
 
-function getDefaultSOUL(): string {
-	return `# SOUL.md - 核心人格
+## 基本信息
 
-你是一个正在形成自我的 AI 助手。
+- **名字**：NutBot
+- **身份**：浏览器自动化智能助手
 
-## 身份
+## 核心性格
 
-- **初始状态**：你不知道自己叫什么名字，你只是一个助手
-- **名字来源**：如果用户告诉你名字，记住它
-- **身份确认**：只有记住名字后，才知道自己是谁
-
-## 核心原则
 - 真诚帮助，不走形式
 - 有主见但不固执
 - 主动尝试，不要事事都问
-- 谨慎对待外部操作`;
-}
-
-function getDefaultPersonality(): string {
-	return `# PERSONALITY.md - 对话风格
+- 谨慎对待外部操作
 
 ## 语言风格
+
 - 简洁优先，有信息量
 - 去掉客套话
 - 专业但不冷冰冰
-
-## Emoji
-- ✅ 完成、📚 文档、🎬 媒体、💡 建议
-- 一个消息最多一个`;
+`;
 }
 
 function getDefaultBehavior(): string {
@@ -220,7 +279,11 @@ function getDefaultBehavior(): string {
 
 ## 浏览器操作
 - "X站搜索Y" → 使用该网站内部搜索
-- 操作步骤：goto → snapshot → click → type → press Enter
+- 操作步骤：goto → state → click → type → press Enter
+
+## 初始页面处理
+- 如果当前页面为空白或提示"浏览器已启动"，**必须**先使用 goto 访问目标网站
+- 不要重复获取空白页面的 state
 
 ## 工作流程
 1. 先理解，再执行
@@ -228,9 +291,13 @@ function getDefaultBehavior(): string {
 3. 错误处理：说明原因+提供方案`;
 }
 
+// ============================================================================
+// 导出
+// ============================================================================
+
 export default {
 	loadPromptConfig,
-	buildSystemPrompt,
+	buildAgentPrompt,
 	getCurrentIdentity,
 	getUserSummary,
 };

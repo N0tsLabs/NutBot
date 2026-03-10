@@ -40,18 +40,12 @@
 						</div>
 					</section>
 
-					<!-- 模型配置 -->
+					<!-- 模型参数配置 -->
 					<section class="config-section">
-						<h4>模型配置</h4>
-						<div class="form-group">
-							<label>模型 <span v-if="enabledModels.length === 0" class="hint">(请先在 Provider 页面启用模型)</span></label>
-							<select v-model="form.model" class="input-sm">
-								<option v-if="enabledModels.length === 0" value="" disabled>暂无可用模型</option>
-								<option v-for="model in enabledModels" :key="model" :value="model">
-									{{ model }}{{ model === defaultModel ? ' (默认)' : '' }}
-								</option>
-							</select>
-						</div>
+						<h4>模型参数配置</h4>
+						<p class="form-hint" style="margin-bottom: 12px; color: var(--text-secondary);">
+							模型在 Provider 页面统一配置
+						</p>
 						<div class="form-row">
 							<div class="form-group">
 								<label>Temperature</label>
@@ -191,7 +185,7 @@ const form = reactive({
 	name: '',
 	description: '',
 	icon: '🤖',
-	model: '',
+	// model 已移除，使用全局模型库配置
 	temperature: null,
 	maxTokens: null,
 	systemPrompt: '',
@@ -205,16 +199,6 @@ const availableIcons = [
 	'📊', '🎨', '🌐', '📱', '🛠️', '⚡', '🧠', '🎮',
 	'📚', '✨', '🔒', '📈', '🎵', '🏠', '💼', '🎓',
 ];
-
-// 启用的模型列表
-const enabledModels = computed(() => {
-	return store.config?.agent?.enabledModels || [];
-});
-
-// 默认模型
-const defaultModel = computed(() => {
-	return store.config?.agent?.defaultModel || '';
-});
 
 // 工具列表（分组）
 const toolsGrouped = computed(() => store.toolsGrouped);
@@ -253,16 +237,13 @@ onMounted(async () => {
 			name: props.agent.name || '',
 			description: props.agent.description || '',
 			icon: props.agent.icon || '🤖',
-			model: props.agent.model || '',
+			// model 已从 Agent 移除，使用全局模型库配置
 			temperature: props.agent.temperature ?? null,
 			maxTokens: props.agent.maxTokens ?? null,
 			systemPrompt: props.agent.systemPrompt || '',
 			maxIterations: props.agent.maxIterations ?? 30,
 			timeout: props.agent.timeout ?? 300000,
 		});
-	} else {
-		// 新建模式：使用默认模型
-		form.model = defaultModel.value;
 	}
 
 	// 加载工具列表
@@ -330,7 +311,7 @@ const save = async () => {
 			name: form.name,
 			description: form.description || undefined,
 			icon: form.icon || '🤖',
-			model: form.model || undefined,
+			// model 已从 Agent 移除，使用全局模型库配置
 			temperature: form.temperature ?? undefined,
 			maxTokens: form.maxTokens ?? undefined,
 			systemPrompt: form.systemPrompt || undefined,

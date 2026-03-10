@@ -6,6 +6,7 @@ import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import type { Gateway } from '../../gateway/index.js';
 import { memoryManager, type Memory } from '../../memory/index.js';
 import { ocrSomService, type OcrSomOptions } from '../../services/ocr-som.js';
+import { browserService, type BrowserConfig } from '../../services/browser-service.js';
 
 /**
  * 创建路由插件
@@ -48,8 +49,8 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			async (
 				request: FastifyRequest<{
 					Body: {
-						id: string;
-						name?: string;
+						id?: string;
+						name: string;
 						baseUrl: string;
 						apiKey: string;
 						type?: string;
@@ -62,16 +63,19 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			) => {
 				const { id, name, baseUrl, apiKey, type, models, defaultModel, supportsVision } = request.body;
 
-				if (!id || !baseUrl || !apiKey) {
+				if (!name || !baseUrl || !apiKey) {
 					return reply.code(400).send({
 						error: true,
-						message: 'Missing required fields: id, baseUrl, apiKey',
+						message: 'Missing required fields: name, baseUrl, apiKey',
 					});
 				}
 
-				gateway.providerManager.addProvider(id, {
-					id,
-					name: name || id,
+				// 使用 name 作为 id
+				const providerId = id || name;
+
+				gateway.providerManager.addProvider(providerId, {
+					id: providerId,
+					name,
 					baseUrl,
 					apiKey,
 					type: (type as 'openai' | 'anthropic') || 'openai',
@@ -80,7 +84,7 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 					supportsVision: supportsVision ?? true, // 默认开启
 				});
 
-				return { success: true, id };
+				return { success: true, id: providerId };
 			}
 		);
 
@@ -121,21 +125,20 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			}
 
 			// 更新 Provider 属性
-			if (name !== undefined) provider.name = name;
+			if (name !== undefined) provider.setDisplayName(name);
 			if (baseUrl !== undefined) provider.baseUrl = baseUrl;
 			if (apiKey !== undefined) provider.apiKey = apiKey;
-			if (type !== undefined) provider.type = type as 'openai' | 'anthropic';
+			if (type !== undefined) provider.setProviderType(type);
 			if (defaultModel !== undefined) provider.defaultModel = defaultModel;
 			if (supportsVision !== undefined) provider.supportsVision = supportsVision;
 
 			// 保存到配置
 			gateway.config.updateProvider(id, {
 				id,
-				name: provider.name,
+				name: provider.getDisplayName(),
 				baseUrl: provider.baseUrl,
 				apiKey: provider.apiKey,
-				type: provider.type,
-				defaultModel: provider.defaultModel || undefined,
+				type: (provider.type === 'openai' || provider.type === 'anthropic') ? provider.type : 'openai',
 				models: provider.models,
 				supportsVision: provider.supportsVision,
 			});
@@ -241,26 +244,132 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			}
 		});
 
+		// ==================== 模型库管理 ====================
+
+		// 获取模型库
+		fastify.get('/models', async () => {
+			return gateway.config.getModelLibrary();
+		});
+
+		// 添加模型到模型库
+		fastify.post<{
+			Body: {
+				id: string;
+				name: string;
+				providerId: string;
+				supportsVision?: boolean;
+				supportsFunctionCall?: boolean;
+				supportsThinking?: boolean;
+				description?: string;
+			};
+		}>('/models', async (request, reply) => {
+			try {
+				const { id, name, providerId, supportsVision, supportsFunctionCall, supportsThinking, description } = request.body;
+
+				gateway.config.addModel({
+					id,
+					name,
+					providerId,
+					enabled: true,
+					supportsVision,
+					supportsFunctionCall,
+					supportsThinking,
+					description,
+				});
+				return { success: true };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
+		});
+
+		// 批量添加模型
+		fastify.post<{
+			Body: { models: Array<{ id: string; name: string; providerId: string; supportsVision?: boolean }> };
+		}>('/models/batch', async (request, reply) => {
+			try {
+				const { models } = request.body;
+				const modelsToAdd = models.map(m => ({
+					...m,
+					enabled: true,
+				}));
+				gateway.config.addModels(modelsToAdd);
+				return { success: true, count: models.length };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
+		});
+
+		// 更新模型
 		fastify.put<{
 			Params: { id: string };
-			Body: { models: string[] };
-		}>('/providers/:id/models', async (request, reply) => {
-			const { models } = request.body;
-			const provider = gateway.providerManager.getProvider(request.params.id);
-			if (!provider) {
-				return reply.code(404).send({ error: true, message: 'Provider not found' });
+			Body: Partial<{
+				name: string;
+				providerId: string;
+				enabled: boolean;
+				supportsVision: boolean;
+				supportsFunctionCall: boolean;
+				supportsThinking: boolean;
+				description: string;
+			}>;
+		}>('/models/:id', async (request, reply) => {
+			try {
+				gateway.config.updateModel(request.params.id, request.body);
+				return { success: true };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
 			}
+		});
 
-			provider.models = models || [];
-			gateway.config.updateProvider(request.params.id, {
-				id: request.params.id,
-				type: provider.type,
-				baseUrl: provider.baseUrl,
-				apiKey: provider.apiKey,
-				models: provider.models,
-			});
+		// 删除模型
+		fastify.delete<{ Params: { id: string } }>('/models/:id', async (request, reply) => {
+			try {
+				gateway.config.removeModel(request.params.id);
+				return { success: true };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
+		});
 
-			return { success: true, models: provider.models };
+		// 设置默认模型
+		fastify.post<{
+			Body: { modelId: string | null };
+		}>('/models/default', async (request, reply) => {
+			try {
+				gateway.config.setDefaultModel(request.body.modelId || undefined);
+				return { success: true };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
+		});
+
+		// 测试模型连接
+		fastify.get<{
+			Params: { id: string };
+		}>('/models/:id/test', async (request, reply) => {
+			try {
+				const model = gateway.config.getModelLibrary().models.find(m => m.id === request.params.id);
+				if (!model) {
+					return reply.code(404).send({ error: true, message: 'Model not found' });
+				}
+
+				// 通过 providerId 获取供应商
+				const provider = gateway.providerManager.getProvider(model.providerId);
+				if (!provider) {
+					return reply.code(404).send({ error: true, message: `Provider not found: ${model.providerId}` });
+				}
+
+				// 发送一个简单的测试消息
+				const messages = [{ role: 'user', content: 'Hi' }];
+				const chunks: string[] = [];
+				for await (const chunk of provider.chat(model.name, messages, { maxTokens: 10 })) {
+					if (chunk.content) {
+						chunks.push(chunk.content);
+					}
+				}
+				return { success: true, message: '连接成功', response: chunks.join('') };
+			} catch (error) {
+				return reply.code(400).send({ error: true, message: (error as Error).message });
+			}
 		});
 
 		// ==================== 聊天接口 ====================
@@ -464,13 +573,15 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			return { success: true };
 		});
 
-		// ==================== Agent 配置（旧版兼容） ====================
+		// ==================== Agent 配置 ====================
 
 		fastify.get('/agent', async () => {
-			// 返回当前选中的 Agent Profile 配置
+			// 返回当前选中的 Agent Profile 配置（模型配置已从 Agent 移除，使用全局模型库）
 			const current = gateway.agentProfiles.getCurrent();
+			const modelLibrary = gateway.config.getModelLibrary();
 			return {
-				defaultModel: current.model || gateway.config.get<string | null>('agent.defaultModel'),
+				// 默认模型从模型库获取
+				defaultModel: modelLibrary.defaultModelId,
 				systemPrompt: current.systemPrompt || gateway.config.get<string | null>('agent.systemPrompt'),
 				maxIterations: current.maxIterations || gateway.config.get<number>('agent.maxIterations', 30),
 				timeout: current.timeout || gateway.config.get<number>('agent.timeout', 300000),
@@ -482,7 +593,6 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 
 		fastify.put<{
 			Body: {
-				defaultModel?: string | null;
 				systemPrompt?: string | null;
 				maxIterations?: number;
 				timeout?: number;
@@ -492,8 +602,7 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			};
 		}>('/agent', async (request) => {
 			const body = request.body;
-			// 同时更新全局配置和当前 Agent Profile
-			if (body.defaultModel !== undefined) gateway.config.set('agent.defaultModel', body.defaultModel);
+			// 注意：defaultModel 已从 Agent 配置中移除，请在 Provider 页面设置默认模型
 			if (body.systemPrompt !== undefined) gateway.config.set('agent.systemPrompt', body.systemPrompt);
 			if (body.maxIterations !== undefined) gateway.config.set('agent.maxIterations', body.maxIterations);
 			if (body.timeout !== undefined) gateway.config.set('agent.timeout', body.timeout);
@@ -502,10 +611,9 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			if (body.maxTokens !== undefined) gateway.config.set('agent.maxTokens', body.maxTokens);
 			gateway.config.save();
 
-			// 更新当前 Agent Profile
+			// 更新当前 Agent Profile（不再包含 model）
 			const currentId = gateway.agentProfiles.getCurrentId();
 			await gateway.agentProfiles.update(currentId, {
-				model: body.defaultModel || undefined,
 				systemPrompt: body.systemPrompt || undefined,
 				maxIterations: body.maxIterations,
 				timeout: body.timeout,
@@ -862,6 +970,75 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			const result = await ocrSomService.ocr(image_base64);
 			return result;
 		});
+
+		// ==================== 浏览器管理 ====================
+
+		// 初始化浏览器服务
+		await browserService.init(gateway.config);
+
+		// 打开独立浏览器
+		fastify.post<{
+			Body: { url?: string };
+		}>('/browser/open', async (request, reply) => {
+			try {
+				const { url } = request.body || {};
+				const result = await browserService.open(url);
+				return result;
+			} catch (error) {
+				return reply.code(500).send({
+					success: false,
+					message: (error as Error).message,
+				});
+			}
+		});
+
+		// 关闭浏览器
+		fastify.post('/browser/close', async () => {
+			return await browserService.close();
+		});
+
+		// 获取浏览器状态
+		fastify.get('/browser/status', async () => {
+			return await browserService.getStatus();
+		});
+
+		// 导航到 URL
+		fastify.post<{
+			Body: { url: string };
+		}>('/browser/navigate', async (request, reply) => {
+			const { url } = request.body || {};
+			if (!url) {
+				return reply.code(400).send({
+					success: false,
+					message: 'Missing url parameter',
+				});
+			}
+			return await browserService.navigate(url);
+		});
+
+		// 检测系统浏览器
+		fastify.get('/browser/detect', async () => {
+			const browsers = await browserService.detectBrowsers();
+			return {
+				success: true,
+				browsers,
+				platform: process.platform,
+			};
+		});
+
+		// 获取浏览器配置
+		fastify.get('/browser/config', async () => {
+			return browserService.getConfig();
+		});
+
+		// 更新浏览器配置
+		fastify.put<{
+			Body: Partial<BrowserConfig>;
+		}>('/browser/config', async (request) => {
+			browserService.updateConfig(request.body);
+			return { success: true, config: browserService.getConfig() };
+		});
+
 	};
 }
 

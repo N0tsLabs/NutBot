@@ -25,7 +25,6 @@
 						<div class="agent-name">{{ currentAgent.name }}</div>
 						<div class="agent-desc">{{ currentAgent.description || '无描述' }}</div>
 						<div class="agent-meta">
-							<span v-if="currentAgent.model">{{ currentAgent.model }}</span>
 							<span>最大迭代 {{ currentAgent.maxIterations || 30 }}</span>
 							<span>超时 {{ Math.round((currentAgent.timeout || 300000) / 1000) }}s</span>
 						</div>

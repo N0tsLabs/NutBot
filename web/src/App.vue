@@ -56,21 +56,25 @@
 				</button>
 
 				<!-- 连接状态 -->
-				<div class="connection-status">
-					<span class="status-item">
-						浏览器：
-						<span :class="store.connectionStatus?.browser?.connected ? 'status-green' : 'status-red'">
-							{{ store.connectionStatus?.browser?.connected ? '已连接' : '未连接' }}
+					<div class="connection-status">
+						<span class="status-item">
+							SoM识别：
+							<span :class="store.connectionStatus?.som?.connected ? 'status-green' : 'status-red'">
+								{{ store.connectionStatus?.som?.connected ? '已连接' : '未连接' }}
+							</span>
 						</span>
-					</span>
-					<span class="separator">|</span>
-					<span class="status-item">
-						SoM识别：
-						<span :class="store.connectionStatus?.som?.connected ? 'status-green' : 'status-red'">
-							{{ store.connectionStatus?.som?.connected ? '已连接' : '未连接' }}
-						</span>
-					</span>
-				</div>
+					</div>
+	
+					<!-- 打开独立浏览器按钮 -->
+					<button
+						@click="openBrowser"
+						:disabled="browserLoading"
+						class="browser-btn"
+					>
+						<span v-if="browserLoading" class="loading-spinner"></span>
+						<span v-else>🌐</span>
+						<span>{{ browserLoading ? '打开中...' : '打开独立浏览器' }}</span>
+					</button>
 			</div>
 		</aside>
 
@@ -85,12 +89,43 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import { useAppStore } from './stores/app';
 import { getBaseUrl } from './utils/api';
+import { toast } from './utils/toast';
 import Toast from './components/Toast.vue';
 
 const store = useAppStore();
 const connected = ref(false);
 const sidebarOpen = ref(false);
 const theme = ref('dark');
+const browserLoading = ref(false);
+
+// 打开独立浏览器
+const openBrowser = async () => {
+	if (browserLoading.value) return;
+
+	browserLoading.value = true;
+	try {
+		const baseUrl = getBaseUrl();
+		const response = await fetch(`${baseUrl}/api/browser/open`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+			},
+		});
+
+		const data = await response.json();
+
+		if (response.ok && data.success) {
+			toast.success(data.message || '浏览器已打开');
+		} else {
+			toast.error(data.message || data.error || '打开浏览器失败');
+		}
+	} catch (error) {
+		console.error('打开浏览器失败:', error);
+		toast.error('打开浏览器失败，请检查服务是否正常');
+	} finally {
+		browserLoading.value = false;
+	}
+};
 
 // 导航项
 const navItems = [
@@ -320,6 +355,32 @@ onUnmounted(() => {
 .connection-status .status-red {
 	color: #f87171;
 	font-weight: 600;
+}
+
+/* 打开浏览器按钮 */
+.browser-btn {
+	@apply flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors;
+	color: var(--text-secondary);
+	background-color: transparent;
+	border: 1px solid var(--border-color);
+	cursor: pointer;
+}
+
+.browser-btn:hover:not(:disabled) {
+	background-color: var(--bg-hover);
+	color: var(--text-primary);
+	border-color: var(--accent);
+}
+
+.browser-btn:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+.browser-btn .loading-spinner {
+	@apply w-4 h-4 border-2 border-t-transparent rounded-full animate-spin;
+	border-color: var(--accent);
+	border-top-color: transparent;
 }
 
 /* 主内容 */

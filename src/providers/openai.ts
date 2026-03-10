@@ -4,11 +4,12 @@
  */
 
 import { BaseProvider, type ChatChunk, type ChatOptions } from './base.js';
+import type { ConfigManager } from '../utils/config.js';
 
 export class OpenAIProvider extends BaseProvider {
 	private fetch: typeof fetch;
 
-	constructor(config: Record<string, unknown>) {
+	constructor(config: ConfigManager) {
 		super(config);
 		this.fetch = fetch;
 	}
@@ -25,7 +26,7 @@ export class OpenAIProvider extends BaseProvider {
 	 * GPT-4o, GPT-4 Turbo 支持 Vision
 	 * GPT-3.5 不支持
 	 */
-	supportsVision(): boolean {
+	supportsVisionCapability(): boolean {
 		const options = this.getOptions();
 		const model = options.model?.toLowerCase() || '';
 		
@@ -85,6 +86,7 @@ export class OpenAIProvider extends BaseProvider {
 			max_tokens: maxTokens,
 			messages: apiMessages,
 			stream: true,
+			response_format: { type: 'json_object' }, // 强制 JSON 输出
 		};
 
 		// 系统提示
@@ -315,13 +317,62 @@ export class OpenAIProvider extends BaseProvider {
 	/**
 	 * 流式聊天
 	 */
-	*stream(
+	stream(
 		modelRef: string | undefined,
 		messages: unknown[],
 		options?: ChatOptions
 	): AsyncGenerator<ChatChunk> {
 		// OpenAI 原生流式，直接使用 chat
-		yield* this.chat(modelRef, messages, options);
+		return this.chat(modelRef, messages, options);
+	}
+
+	/**
+	 * 获取可用模型列表
+	 */
+	async listModels(forceRefresh?: boolean): Promise<string[]> {
+		// 如果配置中有模型列表且不需要强制刷新，直接返回
+		if (!forceRefresh && this.models.length > 0) {
+			return this.models;
+		}
+
+		const opts = this.getOptions();
+		const apiKey = opts.apiKey || this.config.get<string>('openai.apiKey');
+		let baseURL = opts.baseURL || 'https://api.openai.com/v1';
+
+		if (!apiKey) {
+			throw new Error('OpenAI API key 未配置');
+		}
+
+		// 构建 models API URL
+		const modelsUrl = baseURL.endsWith('/v1') || baseURL.endsWith('/v1/')
+			? baseURL + '/models'
+			: baseURL + '/v1/models';
+
+		try {
+			const response = await fetch(modelsUrl, {
+				method: 'GET',
+				headers: {
+					'Authorization': `Bearer ${apiKey}`,
+				},
+			});
+
+			if (!response.ok) {
+				const errorText = await response.text().catch(() => '无响应内容');
+				throw new Error(`获取模型列表失败: ${response.status} - ${errorText}`);
+			}
+
+			const data = await response.json() as { data?: Array<{ id: string }> };
+			const models = (data.data || [])
+				.map(m => m.id)
+				.filter(id => id && (id.includes('gpt') || id.includes('o1') || id.includes('o3') || id.includes('o4')))
+				.sort();
+
+			return models;
+		} catch (error) {
+			this.logger.error('获取模型列表失败:', error);
+			// 如果 API 调用失败，返回配置中的模型列表
+			return this.models;
+		}
 	}
 }
 

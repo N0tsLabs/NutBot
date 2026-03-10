@@ -6,7 +6,6 @@
 import { configManager, ConfigManager } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { Server } from '../server/index.js';
-import { startCDPRelayServer, type CDPRelayServer } from '../server/cdp-relay.js';
 import { ProviderManager } from '../providers/index.js';
 import { ToolRegistry } from '../tools/index.js';
 import { Agent } from '../agent/index.js';
@@ -40,7 +39,6 @@ export class Gateway {
 
 	// 子系统
 	server: Server | null = null;
-	cdpRelay: CDPRelayServer | null = null;
 	providerManager!: ProviderManager;
 	toolRegistry!: ToolRegistry;
 	agent!: Agent;
@@ -148,18 +146,6 @@ export class Gateway {
 		// 启动 HTTP/WS 服务器
 		await this.server?.start({ openBrowser: options.openBrowser });
 
-		// 启动 CDP Relay 服务（用于浏览器扩展模式）
-		try {
-			const cdpRelayPort = this.config.get('browser.cdpRelayPort', 18801);
-			this.cdpRelay = await startCDPRelayServer({
-				host: this.config.get('server.host', '127.0.0.1'),
-				port: cdpRelayPort,
-			});
-			this.logger.info(`CDP Relay 已启动: ws://${this.config.get('server.host')}:${cdpRelayPort}`);
-		} catch (error) {
-			this.logger.warn('CDP Relay 启动失败:', (error as Error).message);
-		}
-
 		// 启动 Cron 调度器
 		await this.cronManager.start();
 
@@ -182,10 +168,6 @@ export class Gateway {
 
 		// 停止 Cron 调度器
 		await this.cronManager?.stop();
-
-		// 停止 CDP Relay
-		this.cdpRelay?.close();
-		this.cdpRelay = null;
 
 		// 停止 HTTP/WS 服务器
 		await this.server?.stop();
@@ -275,15 +257,6 @@ export class Gateway {
 			startTime: this.startTime,
 			uptime: this.running && this.startTime ? Date.now() - this.startTime.getTime() : 0,
 			server: this.server?.getStatus(),
-			cdpRelay: this.cdpRelay
-				? {
-						port: this.cdpRelay.getPort(),
-						extension: this.cdpRelay.getStatus()?.extension || {
-							connected: this.cdpRelay.isExtensionConnected(),
-							targets: this.cdpRelay.getConnectedTargets().size,
-						},
-					}
-				: null,
 			providers: this.providerManager?.getStatus(),
 			tools: this.toolRegistry?.listTools().length,
 			sessions: this.sessionManager?.listSessions().length,
