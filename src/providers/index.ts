@@ -57,10 +57,10 @@ export class ProviderManager {
 			}
 		}
 
-		// 设置默认 Provider
-		const defaultModel = this.config.get<string>('agent.defaultModel');
-		if (defaultModel) {
-			const [providerId] = defaultModel.split('/');
+		// 设置默认 Provider（从 modelLibrary 获取）
+		const modelLibrary = this.config.getModelLibrary();
+		if (modelLibrary.defaultModelId) {
+			const [providerId] = modelLibrary.defaultModelId.split('/');
 			if (this.providers.has(providerId)) {
 				this.defaultProviderId = providerId;
 			}

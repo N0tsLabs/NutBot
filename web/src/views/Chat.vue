@@ -153,8 +153,8 @@
 			</template>
 
 			<template v-else>
-				<!-- 用户消息 -->
-				<template v-for="msg in store.messages" :key="msg.id">
+					<!-- 用户消息 -->
+					<template v-for="msg in groupedMessages" :key="msg.id">
 					<!-- 用户消息 -->
 					<div v-if="msg.role === 'user'" class="msg msg-user">
 						<div class="msg-content user-bubble">{{ msg.content }}</div>
@@ -209,7 +209,7 @@
 												<span v-else-if="tool.status === 'error' || tool.result?.error">❌</span>
 												<span v-else>🔧</span>
 											</span>
-											<span class="tool-name">{{ tool.name }}</span>
+											<span class="tool-name">{{ getToolDisplayName(tool) }}</span>
 											<span class="tool-duration">{{ formatToolDuration(tool) }}</span>
 											<span class="tool-expand">{{ isToolExpanded(msg.id, idx) ? '−' : '+' }}</span>
 										</div>
@@ -221,10 +221,19 @@
 												</div>
 												<pre class="tool-code">{{ formatToolArgs(tool.arguments) }}</pre>
 											</div>
+											<!-- 系统截图工具 (screenshot) 的截图显示 -->
 											<div v-if="tool.name === 'screenshot' && tool.result?.base64" class="tool-section">
 												<div class="tool-section-head"><span>截图预览</span></div>
 												<div class="screenshot-box" @click="openImageModal(tool.result.base64)">
 													<img :src="'data:image/jpeg;base64,' + tool.result.base64" alt="截图" />
+													<div class="screenshot-hover">🔍 点击放大</div>
+												</div>
+											</div>
+											<!-- 浏览器工具 (browser) 的截图显示 -->
+											<div v-if="tool.name === 'browser' && tool.result?.action === 'screenshot' && tool.result?.imageUrl" class="tool-section">
+												<div class="tool-section-head"><span>浏览器截图预览</span></div>
+												<div class="screenshot-box" @click="openBrowserImageModal(tool.result.imageUrl)">
+													<img :src="tool.result.imageUrl" alt="浏览器截图" />
 													<div class="screenshot-hover">🔍 点击放大</div>
 												</div>
 											</div>
@@ -252,7 +261,14 @@
 							<!-- 消息文本 -->
 							<div v-if="getMessageContent(msg)" class="msg-text markdown" v-html="renderMarkdown(getMessageContent(msg) + (msg.streaming ? '▊' : ''))"></div>
 							<div v-else-if="msg.streaming && msg.content" class="msg-text markdown" v-html="renderMarkdown(msg.content + '▊')"></div>
-							<div v-if="msg.error" class="msg-error">❌ {{ msg.error }}</div>
+							<div v-else-if="!msg.streaming && !msg.content && !msg.error" class="msg-text markdown text-gray-500">无内容</div>
+							<div v-if="msg.error" class="msg-error">
+								<div class="error-icon">❌</div>
+								<div class="error-content">
+									<div class="error-title">发生错误</div>
+									<div class="error-message">{{ msg.error }}</div>
+								</div>
+							</div>
 						</div>
 					</div>
 				</template>
@@ -307,11 +323,19 @@
 			</div>
 		</div>
 
-		<!-- 图片预览模态框 -->
+		<!-- 图片预览模态框（系统截图） -->
 		<div v-if="imageModal.visible" class="image-modal" @click="closeImageModal">
 			<div class="image-modal-content" @click.stop>
 				<button class="image-modal-close" @click="closeImageModal">✕</button>
 				<img :src="'data:image/jpeg;base64,' + imageModal.base64" class="image-modal-img" />
+			</div>
+		</div>
+
+		<!-- 浏览器截图预览模态框 -->
+		<div v-if="browserImageModal.visible" class="image-modal" @click="closeBrowserImageModal">
+			<div class="image-modal-content" @click.stop>
+				<button class="image-modal-close" @click="closeBrowserImageModal">✕</button>
+				<img :src="browserImageModal.imageUrl" class="image-modal-img" />
 			</div>
 		</div>
 
@@ -609,6 +633,73 @@ const aiName = computed(() => {
 	return store.config?.user?.aiName || 'NutBot';
 });
 
+// 合并连续的消息（将连续的 assistant 消息合并为一个）
+const groupedMessages = computed(() => {
+	const messages = store.messages;
+	if (!messages || messages.length === 0) return [];
+	
+	const result = [];
+	let currentGroup = null;
+	
+	for (const msg of messages) {
+		if (msg.role === 'user') {
+			// 用户消息直接添加，结束当前 assistant 分组
+			if (currentGroup) {
+				result.push(currentGroup);
+				currentGroup = null;
+			}
+			result.push(msg);
+		} else if (msg.role === 'assistant') {
+			// assistant 消息，尝试合并到当前分组
+			if (!currentGroup) {
+				// 创建新分组
+				currentGroup = {
+					...msg,
+					_grouped: true,
+					_groupedIds: [msg.id],
+				};
+			} else {
+				// 合并到现有分组
+				currentGroup._groupedIds.push(msg.id);
+				// 合并 content（如果有）
+				if (msg.content) {
+					if (currentGroup.content) {
+						currentGroup.content += '\n\n' + msg.content;
+					} else {
+						currentGroup.content = msg.content;
+					}
+				}
+				// 合并 toolCalls
+				if (msg.toolCalls && msg.toolCalls.length > 0) {
+					if (!currentGroup.toolCalls) {
+						currentGroup.toolCalls = [];
+					}
+					currentGroup.toolCalls.push(...msg.toolCalls);
+				}
+				// 保留 streaming 状态（如果任意消息在流式输出）
+				if (msg.streaming) {
+					currentGroup.streaming = true;
+				}
+				// 保留 error 状态
+				if (msg.error) {
+					currentGroup.error = msg.error;
+				}
+				// 更新 timestamp 为最新的
+				if (msg.timestamp > currentGroup.timestamp) {
+					currentGroup.timestamp = msg.timestamp;
+				}
+			}
+		}
+	}
+	
+	// 添加最后一个分组
+	if (currentGroup) {
+		result.push(currentGroup);
+	}
+	
+	return result;
+});
+
 // 格式化工具执行时间
 const formatToolDuration = (tool) => {
 	if (!tool.duration && tool.duration !== 0) {
@@ -637,7 +728,7 @@ const hasRunningTools = (msg) => {
 // 获取正在运行的工具名
 const getRunningToolName = (msg) => {
 	const runningTool = msg.toolCalls?.find(t => t.status === 'running');
-	return runningTool?.name || '';
+	return getToolDisplayName(runningTool);
 };
 
 // 检查是否有正在流式输出的消息
@@ -657,8 +748,12 @@ const getCurrentStatusText = () => {
 		case 'thinking': return '正在分析...';
 		case 'generating': return '正在输入...';
 		case 'status': return store.currentStatus.status;
-		case 'tool_running': 
-			return `正在执行 ${store.currentStatus.tool}...`;
+		case 'tool_running': {
+			const tool = store.currentStatus.tool;
+			const action = store.currentStatus.action;
+			const displayName = action ? `${tool}.${action}` : tool;
+			return `正在执行 ${displayName}...`;
+		}
 		case 'tool_done': return '执行完成';
 		case 'tool_error': return '执行出错';
 		default: return '';
@@ -674,7 +769,8 @@ const getToolsHeaderText = (toolCalls) => {
 
 	if (running > 0) {
 		const runningTool = toolCalls.find((t) => t.status === 'running');
-		return `执行中 ${completed + 1}/${total}: ${runningTool?.name || ''}`;
+		const displayName = getToolDisplayName(runningTool);
+		return `执行中 ${completed + 1}/${total}: ${displayName}`;
 	}
 
 	if (failed > 0) {
@@ -692,7 +788,7 @@ const expandedTools = ref(new Set());
 const expandedToolsGroup = ref(new Set());
 const textareaRef = ref(null);
 
-// 图片预览模态框
+// 图片预览模态框（用于系统截图的 base64）
 const imageModal = ref({
 	visible: false,
 	base64: '',
@@ -701,6 +797,22 @@ const imageModal = ref({
 const openImageModal = (base64) => {
 	imageModal.value.base64 = base64;
 	imageModal.value.visible = true;
+};
+
+// 浏览器截图预览模态框（用于浏览器截图的 URL）
+const browserImageModal = ref({
+	visible: false,
+	imageUrl: '',
+});
+
+const openBrowserImageModal = (imageUrl) => {
+	browserImageModal.value.imageUrl = imageUrl;
+	browserImageModal.value.visible = true;
+};
+
+const closeBrowserImageModal = () => {
+	browserImageModal.value.visible = false;
+	browserImageModal.value.imageUrl = '';
 };
 
 // 格式化安全消息（保留换行）
@@ -820,6 +932,16 @@ const getToolsSummaryWithThinking = (toolCalls) => {
 	return `已完成 ${total} 步`;
 };
 
+// 获取工具显示名称（格式：工具名.action）
+const getToolDisplayName = (tool) => {
+	if (!tool) return '';
+	const action = tool.action || '';
+	if (action && tool.name) {
+		return `${tool.name}.${action}`;
+	}
+	return tool.name || '';
+};
+
 // 获取工具操作简述
 const getToolAction = (tool) => {
 	if (!tool) return '';
@@ -860,6 +982,8 @@ const getToolAction = (tool) => {
 					return '关闭浏览器';
 				case 'evaluate':
 					return '执行脚本';
+				case 'screenshot':
+					return '浏览器截图';
 				default:
 					return method || '浏览器操作';
 			}
@@ -937,6 +1061,7 @@ const getToolDescription = (toolName, args) => {
 				wait: '等待页面加载',
 				close: '关闭浏览器',
 				evaluate: '执行脚本',
+				screenshot: '浏览器截图',
 			};
 			return actionMap[method] || '浏览器操作';
 		}
@@ -1576,12 +1701,37 @@ onMounted(async () => {
 }
 
 .msg-error {
-	margin-top: 8px;
-	padding: 8px 12px;
-	background-color: rgba(239, 68, 68, 0.1);
-	border-radius: 8px;
+	margin-top: 12px;
+	padding: 12px 16px;
+	background-color: rgba(239, 68, 68, 0.15);
+	border: 1px solid rgba(239, 68, 68, 0.3);
+	border-radius: 10px;
 	color: #f87171;
 	font-size: 13px;
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+}
+
+.msg-error .error-icon {
+	font-size: 16px;
+	flex-shrink: 0;
+}
+
+.msg-error .error-content {
+	flex: 1;
+}
+
+.msg-error .error-title {
+	font-weight: 600;
+	margin-bottom: 4px;
+	color: #ef4444;
+}
+
+.msg-error .error-message {
+	color: #f87171;
+	word-break: break-word;
+	white-space: pre-wrap;
 }
 
 /* ========== 工具调用（简洁折叠式）========== */

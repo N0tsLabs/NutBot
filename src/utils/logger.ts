@@ -1,6 +1,11 @@
 /**
  * 日志系统
  * 支持多级别日志、文件输出、颜色输出、WebSocket 广播
+ * 
+ * 精简日志设计：
+ * 1. 只保留关键信息：用户输入、AI决策、AI回复、错误信息
+ * 2. 错误信息详细记录，包括堆栈跟踪
+ * 3. 系统内部状态使用 debug 级别，默认不显示
  */
 
 import chalk from 'chalk';
@@ -25,6 +30,9 @@ const LEVEL_COLORS: Record<string, (text: string) => string> = {
 	info: chalk.blue,
 	warn: chalk.yellow,
 	error: chalk.red,
+	user: chalk.cyan,
+	ai: chalk.magenta,
+	tool: chalk.green,
 };
 
 // 日志级别图标
@@ -33,6 +41,10 @@ const LEVEL_ICONS: Record<string, string> = {
 	info: 'ℹ️',
 	warn: '⚠️',
 	error: '❌',
+	user: '👤',
+	ai: '🤖',
+	tool: '🔧',
+	success: '✅',
 };
 
 // 日志条目接口（用于 WebSocket 广播）
@@ -236,6 +248,187 @@ class Logger {
 		}
 	}
 
+	/**
+	 * 用户输入日志（精简版 - 关键信息）
+	 */
+	userInput(message: string): void {
+		if (!this.shouldLog('info')) return;
+		
+		const truncated = message.length > 200 ? message.substring(0, 200) + '...' : message;
+		const formatted = this.format('info', `👤 用户: ${truncated}`);
+
+		// 创建日志条目
+		const entry: LogEntry = {
+			timestamp: formatted.timestamp,
+			level: 'user',
+			prefix: this.prefix,
+			message: truncated,
+			icon: '👤',
+		};
+
+		// 添加到缓存并广播
+		Logger.logBuffer.push(entry);
+		if (Logger.logBuffer.length > Logger.maxBufferSize) {
+			Logger.logBuffer.shift();
+		}
+		if (Logger.broadcastCallback) {
+			Logger.broadcastCallback(entry);
+		}
+
+		if (Logger.globalConsoleEnabled) {
+			const displayTime = new Date().toLocaleTimeString('zh-CN', { 
+				hour: '2-digit', 
+				minute: '2-digit', 
+				second: '2-digit',
+				hour12: false 
+			});
+			console.log(
+				`${chalk.gray(displayTime)} ${chalk.cyan('[USER]')} 👤 ${formatted.prefix} ${truncated}`
+			);
+		}
+
+		if (this.enableFile && this.fileStream) {
+			this.fileStream.write(`${formatted.timestamp} [USER] 👤 ${this.prefix} ${message}\n`);
+		}
+	}
+
+	/**
+	 * AI 决策日志（工具调用意图）
+	 */
+	aiDecision(toolName: string, intent?: string): void {
+		if (!this.shouldLog('info')) return;
+		
+		const message = intent 
+			? `🤖 AI 决策: 使用 [${toolName}] - ${intent}`
+			: `🤖 AI 决策: 使用 [${toolName}]`;
+		
+		const formatted = this.format('info', message);
+
+		const entry: LogEntry = {
+			timestamp: formatted.timestamp,
+			level: 'ai',
+			prefix: this.prefix,
+			message: `使用 [${toolName}]${intent ? ' - ' + intent : ''}`,
+			icon: '🤖',
+		};
+
+		Logger.logBuffer.push(entry);
+		if (Logger.logBuffer.length > Logger.maxBufferSize) {
+			Logger.logBuffer.shift();
+		}
+		if (Logger.broadcastCallback) {
+			Logger.broadcastCallback(entry);
+		}
+
+		if (Logger.globalConsoleEnabled) {
+			const displayTime = new Date().toLocaleTimeString('zh-CN', { 
+				hour: '2-digit', 
+				minute: '2-digit', 
+				second: '2-digit',
+				hour12: false 
+			});
+			console.log(
+				`${chalk.gray(displayTime)} ${chalk.magenta('[AI]')} 🤖 ${formatted.prefix} ${message}`
+			);
+		}
+
+		if (this.enableFile && this.fileStream) {
+			this.fileStream.write(`${formatted.timestamp} [AI] 🤖 ${this.prefix} ${message}\n`);
+		}
+	}
+
+	/**
+	 * AI 回复内容日志
+	 */
+	aiResponse(content: string): void {
+		if (!this.shouldLog('info')) return;
+		
+		const truncated = content.length > 300 ? content.substring(0, 300) + '...' : content;
+		const message = `💬 AI 回复: ${truncated}`;
+		
+		const formatted = this.format('info', message);
+
+		const entry: LogEntry = {
+			timestamp: formatted.timestamp,
+			level: 'ai',
+			prefix: this.prefix,
+			message: truncated,
+			icon: '💬',
+		};
+
+		Logger.logBuffer.push(entry);
+		if (Logger.logBuffer.length > Logger.maxBufferSize) {
+			Logger.logBuffer.shift();
+		}
+		if (Logger.broadcastCallback) {
+			Logger.broadcastCallback(entry);
+		}
+
+		if (Logger.globalConsoleEnabled) {
+			const displayTime = new Date().toLocaleTimeString('zh-CN', { 
+				hour: '2-digit', 
+				minute: '2-digit', 
+				second: '2-digit',
+				hour12: false 
+			});
+			console.log(
+				`${chalk.gray(displayTime)} ${chalk.magenta('[AI]')} 💬 ${formatted.prefix} ${truncated}`
+			);
+		}
+
+		if (this.enableFile && this.fileStream) {
+			this.fileStream.write(`${formatted.timestamp} [AI] 💬 ${this.prefix} ${content}\n`);
+		}
+	}
+
+	/**
+	 * 工具执行结果日志（精简版）
+	 */
+	toolResult(toolName: string, success: boolean, summary?: string): void {
+		if (!this.shouldLog('info')) return;
+		
+		const icon = success ? '✅' : '❌';
+		const status = success ? '成功' : '失败';
+		const message = summary 
+			? `${icon} [${toolName}] ${status}: ${summary}`
+			: `${icon} [${toolName}] ${status}`;
+		
+		const formatted = this.format('info', message);
+
+		const entry: LogEntry = {
+			timestamp: formatted.timestamp,
+			level: success ? 'info' : 'error',
+			prefix: this.prefix,
+			message: `[${toolName}] ${status}${summary ? ': ' + summary : ''}`,
+			icon,
+		};
+
+		Logger.logBuffer.push(entry);
+		if (Logger.logBuffer.length > Logger.maxBufferSize) {
+			Logger.logBuffer.shift();
+		}
+		if (Logger.broadcastCallback) {
+			Logger.broadcastCallback(entry);
+		}
+
+		if (Logger.globalConsoleEnabled) {
+			const displayTime = new Date().toLocaleTimeString('zh-CN', { 
+				hour: '2-digit', 
+				minute: '2-digit', 
+				second: '2-digit',
+				hour12: false 
+			});
+			const color = success ? chalk.green : chalk.red;
+			console.log(
+				`${chalk.gray(displayTime)} ${color('[TOOL]')} ${icon} ${formatted.prefix} ${message}`
+			);
+		}
+
+		if (this.enableFile && this.fileStream) {
+			this.fileStream.write(`${formatted.timestamp} [TOOL] ${icon} ${this.prefix} ${message}\n`);
+		}
+	}
+
 	debug(message: string, ...args: unknown[]): void {
 		this.log('debug', message, ...args);
 	}
@@ -248,8 +441,26 @@ class Logger {
 		this.log('warn', message, ...args);
 	}
 
+	/**
+	 * 错误日志（详细记录，包括堆栈跟踪）
+	 */
 	error(message: string, ...args: unknown[]): void {
-		this.log('error', message, ...args);
+		// 处理错误对象，提取堆栈跟踪
+		const processedArgs = args.map(arg => {
+			if (arg instanceof Error) {
+				return `\nError: ${arg.message}\nStack: ${arg.stack}`;
+			}
+			if (typeof arg === 'object' && arg !== null) {
+				// 检查是否有 error 属性
+				const err = arg as any;
+				if (err.message || err.stack) {
+					return `\nError: ${err.message || 'Unknown'}\nStack: ${err.stack || 'No stack'}`;
+				}
+			}
+			return arg;
+		});
+
+		this.log('error', message, ...processedArgs);
 	}
 
 	/**
@@ -295,7 +506,7 @@ class Logger {
 	}
 
 	/**
-	 * 进度日志
+	 * 进度日志（精简版）
 	 */
 	progress(message: string, ...args: unknown[]): void {
 		if (!this.shouldLog('info')) return;
@@ -328,7 +539,7 @@ class Logger {
 			return result;
 		} catch (error) {
 			const duration = Date.now() - start;
-			this.error(`Failed: ${label} (${formatDuration(duration)})`, (error as Error).message);
+			this.error(`Failed: ${label} (${formatDuration(duration)})`, error);
 			throw error;
 		}
 	}

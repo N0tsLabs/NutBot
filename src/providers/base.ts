@@ -133,7 +133,7 @@ export abstract class BaseProvider {
 	get defaultModel(): string | null {
 		if (this._defaultModel !== undefined) return this._defaultModel;
 		const id = this.providerId || this.type;
-		return this.config.get<string | null>(`providers.${id}.model`) || this.config.get<string | null>('agent.defaultModel');
+		return this.config.get<string | null>(`providers.${id}.model`);
 	}
 	set defaultModel(value: string | null | undefined) {
 		this._defaultModel = value;

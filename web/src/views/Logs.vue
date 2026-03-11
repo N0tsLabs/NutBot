@@ -127,15 +127,33 @@ const formatTime = (time) => {
 	});
 };
 
+// HTML 转义函数
+const escapeHtml = (text) => {
+	if (!text) return text;
+	return text
+		.replace(/&/g, '&')
+		.replace(/</g, '<')
+		.replace(/>/g, '>')
+		.replace(/"/g, '"')
+		.replace(/'/g, '&#039;');
+};
+
 // 高亮搜索关键字
 const highlightText = (text) => {
-	if (!text || !searchText.value) return text;
-	const query = searchText.value.trim();
-	if (!query) return text;
+	if (!text) return text;
 	
-	const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-	const regex = new RegExp(`(${escaped})`, 'gi');
-	return text.replace(regex, '<mark class="highlight">$1</mark>');
+	// 先进行 HTML 转义，防止 XSS 和意外的 HTML 渲染
+	let escapedText = escapeHtml(text);
+	
+	// 如果没有搜索关键字，直接返回转义后的文本
+	if (!searchText.value) return escapedText;
+	
+	const query = searchText.value.trim();
+	if (!query) return escapedText;
+	
+	const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const regex = new RegExp(`(${escapedQuery})`, 'gi');
+	return escapedText.replace(regex, '<mark class="highlight">$1</mark>');
 };
 
 // 获取级别图标

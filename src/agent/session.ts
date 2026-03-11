@@ -43,10 +43,22 @@ interface StoredMessage extends MessageInput {
 	timestamp: string;
 }
 
+/**
+ * 消息总结接口
+ */
+interface MessageSummary {
+	id: string;
+	createdAt: string;
+	summary: string;
+	messageRange: { start: number; end: number }; // 总结覆盖的消息范围
+	toolCallsSummary?: string; // 工具调用总结
+}
+
 export class SessionManager {
 	private config: ConfigManager;
 	private sessions: Map<string, StoredSession> = new Map();
 	private sessionsDir: string = '';
+	private summaries: Map<string, MessageSummary[]> = new Map(); // sessionId -> summaries
 
 	constructor(config: ConfigManager) {
 		this.config = config;
@@ -270,11 +282,23 @@ export class SessionManager {
 	}
 
 	/**
-	 * 获取用于 AI 的消息格式 - 简化版
-	 * 保留最近 N 轮完整上下文
+	 * 获取用于 AI 的消息格式 - 智能压缩版
+	 * 
+	 * 核心改进：
+	 * 1. 不暴力截断 - 正常对话不会被截断
+	 * 2. 智能压缩 - 只有当真正超出上下文时，才让 AI 压缩之前的对话
+	 * 3. 保持连续性 - 确保消息列表中始终有完整的对话流程
+	 * 4. 迭代总结 - 将之前的总结传递给下一次 AI 调用
 	 */
-	getMessagesForAI(sessionId: string, options: { maxMessages?: number; systemPrompt?: string } = {}): ChatMessage[] {
-		const { maxMessages = 30, systemPrompt } = options;
+	getMessagesForAI(
+		sessionId: string,
+		options: {
+			maxTokens?: number;
+			systemPrompt?: string;
+			preserveRecentRounds?: number; // 保留最近 N 轮完整对话
+		} = {}
+	): ChatMessage[] {
+		const { maxTokens = 60000, systemPrompt, preserveRecentRounds = 6 } = options;
 		const session = this.sessions.get(sessionId);
 
 		if (!session) {
@@ -282,7 +306,7 @@ export class SessionManager {
 			return [];
 		}
 
-		this.logger.info(`[getMessagesForAI] sessionId=${sessionId}, messages=${session.messages.length}`);
+		this.logger.debug(`[getMessagesForAI] sessionId=${sessionId}, messages=${session.messages.length}`);
 
 		const messages: ChatMessage[] = [];
 
@@ -293,167 +317,272 @@ export class SessionManager {
 
 		const allMessages = session.messages as StoredMessage[];
 
-		// 简化：直接取最近 N 条消息
-		// 核心规则：确保完整的 tool 调用链 (assistant(with tool_calls) -> tool)
-		let startIndex = Math.max(0, allMessages.length - maxMessages);
-
-		this.logger.debug(`[getMessagesForAI] allMessages=${allMessages.length}, startIndex=${startIndex}`);
-
-		// 从后往前检查：如果最后几条消息不完整，往前找到完整的链
-		// 限制最大检查次数，防止死循环
-		const maxCheckCount = maxMessages + 10;
-		let checkCount = 0;
-
-		while (startIndex < allMessages.length && checkCount < maxCheckCount) {
-			checkCount++;
-			const msg = allMessages[startIndex];
-
-			if (!msg) {
-				// 空消息，直接跳过
-				startIndex--;
-				continue;
-			}
-
-			const role = msg.role || 'unknown';
-			this.logger.debug(`[getMessagesForAI] 检查 msg[${startIndex}], role=${role}`);
-
-			if (role === 'tool') {
-				// tool 消息需要前面的 assistant（包含 tool_calls）
-				if (startIndex === 0) {
-					// 第一个消息就是 tool，无法处理
-					break;
-				}
-				const prevMsg = allMessages[startIndex - 1];
-				if (!prevMsg) {
-					// 前一条消息不存在，往前找
-					startIndex--;
-					continue;
-				}
-				if (prevMsg.role === 'assistant' && prevMsg.toolCalls && prevMsg.toolCalls.length > 0) {
-					// 找到完整的链：从 assistant 开始
-					break;
-				} else {
-					// 前一个不是带 tool_calls 的 assistant，往前找
-					startIndex--;
-				}
-			} else if (role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
-				// 带 tool_calls 的 assistant 是链的开始，保留
-				break;
-			} else if (role === 'user') {
-				// user 消息是新的开始，保留（同时保留前面的 assistant+tool 链）
-				// 继续检查前面是否有完整的链需要保留
-				if (startIndex > 0) {
-					// 检查 startIndex-1 是否是带 tool_calls 的 assistant
-					const prevMsg = allMessages[startIndex - 1];
-					if (prevMsg?.role === 'assistant' && prevMsg.toolCalls && prevMsg.toolCalls.length > 0) {
-						// 保留完整的链，从这个 assistant 开始
-						startIndex--;
-					}
-				}
-				break;
-			} else {
-				// 普通消息或带空 tool_calls 的 assistant，往前找
-				startIndex--;
+		// 如果消息数量较少，直接返回所有消息
+		if (allMessages.length <= preserveRecentRounds * 3) {
+			// 估算 token 数量
+			const estimatedTokens = this.estimateTokens(allMessages);
+			if (estimatedTokens <= maxTokens * 0.8) {
+				this.logger.debug(`[getMessagesForAI] 消息数量较少(${allMessages.length})且 token 估算(${estimatedTokens})在限制内，返回全部消息`);
+				const formatted = this.formatMessages(allMessages);
+				return [...messages, ...formatted];
 			}
 		}
 
-		const history = allMessages.slice(startIndex);
-		this.logger.info(`[getMessagesForAI] history.length=${history.length}, startIndex=${startIndex}`);
+		// 智能压缩策略：
+		// 1. 保留最近 N 轮完整对话（user -> assistant -> tool）
+		// 2. 对更早的消息进行智能压缩/总结
+		const recentMessages = this.extractRecentRounds(allMessages, preserveRecentRounds);
+		const recentStartIndex = allMessages.length - recentMessages.length;
 
-		// 构建消息数组（保留完整的消息顺序）
-		const formattedMessages: any[] = [];
+		// 获取该会话的总结历史
+		const sessionSummaries = this.summaries.get(sessionId) || [];
 
-		for (let i = 0; i < history.length; i++) {
-			const msg = history[i];
-			if (!msg) {
-				this.logger.warn(`[getMessagesForAI] history[${i}] is undefined!`);
-				continue;
+		// 如果有之前的总结，并且需要压缩的消息范围与总结匹配
+		let compressedMessages: ChatMessage[] = [];
+		let hasValidSummary = false;
+
+		if (sessionSummaries.length > 0 && recentStartIndex > 0) {
+			const latestSummary = sessionSummaries[sessionSummaries.length - 1];
+			// 检查总结是否覆盖了我们想要跳过的消息
+			if (latestSummary.messageRange.end >= recentStartIndex - 1) {
+				// 使用总结作为上下文
+				compressedMessages.push({
+					role: 'user',
+					content: `[历史对话总结]\n${latestSummary.summary}`,
+				});
+				hasValidSummary = true;
+				this.logger.debug(`[getMessagesForAI] 使用历史总结覆盖消息 0-${latestSummary.messageRange.end}`);
 			}
+		}
+
+		// 如果没有有效总结，或者总结不覆盖需要跳过的消息
+		if (!hasValidSummary && recentStartIndex > 0) {
+			// 保留最早的一条 user 消息作为对话起点
+			const firstUserMsg = allMessages.find(m => m.role === 'user');
+			if (firstUserMsg && recentStartIndex > 1) {
+				compressedMessages.push({
+					role: 'user',
+					content: `[对话开始] ${typeof firstUserMsg.content === 'string' ? firstUserMsg.content : JSON.stringify(firstUserMsg.content)}`,
+				});
+				this.logger.debug(`[getMessagesForAI] 保留对话起点消息`);
+			}
+		}
+
+		// 格式化最近的消息
+		const formattedRecent = this.formatMessages(recentMessages);
+
+		// 组合最终消息列表
+		const finalMessages = [...messages, ...compressedMessages, ...formattedRecent];
+
+		// 验证消息列表中至少有一个 user 消息
+		const hasUserMessage = finalMessages.some(m => m.role === 'user');
+		if (!hasUserMessage && allMessages.length > 0) {
+			this.logger.error(`[getMessagesForAI] 严重错误：消息列表中没有 user 消息！`);
+			// 紧急修复：添加第一条 user 消息
+			const firstUser = allMessages.find(m => m.role === 'user');
+			if (firstUser) {
+				finalMessages.push({
+					role: 'user',
+					content: typeof firstUser.content === 'string' ? firstUser.content : '用户消息',
+				});
+			}
+		}
+
+		this.logger.debug(`[getMessagesForAI] 最终消息数: ${finalMessages.length} (压缩: ${compressedMessages.length}, 最近: ${formattedRecent.length})`);
+
+		return finalMessages;
+	}
+
+	/**
+	 * 估算消息的 token 数量（粗略估算）
+	 */
+	private estimateTokens(messages: StoredMessage[]): number {
+		let totalChars = 0;
+		for (const msg of messages) {
+			if (typeof msg.content === 'string') {
+				totalChars += msg.content.length;
+			} else if (Array.isArray(msg.content)) {
+				totalChars += msg.content.map(c => typeof c === 'string' ? c : c.text || '').join('').length;
+			}
+			// 工具调用也计入
+			if (msg.toolCalls) {
+				totalChars += JSON.stringify(msg.toolCalls).length;
+			}
+		}
+		// 粗略估算：1 token ≈ 4 字符
+		return Math.ceil(totalChars / 4);
+	}
+
+	/**
+	 * 提取最近 N 轮完整对话
+	 * 一轮 = user -> assistant [-> tool -> ...]
+	 */
+	private extractRecentRounds(allMessages: StoredMessage[], rounds: number): StoredMessage[] {
+		if (allMessages.length === 0) return [];
+
+		const result: StoredMessage[] = [];
+		let roundCount = 0;
+		let i = allMessages.length - 1;
+
+		// 从后往前遍历，找到完整的轮次
+		while (i >= 0 && roundCount < rounds) {
+			const msg = allMessages[i];
+
+			if (msg.role === 'user') {
+				// 找到一轮的开始
+				roundCount++;
+				// 收集这一轮的完整消息
+				const roundMessages: StoredMessage[] = [msg];
+				i--;
+
+				// 收集后续的 assistant 和 tool 消息
+				while (i >= 0) {
+					const nextMsg = allMessages[i];
+					if (nextMsg.role === 'user') {
+						// 遇到下一个 user，停止收集
+						break;
+					}
+					roundMessages.unshift(nextMsg);
+					i--;
+				}
+
+				// 验证这一轮是否完整（至少要有 assistant）
+				const hasAssistant = roundMessages.some(m => m.role === 'assistant');
+				if (hasAssistant) {
+					result.unshift(...roundMessages);
+				} else {
+					// 不完整的轮次，只保留 user 消息
+					result.unshift(msg);
+				}
+			} else {
+				// 不是从 user 开始，往前找
+				i--;
+			}
+		}
+
+		// 如果还有剩余消息（不完整的开头），检查是否需要保留
+		if (i >= 0) {
+			// 检查剩余消息中是否有未配对的 tool 消息
+			const remaining = allMessages.slice(0, i + 1);
+			const hasOrphanTool = remaining.some(m => m.role === 'tool');
+			if (hasOrphanTool) {
+				this.logger.warn(`[extractRecentRounds] 发现未配对的 tool 消息，尝试修复`);
+				// 尝试找到对应的 assistant 并包含进来
+				for (let j = i; j >= 0; j--) {
+					if (allMessages[j].role === 'assistant' && allMessages[j].toolCalls) {
+						const assistantAndTools = allMessages.slice(j, i + 1);
+						result.unshift(...assistantAndTools);
+						break;
+					}
+				}
+			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * 格式化消息为 AI 可用的格式
+	 */
+	private formatMessages(messages: StoredMessage[]): ChatMessage[] {
+		const formattedMessages: ChatMessage[] = [];
+
+		for (const msg of messages) {
+			if (!msg) continue;
 
 			const msgRole = msg.role || 'unknown';
+
 			if (msgRole === 'user') {
 				formattedMessages.push({ role: 'user', content: msg.content });
 			} else if (msgRole === 'assistant') {
 				const aiMsg: ChatMessage = { role: 'assistant', content: msg.content as string || '' };
-				// 总是添加 tool_calls（即使为空数组也需要保留给 OpenAI 验证）
-				if (msg.toolCalls !== undefined) {
-					// 转换为 OpenAI 格式（扁平格式 -> function 嵌套）
-					aiMsg.tool_calls = (msg.toolCalls as any[]).map(tc => ({
-						id: tc.id,
-						type: 'function',
-						function: {
-							name: tc.name,
-							arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments),
-						},
-					}));
+				if (msg.toolCalls !== undefined && msg.toolCalls.length > 0) {
+					aiMsg.tool_calls = (msg.toolCalls as any[]).map(tc => {
+						const toolName = tc.name || tc.function?.name || 'unknown';
+						const toolArgs = tc.arguments || tc.function?.arguments || '{}';
+						return {
+							id: tc.id,
+							type: 'function',
+							function: {
+								name: toolName,
+								arguments: typeof toolArgs === 'string' ? toolArgs : JSON.stringify(toolArgs || {}),
+							},
+						};
+					});
 				}
 				formattedMessages.push(aiMsg);
 			} else if (msgRole === 'tool') {
 				const toolName = msg.metadata?.toolName as string || 'unknown';
-				// 使用 ?? 而不是 ||，确保只有真正没有值时才生成默认 ID
 				const toolCallId = (msg.metadata?.toolCallId as string) ?? `call_${toolName}_${Date.now()}`;
 				const isMultimodal = msg.metadata?.isMultimodal === true;
-
-				// 优先使用 aiContext（给 AI 看完整信息），否则用 content（给用户看）
 				const aiContent = msg.metadata?.aiContext;
 				const displayContent = typeof msg.content === 'string' ? msg.content : '操作完成';
 
+				let content: string;
 				if (aiContent !== undefined) {
-					// 有 AI 上下文，使用它
 					if (isMultimodal && Array.isArray(aiContent)) {
 						const textContent = aiContent.find((c: any) => c.type === 'text');
-						formattedMessages.push({
-							role: 'tool',
-							content: textContent?.text || displayContent,
-							tool_call_id: toolCallId,
-						});
+						content = textContent?.text || displayContent;
 					} else if (typeof aiContent === 'string') {
-						formattedMessages.push({
-							role: 'tool',
-							content: aiContent,
-							tool_call_id: toolCallId,
-						});
+						content = aiContent;
 					} else {
-						formattedMessages.push({
-							role: 'tool',
-							content: typeof aiContent === 'string' ? aiContent : JSON.stringify(aiContent),
-							tool_call_id: toolCallId,
-						});
+						content = JSON.stringify(aiContent);
 					}
 				} else {
-					// 没有 AI 上下文，使用显示内容
-					if (isMultimodal && Array.isArray(msg.content)) {
-						const textContent = (msg.content as any[]).find((c: any) => c.type === 'text');
-						formattedMessages.push({
-							role: 'tool',
-							content: textContent?.text || displayContent,
-							tool_call_id: toolCallId,
-						});
-					} else {
-						formattedMessages.push({
-							role: 'tool',
-							content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
-							tool_call_id: toolCallId,
-						});
-					}
+					content = displayContent;
 				}
-			}
-		}
 
-		// 调试日志：打印发送给 API 的消息格式
-		this.logger.info(`[API 消息] 共 ${formattedMessages.length} 条消息`);
-		for (let i = 0; i < formattedMessages.length; i++) {
-			const m = formattedMessages[i];
-			if (m.tool_calls) {
-				this.logger.info(`[API 消息][${i}] role: ${m.role}, tool_calls: ${JSON.stringify(m.tool_calls.map((tc: any) => ({ id: tc.id, function: tc.function?.name })))}`);
-			} else if (m.tool_call_id) {
-				this.logger.info(`[API 消息][${i}] role: ${m.role}, tool_call_id: ${m.tool_call_id}`);
-			} else {
-				this.logger.info(`[API 消息][${i}] role: ${m.role}, content: ${String(m.content)}`);
+				formattedMessages.push({
+					role: 'tool',
+					content,
+					tool_call_id: toolCallId,
+				});
 			}
 		}
 
 		return formattedMessages;
+	}
+
+	/**
+	 * 创建消息总结
+	 * 当上下文即将超出限制时调用，让 AI 总结之前的对话
+	 */
+	async createSummary(
+		sessionId: string,
+		startIndex: number,
+		endIndex: number,
+		summaryText: string
+	): Promise<MessageSummary> {
+		const sessionSummaries = this.summaries.get(sessionId) || [];
+
+		const summary: MessageSummary = {
+			id: generateId('summary'),
+			createdAt: new Date().toISOString(),
+			summary: summaryText,
+			messageRange: { start: startIndex, end: endIndex },
+		};
+
+		sessionSummaries.push(summary);
+		this.summaries.set(sessionId, sessionSummaries);
+
+		this.logger.debug(`[createSummary] 创建总结 ${summary.id} 覆盖消息 ${startIndex}-${endIndex}`);
+
+		return summary;
+	}
+
+	/**
+	 * 获取会话的所有总结
+	 */
+	getSummaries(sessionId: string): MessageSummary[] {
+		return this.summaries.get(sessionId) || [];
+	}
+
+	/**
+	 * 清除会话的总结
+	 */
+	clearSummaries(sessionId: string): void {
+		this.summaries.delete(sessionId);
+		this.logger.debug(`[clearSummaries] 清除会话 ${sessionId} 的总结`);
 	}
 
 	async deleteSession(id: string): Promise<void> {

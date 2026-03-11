@@ -147,7 +147,7 @@ export interface AppConfig {
 		port: number;
 	};
 	agent: {
-		defaultModel?: string | null;
+		// defaultModel 已弃用，请使用 modelLibrary.defaultModelId
 		systemPrompt?: string | null;
 		maxIterations?: number;
 		timeout?: number;
@@ -223,6 +223,7 @@ export interface AgentChunk {
 	status?: string;
 	iteration?: number;
 	content?: string;
+	fullContent?: string; // 累积的完整内容
 	count?: number;
 	tool?: string;
 	args?: Record<string, unknown>;

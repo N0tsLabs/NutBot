@@ -7,6 +7,12 @@ import type { Gateway } from '../../gateway/index.js';
 import { memoryManager, type Memory } from '../../memory/index.js';
 import { ocrSomService, type OcrSomOptions } from '../../services/ocr-som.js';
 import { browserService, type BrowserConfig } from '../../services/browser-service.js';
+import { systemInfo } from '../../tools/exec.js';
+import { join } from 'path';
+import { existsSync, createReadStream } from 'fs';
+
+// 浏览器截图保存目录
+const BROWSER_SCREENSHOT_DIR = join(systemInfo.homedir, '.nutbot', 'browser-screenshots');
 
 /**
  * 创建路由插件
@@ -1037,6 +1043,28 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 		}>('/browser/config', async (request) => {
 			browserService.updateConfig(request.body);
 			return { success: true, config: browserService.getConfig() };
+		});
+
+		// ==================== 浏览器截图访问接口 ====================
+
+		// 获取浏览器截图文件
+		fastify.get<{ Params: { filename: string } }>('/screenshots/browser/:filename', async (request, reply) => {
+			const { filename } = request.params;
+			
+			// 安全检查：防止目录遍历攻击
+			if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+				return reply.code(400).send({ error: true, message: 'Invalid filename' });
+			}
+			
+			const filePath = join(BROWSER_SCREENSHOT_DIR, filename);
+			
+			if (!existsSync(filePath)) {
+				return reply.code(404).send({ error: true, message: 'Screenshot not found' });
+			}
+			
+			reply.header('Content-Type', 'image/png');
+			reply.header('Cache-Control', 'public, max-age=3600');
+			return reply.send(createReadStream(filePath));
 		});
 
 	};

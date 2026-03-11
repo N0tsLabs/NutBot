@@ -1,0 +1,254 @@
+11:47:44.027
+ℹ️
+NutBot:Agent
+开始 Agent 运行: run-d664e0b9dad7
+11:47:44.028
+👤
+NutBot:Agent
+打开 B 站搜索影视飓风
+11:47:44.702
+ℹ️
+NutBot:Agent
+── 迭代 1/30 ──
+11:47:48.343
+ℹ️
+NutBot:Agent
+AI 请求执行 1 个工具
+11:47:48.344
+🤖
+NutBot:Agent
+使用 [browser] - action="goto", url="https://www.bilibili.com"
+11:47:48.350
+ℹ️
+NutBot:Tool:browser
+尝试启动浏览器... Edge路径: C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe, Chrome路径: C:\Program Files\Google\Chrome\Application\chrome.exe
+11:47:48.351
+ℹ️
+NutBot:Tool:browser
+正在启动 Edge...
+11:47:48.884
+ℹ️
+NutBot:Tool:browser
+浏览器已启动 (Edge)
+11:47:51.735
+ℹ️
+NutBot:Tool:browser
+已访问: https://www.bilibili.com
+11:47:51.752
+ℹ️
+NutBot:Tool:browser
+页面状态: 92 个可交互元素
+11:47:51.756
+✅
+NutBot:Agent
+[browser] 成功: URL: https://www.bilibili.com/
+11:47:54.208
+ℹ️
+NutBot:Agent
+── 迭代 2/30 ──
+11:47:56.988
+ℹ️
+NutBot:Agent
+AI 请求执行 1 个工具
+11:47:56.988
+🤖
+NutBot:Agent
+使用 [browser] - action="click", index=3
+11:47:57.086
+ℹ️
+NutBot:Tool:browser
+已点击 [3] link: 直播
+11:47:58.100
+ℹ️
+NutBot:Tool:browser
+检测到新标签页，已自动切换: https://live.bilibili.com/?spm_id_from=333.1007.0.0
+11:47:58.180
+ℹ️
+NutBot:Tool:browser
+页面状态: 40 个可交互元素
+11:47:58.231
+✅
+NutBot:Agent
+[browser] 成功: URL: https://live.bilibili.com/?spm_id_from=333.1007.0.0
+11:47:59.350
+ℹ️
+NutBot:Agent
+── 迭代 3/30 ──
+11:48:01.373
+ℹ️
+NutBot:Agent
+AI 请求执行 1 个工具
+11:48:01.374
+🤖
+NutBot:Agent
+使用 [browser] - action="back"
+11:48:01.379
+ℹ️
+NutBot:Tool:browser
+已返回上一页
+11:48:01.392
+ℹ️
+NutBot:Tool:browser
+页面状态: 89 个可交互元素
+11:48:01.397
+✅
+NutBot:Agent
+[browser] 成功: URL: https://live.bilibili.com/?spm_id_from=333.1007.0.0
+11:48:03.109
+ℹ️
+NutBot:Agent
+── 迭代 4/30 ──
+11:48:04.220
+ℹ️
+NutBot:Agent
+AI 请求执行 1 个工具
+11:48:04.221
+🤖
+NutBot:Agent
+使用 [browser] - action="goto", url="https://www.bilibili.com"
+11:48:05.644
+ℹ️
+NutBot:Tool:browser
+已访问: https://www.bilibili.com
+11:48:05.654
+ℹ️
+NutBot:Tool:browser
+页面状态: 92 个可交互元素
+11:48:05.660
+✅
+NutBot:Agent
+[browser] 成功: URL: https://www.bilibili.com/
+11:48:07.392
+ℹ️
+NutBot:Agent
+── 迭代 5/30 ──
+11:48:09.667
+ℹ️
+NutBot:Agent
+AI 请求执行 1 个工具
+11:48:09.668
+🤖
+NutBot:Agent
+使用 [browser] - action="type", index=3, text="影视飓风"
+11:48:09.707
+❌
+NutBot:Agent
+工具执行失败 [browser] Error: locator.fill: Error: Element is not an 
+, 
+, <select> or [contenteditable] and does not have a role allowing [aria-readonly]
+Call log:
+[2m  - waiting for locator('[data-nutbot-index="3"]').first()[22m
+[2m    - locator resolved to <a target="_blank" class="default-entry" data-nutbot-index="3" href="//live.bilibili.com">…</a>[22m
+[2m    - fill("影视飓风")[22m
+[2m  - attempting fill action[22m
+[2m    - waiting for element to be visible, enabled and editable[22m
+
+Stack: locator.fill: Error: Element is not an <input>, <textarea>, <select> or [contenteditable] and does not have a role allowing [aria-readonly]
+Call log:
+[2m  - waiting for locator('[data-nutbot-index="3"]').first()[22m
+[2m    - locator resolved to <a target="_blank" class="default-entry" data-nutbot-index="3" href="//live.bilibili.com">…</a>[22m
+[2m    - fill("影视飓风")[22m
+[2m  - attempting fill action[22m
+[2m    - waiting for element to be visible, enabled and editable[22m
+
+    at BrowserTool.type (E:\project\NutBot\src\tools\browser.ts:530:48)
+    at async BrowserTool.execute (E:\project\NutBot\src\tools\browser.ts:145:12)
+    at async Gateway.executeTool (E:\project\NutBot\src\gateway\index.ts:247:10)
+    at async Agent.run (E:\project\NutBot\src\agent\index.ts:488:22)
+    at async Gateway.chat (E:\project\NutBot\src\gateway\index.ts:216:20)
+    at async Server.handleChatMessage (E:\project\NutBot\src\server\index.ts:304:21)
+    at async Server.handleWebSocketMessage (E:\project\NutBot\src\server\index.ts:253:5)
+    at async WebSocket.<anonymous> (E:\project\NutBot\src\server\index.ts:217:5)
+11:48:11.691
+ℹ️
+NutBot:Agent
+── 迭代 6/30 ──
+11:48:13.037
+ℹ️
+NutBot:Agent
+AI 请求执行 1 个工具
+11:48:13.039
+🤖
+NutBot:Agent
+使用 [browser] - action="state"
+11:48:13.049
+ℹ️
+NutBot:Tool:browser
+页面状态: 92 个可交互元素
+11:48:13.051
+✅
+NutBot:Agent
+[browser] 成功: URL: https://www.bilibili.com/
+11:48:14.291
+ℹ️
+NutBot:Agent
+── 迭代 7/30 ──
+11:48:16.195
+ℹ️
+NutBot:Agent
+AI 请求执行 1 个工具
+11:48:16.196
+🤖
+NutBot:Agent
+使用 [browser] - action="type", index=1, text="影视飓风"
+11:48:16.203
+❌
+NutBot:Agent
+工具执行失败 [browser] Error: locator.fill: Error: Element is not an 
+, 
+, <select> or [contenteditable] and does not have a role allowing [aria-readonly]
+Call log:
+[2m  - waiting for locator('[data-nutbot-index="1"]').first()[22m
+[2m    - locator resolved to <a class="entry-title" data-nutbot-index="1" href="//www.bilibili.com">…</a>[22m
+[2m    - fill("影视飓风")[22m
+[2m  - attempting fill action[22m
+[2m    - waiting for element to be visible, enabled and editable[22m
+
+Stack: locator.fill: Error: Element is not an <input>, <textarea>, <select> or [contenteditable] and does not have a role allowing [aria-readonly]
+Call log:
+[2m  - waiting for locator('[data-nutbot-index="1"]').first()[22m
+[2m    - locator resolved to <a class="entry-title" data-nutbot-index="1" href="//www.bilibili.com">…</a>[22m
+[2m    - fill("影视飓风")[22m
+[2m  - attempting fill action[22m
+[2m    - waiting for element to be visible, enabled and editable[22m
+
+    at BrowserTool.type (E:\project\NutBot\src\tools\browser.ts:530:48)
+    at async BrowserTool.execute (E:\project\NutBot\src\tools\browser.ts:145:12)
+    at async Gateway.executeTool (E:\project\NutBot\src\gateway\index.ts:247:10)
+    at async Agent.run (E:\project\NutBot\src\agent\index.ts:488:22)
+    at async Gateway.chat (E:\project\NutBot\src\gateway\index.ts:216:20)
+    at async Server.handleChatMessage (E:\project\NutBot\src\server\index.ts:304:21)
+    at async Server.handleWebSocketMessage (E:\project\NutBot\src\server\index.ts:253:5)
+    at async WebSocket.<anonymous> (E:\project\NutBot\src\server\index.ts:217:5)
+11:48:18.310
+ℹ️
+NutBot:Agent
+── 迭代 8/30 ──
+11:48:20.105
+ℹ️
+NutBot:Agent
+AI 请求执行 1 个工具
+11:48:20.107
+🤖
+NutBot:Agent
+使用 [browser] - action="goto", url="https://search.bilibili.com/all?keyword=影视飓风"
+11:48:22.869
+ℹ️
+NutBot:Tool:browser
+已访问: https://search.bilibili.com/all?keyword=影视飓风
+11:48:22.891
+ℹ️
+NutBot:Tool:browser
+页面状态: 194 个可交互元素
+11:48:22.896
+✅
+NutBot:Agent
+[browser] 成功: URL: https://search.bilibili.com/all?keyword=%E5%BD%B1%E8%A7%86%E9%A3%93%E9%A3%8E
+11:48:26.487
+ℹ️
+NutBot:Agent
+任务完成（AI 总结完成）
+11:48:26.489
+✅
+NutBot:Agent
+Agent 运行完成: run-d664e0b9dad7 (42461ms)

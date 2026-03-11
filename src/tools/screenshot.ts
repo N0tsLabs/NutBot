@@ -36,7 +36,20 @@ export class ScreenshotTool extends BaseTool {
 	constructor(config: Record<string, unknown> = {}) {
 		super({
 			name: 'screenshot',
-			description: '屏幕截图工具，截取当前屏幕画面。截图会自动压缩以节省资源。',
+			description: `屏幕截图工具，截取当前整个屏幕画面（桌面截图）。截图会自动压缩以节省资源。
+
+【重要区分】
+- screenshot 工具：截取整个屏幕/桌面（系统级截图）
+- browser 工具的 screenshot action：截取浏览器页面（网页截图）
+
+【使用场景】
+- 需要查看桌面整体状态时
+- 需要截取非浏览器应用窗口时
+- 需要获取屏幕上的所有元素（包括桌面应用）时
+
+【何时使用 browser screenshot】
+- 当正在操作浏览器网页时，应使用 browser 工具的 screenshot action
+- browser screenshot 专门用于截取网页内容，效率更高`,
 			parameters: {
 				action: {
 					type: 'string',

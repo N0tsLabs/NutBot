@@ -86,7 +86,6 @@ export class OpenAIProvider extends BaseProvider {
 			max_tokens: maxTokens,
 			messages: apiMessages,
 			stream: true,
-			response_format: { type: 'json_object' }, // 强制 JSON 输出
 		};
 
 		// 系统提示
@@ -109,29 +108,15 @@ export class OpenAIProvider extends BaseProvider {
 			body.tool_choice = 'auto';
 		}
 
-		// 调试日志：打印发送给 API 的请求体（截断 tools 数组避免日志过长）
-		const logBody = {
-			...body,
-			tools: body.tools ? body.tools.map((t: any) => ({
-				type: t.type,
-				function: {
-					name: t.function?.name,
-					description: t.function?.description?.substring(0, 100) + '...',
-					// parameters 太长，跳过
-				}
-			})) : undefined,
-			// messages 也截断
-			messages: body.messages?.map((m: any) => ({
-				role: m.role,
-				content: typeof m.content === 'string' ? m.content?.substring(0, 200) + '...' : m.content,
-				tool_calls: m.tool_calls?.map((tc: any) => ({
-					id: tc.id,
-					type: tc.type,
-					function: { name: tc.function?.name, arguments: tc.function?.arguments?.substring(0, 100) + '...' }
-				}))
-			}))
-		};
-		this.logger.info(`[OpenAI 请求] ${JSON.stringify(logBody, null, 2)}`);
+		// 记录请求日志（精简版）
+		const requestMessages = body.messages as any[];
+		const userMsg = requestMessages?.find((m: any) => m.role === 'user');
+		const lastUserContent = userMsg
+			? (typeof userMsg.content === 'string'
+				? userMsg.content.substring(0, 100) + (userMsg.content.length > 100 ? '...' : '')
+				: '[多模态内容]')
+			: '无用户消息';
+		this.logger.debug(`[OpenAI 请求] model=${body.model}, messages=${requestMessages?.length || 0}, user="${lastUserContent}"`);
 
 		try {
 			const response = await fetch(baseURL, {
@@ -261,15 +246,15 @@ export class OpenAIProvider extends BaseProvider {
 				// 空对象 {}
 				if (Object.keys(error).length === 0) {
 					errorMsg = 'API 请求失败（空错误响应，可能是网络问题或 API 不可用）';
-					errorDetails = `请求 URL: ${baseURL}/chat/completions\n模型: ${model}`;
+					errorDetails = `请求 URL: ${baseURL}\n模型: ${model}`;
 				} else {
 					errorMsg = rawError;
 				}
 			}
 
-			const fullError = `错误: ${errorMsg}${errorDetails ? `\n${errorDetails}` : ''}`;
-			this.logger.error(fullError);
-			yield { type: 'error', content: fullError };
+			const fullError = `${errorMsg}${errorDetails ? `\n${errorDetails}` : ''}`;
+			this.logger.error('[OpenAI] API 错误:', fullError);
+			yield { type: 'error', error: fullError, content: fullError };
 		}
 	}
 

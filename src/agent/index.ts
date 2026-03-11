@@ -127,28 +127,6 @@ export class Agent {
 	}
 
 	/**
-	 * 压缩消息历史
-	 */
-	private compressMessages(messages: any[], maxTokens: number): any[] {
-		if (messages.length <= 20) {
-			return messages;
-		}
-
-		// 保留：系统提示 + 最近 10 轮完整上下文
-		const systemMsg = messages.find(msg => msg.role === 'system');
-		const recent = messages.slice(-25); // 保留最近 25 条
-
-		const result = systemMsg ? [systemMsg, ...recent.filter(m => m.role !== 'system')] : recent;
-
-		// 如果仍然太长，进一步截断
-		if (this.estimateTokenCount(result, '') > maxTokens * 0.8) {
-			return this.compressMessages(result, maxTokens * 0.8);
-		}
-
-		return result;
-	}
-
-	/**
 	 * 构建系统提示
 	 */
 	private buildSystemPrompt(
@@ -241,7 +219,7 @@ export class Agent {
 		const startTime = Date.now();
 
 		this.logger.info(`开始 Agent 运行: ${runId}`);
-		this.logger.info(`用户消息: ${message.substring(0, 100)}${message.length > 100 ? '...' : ''}`);
+		this.logger.userInput(message);
 
 		// 设置当前运行ID
 		this.currentRunId = runId;
@@ -258,13 +236,15 @@ export class Agent {
 			this.gateway.sessionManager.addMessage(session.id, { role: 'user', content: message });
 
 			// ========== 1. 获取模型和配置 ==========
-			const modelRef = options.model || this.gateway.config.get<string>('agent.defaultModel');
-			this.logger.info(`使用模型: ${modelRef || '默认'}`);
+			// 优先从 modelLibrary 获取默认模型，不再使用旧的 agent.defaultModel
+			const modelLibrary = this.gateway.config.getModelLibrary();
+			const modelRef = options.model || modelLibrary.defaultModelId;
+			this.logger.debug(`使用模型: ${modelRef || '默认'}`);
 
 			// 检测模型能力
 			const capabilities = this.detectModelCapabilities(modelRef);
-			this.logger.info(`Vision: ${capabilities.hasVision ? '✅' : '❌'}`);
-			this.logger.info(`Function Call: ${capabilities.hasFunctionCall ? '✅' : '❌'}`);
+			this.logger.debug(`Vision: ${capabilities.hasVision ? '✅' : '❌'}`);
+			this.logger.debug(`Function Call: ${capabilities.hasFunctionCall ? '✅' : '❌'}`);
 
 			// ========== 2. 获取用户信息 ==========
 			const customPrompt = this.gateway.config.get<string>('user.customPrompt');
@@ -276,7 +256,7 @@ export class Agent {
 					const ipLocation = await getLocationByIP();
 					if (ipLocation) {
 						userLocation = ipLocation;
-						this.logger.info(`IP 定位成功: ${userLocation.city}`);
+						this.logger.debug(`IP 定位成功: ${userLocation.city}`);
 					}
 				} catch {
 					this.logger.debug('IP 定位失败');
@@ -289,7 +269,7 @@ export class Agent {
 			// 过滤掉不支持 vision 的工具
 			if (!capabilities.hasVision) {
 				tools = tools.filter((t) => !VISION_REQUIRED_TOOLS.includes(t.name));
-				this.logger.info(`已过滤需要 vision 的工具`);
+				this.logger.debug(`已过滤需要 vision 的工具`);
 			}
 
 			// 应用工具白名单/黑名单
@@ -299,7 +279,7 @@ export class Agent {
 				if (disabled?.length) tools = tools.filter((t) => !disabled.includes(t.name));
 			}
 
-			this.logger.info(`可用工具: ${tools.map((t) => t.name).join(', ')}`);
+			this.logger.debug(`可用工具: ${tools.map((t) => t.name).join(', ')}`);
 
 			// ========== 4. 选择调用模式 ==========
 			// 如果模型支持 function call，使用 function 模式
@@ -307,7 +287,7 @@ export class Agent {
 			const useFunctionMode = capabilities.hasFunctionCall && tools.length > 0;
 			const toolCallMode = useFunctionMode ? 'function' : 'prompt';
 
-			this.logger.info(`工具调用模式: ${toolCallMode}`);
+			this.logger.debug(`工具调用模式: ${toolCallMode}`);
 
 			// ========== 5. 生成系统提示 ==========
 			const browserContext = this.gateway.sessionManager.getBrowserContext(session.id);
@@ -336,9 +316,7 @@ export class Agent {
 
 			while (iteration < maxIterations && !shouldStop) {
 				iteration++;
-				this.logger.info(`═══════════════════════════════════════════`);
-				this.logger.info(`迭代 ${iteration}/${maxIterations}, runId=${runId}`);
-				this.logger.info(`═══════════════════════════════════════════`);
+				this.logger.info(`── 迭代 ${iteration}/${maxIterations} ──`);
 
 				// 检查中断
 				if (this.interruptRequested) {
@@ -346,39 +324,31 @@ export class Agent {
 					return;
 				}
 
-				// 获取消息历史
+				// 获取消息历史 - 使用智能压缩机制
+				// 保留最近 6 轮完整对话，超出部分使用总结替代
 				let messages = this.gateway.sessionManager.getMessagesForAI(session.id, {
 					systemPrompt: finalSystemPrompt,
-					maxMessages: 20,
+					maxTokens: 60000,
+					preserveRecentRounds: 6,
 				});
 
-				this.logger.info(`[消息历史] 共 ${messages.length} 条消息`);
-				for (let i = 0; i < messages.length; i++) {
-					const msg = messages[i];
-					if (!msg) {
-						this.logger.warn(`[消息][${i}] undefined!`);
-						continue;
-					}
-					const role = msg.role || 'unknown';
-					const contentType = typeof msg.content;
-					const contentPreview = contentType === 'string'
-						? msg.content.substring(0, 100).replace(/\n/g, ' ')
-						: contentType === 'object' && Array.isArray(msg.content)
-							? `[${msg.content.length} 个内容块]`
-							: JSON.stringify(msg.content).substring(0, 100);
-					const tcCount = msg.tool_calls?.length || 0;
-					const tcPreview = tcCount > 0 ? `, tool_calls: [${msg.tool_calls.map((tc: any) => tc.function?.name || tc.name).join(', ')}]` : '';
-					this.logger.info(`[消息][${i}] role=${role}${tcPreview}, content=${contentPreview}`);
-				}
+				this.logger.debug(`[消息历史] 共 ${messages.length} 条消息`);
 
-				// 压缩过长上下文
+				// 估算 token 数量
 				const estimatedTokens = this.estimateTokenCount(messages, finalSystemPrompt);
-				if (estimatedTokens > 60000) {
-					this.logger.warn(`上下文过长，开始压缩`);
-					messages = this.compressMessages(messages, 50000);
+				this.logger.debug(`[Token 估算] 约 ${estimatedTokens} tokens`);
+
+				// 如果仍然超出限制，进一步压缩
+				if (estimatedTokens > 55000) {
+					this.logger.warn(`上下文仍然过长(${estimatedTokens} tokens)，使用更激进的压缩`);
+					messages = this.gateway.sessionManager.getMessagesForAI(session.id, {
+						systemPrompt: finalSystemPrompt,
+						maxTokens: 50000,
+						preserveRecentRounds: 3, // 只保留最近 3 轮
+					});
 				}
 
-				this.logger.info(`📊 tokens: ~${estimatedTokens}`);
+				this.logger.debug(`📊 tokens: ~${estimatedTokens}`);
 
 				// 调用 AI
 				yield { type: 'thinking', iteration };
@@ -399,6 +369,14 @@ export class Agent {
 				for await (const chunk of this.gateway.providerManager.chat(modelRef, messages, chatOptions)) {
 					if (this.interruptRequested) {
 						this.logger.info(`任务 ${runId} 被中断`);
+						return;
+					}
+
+					if (chunk.type === 'error') {
+						// 处理 API 错误
+						const errorMsg = chunk.error || chunk.content || '未知错误';
+						this.logger.error(`API 错误: ${errorMsg}`);
+						yield { type: 'error', error: errorMsg };
 						return;
 					}
 
@@ -439,11 +417,7 @@ export class Agent {
 				// 核心逻辑：如果没有工具调用，说明 AI 认为任务完成
 				if (toolCalls.length === 0 || finishReason === 'stop') {
 					if (fullContent) {
-						this.logger.debug(`AI 回复: ${fullContent.substring(0, 200)}...`);
-					}
-
-					// 如果有内容，输出给用户
-					if (fullContent) {
+						this.logger.aiResponse(fullContent);
 						yield { type: 'content', content: fullContent };
 					}
 
@@ -460,13 +434,13 @@ export class Agent {
 				// 这样总结时才能读取到完整的消息链
 				if (toolCalls.length > 0) {
 					const msgId = `msg_${Date.now()}`;
+					// 使用前端期望的扁平格式存储 toolCalls
 					const toolCallsData = toolCalls.map((tc) => ({
 						id: tc.id || `call_${msgId}_${Date.now()}`,
-						type: 'function',
-						function: {
-							name: tc.name,
-							arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments),
-						},
+						name: tc.name,
+						arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments || {}),
+						status: 'running', // 初始状态为 running
+						result: undefined,
 					}));
 					this.gateway.sessionManager.addMessage(session.id, {
 						id: msgId,
@@ -474,7 +448,7 @@ export class Agent {
 						content: fullContent || '',
 						toolCalls: toolCallsData,
 					});
-					this.logger.info(`[保存 assistant] msgId=${msgId}, toolCalls=${JSON.stringify(toolCalls.map(tc => tc.name))}`);
+					this.logger.debug(`[保存 assistant] msgId=${msgId}, toolCalls=${JSON.stringify(toolCalls.map(tc => tc.name))}`);
 				}
 
 				for (const toolCall of toolCalls) {
@@ -482,8 +456,11 @@ export class Agent {
 					const toolArgs = toolCall.arguments;
 					const currentToolCallId = toolCall.id; // 使用当前工具调用的 id
 
-					this.logger.info(`┌─ 执行工具: ${toolName}`);
-					this.logger.info(`│  参数: ${JSON.stringify(toolArgs).substring(0, 200)}`);
+					// 记录 AI 决策
+					const intent = toolArgs && typeof toolArgs === 'object'
+						? Object.entries(toolArgs).map(([k, v]) => `${k}=${JSON.stringify(v).substring(0, 50)}`).join(', ')
+						: '';
+					this.logger.aiDecision(toolName, intent.substring(0, 100));
 
 					yield { type: 'tool_start', tool: toolName, args: toolArgs };
 
@@ -504,9 +481,15 @@ export class Agent {
 
 					try {
 						const result = await this.gateway.executeTool(toolName, toolArgs);
-						const resultStr = typeof result === 'string' ? result.substring(0, 300) : JSON.stringify(result).substring(0, 300);
-						this.logger.info(`│  结果: ${resultStr}...`);
-						this.logger.info(`└─ 完成`);
+						// 精简工具结果日志
+						let resultSummary = '';
+						if (typeof result === 'object' && result !== null) {
+							const r = result as any;
+							if (r.url) resultSummary = `URL: ${r.url}`;
+							else if (r.success !== undefined) resultSummary = r.success ? '成功' : '失败';
+							else if (r.error) resultSummary = `错误: ${r.error}`;
+						}
+						this.logger.toolResult(toolName, true, resultSummary);
 
 						// 跟踪浏览器上下文
 						if (toolName === 'browser') {
@@ -520,7 +503,7 @@ export class Agent {
 						}
 
 						yield { type: 'tool_result', tool: toolName, result };
-
+	
 						const processed = this.processToolResult(toolName, result, capabilities.hasVision);
 						this.gateway.sessionManager.addMessage(session.id, {
 							role: 'tool', content: processed.displayContent,
@@ -531,25 +514,36 @@ export class Agent {
 								aiContext: processed.aiContext,
 							},
 						});
+	
+						// 更新 assistant 消息中的 toolCall，添加执行结果
+						if (currentToolCallId) {
+							this.gateway.sessionManager.updateToolCallResult(session.id, currentToolCallId, result);
+						}
 					} catch (error) {
-						this.logger.error(`│  错误: ${(error as Error).message}`);
+						this.logger.error(`工具执行失败 [${toolName}]`, error);
 						yield { type: 'tool_error', tool: toolName, error: (error as Error).message };
 						this.gateway.sessionManager.addMessage(session.id, {
 							role: 'tool', content: JSON.stringify({ error: (error as Error).message }),
 							toolCallId: currentToolCallId || undefined,
 							metadata: { toolName, error: true },
 						});
+
+						// 更新 assistant 消息中的 toolCall，添加错误结果
+						if (currentToolCallId) {
+							this.gateway.sessionManager.updateToolCallResult(session.id, currentToolCallId, { success: false, error: (error as Error).message });
+						}
 					}
 				}
 
 				// ========== 9. 工具执行完成，调用 AI 总结 ==========
-				this.logger.info(`工具执行完成，准备调用 AI 总结`);
+				this.logger.debug(`工具执行完成，准备调用 AI 总结`);
 				yield { type: 'thinking', iteration: iteration + 0.5 };  // 使用半迭代号表示总结阶段
 
-				// 获取最新消息（包含工具结果）
+				// 获取最新消息（包含工具结果）- 使用智能压缩
 				const summaryMessages = this.gateway.sessionManager.getMessagesForAI(session.id, {
 					systemPrompt: finalSystemPrompt,
-					maxMessages: 30,
+					maxTokens: 60000,
+					preserveRecentRounds: 6,
 				});
 
 				// 总结阶段恢复工具调用能力，允许 AI 继续执行下一步
@@ -566,13 +560,23 @@ export class Agent {
 						return;
 					}
 
+					if (chunk.type === 'error') {
+						// 处理 API 错误
+						const errorMsg = chunk.error || chunk.content || '未知错误';
+						this.logger.error(`总结阶段 API 错误: ${errorMsg}`);
+						yield { type: 'error', error: errorMsg };
+						return;
+					}
+
 					if (chunk.type === 'content') {
-						summaryContent = chunk.fullContent || chunk.content || '';
+						const chunkContent = chunk.fullContent || chunk.content || '';
+						this.logger.debug(`[总结阶段] 收到 content chunk`);
 						// 只返回新产生的内容，实现真正的流式输出
-						const newContent = summaryContent.slice(prevSummaryContentLength);
+						const newContent = chunkContent.slice(prevSummaryContentLength);
 						if (newContent) {
 							yield { type: 'content', content: newContent };
 						}
+						summaryContent = chunkContent;
 						prevSummaryContentLength = summaryContent.length;
 					} else if (chunk.type === 'tool_use') {
 						// 如果有新的工具调用，继续执行
@@ -601,6 +605,14 @@ export class Agent {
 				// 如果没有新的工具调用，任务完成
 				if (!hasMoreToolCalls) {
 					this.logger.info(`任务完成（AI 总结完成）`);
+					// 保存总结消息到 session
+					if (summaryContent) {
+						this.gateway.sessionManager.addMessage(session.id, {
+							role: 'assistant',
+							content: summaryContent,
+						});
+						this.logger.debug(`[保存总结] 内容长度: ${summaryContent.length}`);
+					}
 					yield { type: 'done', content: summaryContent };
 					shouldStop = true;
 				}
@@ -608,14 +620,15 @@ export class Agent {
 
 			// 超时强制总结
 			if (iteration >= maxIterations) {
-				this.logger.warn(`达到最大迭代次数，强制总结`);
+				this.logger.warn(`达到最大迭代次数(${maxIterations})，强制总结`);
 				this.gateway.sessionManager.addMessage(session.id, {
 					role: 'user',
 					content: '已达到操作次数限制。请根据目前的信息给用户简洁总结。',
 				});
-				const messages = this.gateway.sessionManager.getMessagesForAI(session.id, { 
-					systemPrompt: finalSystemPrompt, 
-					maxMessages: 20 
+				const messages = this.gateway.sessionManager.getMessagesForAI(session.id, {
+					systemPrompt: finalSystemPrompt,
+					maxTokens: 60000,
+					preserveRecentRounds: 6,
 				});
 				for await (const chunk of this.gateway.providerManager.chat(modelRef, messages, {})) {
 					if (chunk.type === 'content') {
@@ -627,9 +640,9 @@ export class Agent {
 			}
 
 			const duration = Date.now() - startTime;
-			this.logger.info(`Agent 运行完成: ${runId} (${duration}ms)`);
+			this.logger.success(`Agent 运行完成: ${runId} (${duration}ms)`);
 		} catch (error) {
-			this.logger.error(`Agent 运行失败: ${runId}`, (error as Error).message);
+			this.logger.error(`Agent 运行失败: ${runId}`, error);
 			yield { type: 'error', error: (error as Error).message };
 		} finally {
 			this.currentRunId = null;

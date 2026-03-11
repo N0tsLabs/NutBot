@@ -253,15 +253,25 @@ export const useAppStore = defineStore('app', () => {
 				break;
 
 			case 'tool_start':
+				// 提取 action 从 args 中
+				let action = '';
+				try {
+					const args = typeof chunk.args === 'string' ? JSON.parse(chunk.args) : chunk.args;
+					action = args?.action || args?.method || '';
+				} catch {
+					action = '';
+				}
 				currentStatus.value = {
 					type: 'tool_running',
 					tool: chunk.tool,
+					action: action,
 					args: chunk.args,
 					description: chunk.description,
 				};
 				toolExecutions.value.push({
 					id: Date.now(),
 					tool: chunk.tool,
+					action: action,
 					args: chunk.args,
 					status: 'running',
 					startTime: Date.now(),
@@ -271,6 +281,7 @@ export const useAppStore = defineStore('app', () => {
 					if (!lastMessage.toolCalls) lastMessage.toolCalls = [];
 					lastMessage.toolCalls.push({
 						name: chunk.tool,
+						action: action,
 						arguments: chunk.args,
 						status: 'running',
 						description: chunk.description,
@@ -332,8 +343,12 @@ export const useAppStore = defineStore('app', () => {
 
 			case 'error':
 				currentStatus.value = { type: 'error', error: chunk.error };
+				// 确保错误能正确显示在消息中
 				if (lastMessage && lastMessage.streaming) {
 					lastMessage.streaming = false;
+					lastMessage.error = chunk.error;
+				} else if (lastMessage && lastMessage.role === 'assistant') {
+					// 如果消息存在但不是 streaming 状态，仍然设置错误
 					lastMessage.error = chunk.error;
 				}
 				break;
@@ -418,10 +433,30 @@ export const useAppStore = defineStore('app', () => {
 
 	const handleChatError = (message) => {
 		const lastMessage = messages.value[messages.value.length - 1];
-		if (lastMessage && lastMessage.streaming) {
+		const errorMessage = message.error?.message || message.error || '未知错误';
+		
+		if (lastMessage && lastMessage.role === 'assistant') {
 			lastMessage.streaming = false;
-			lastMessage.error = message.error?.message;
+			lastMessage.error = errorMessage;
+			// 如果没有内容，添加错误提示
+			if (!lastMessage.content) {
+				lastMessage.content = '❌ 发生错误';
+			}
+		} else {
+			// 如果没有 assistant 消息，创建一个新的错误消息
+			messages.value.push({
+				id: Date.now().toString(),
+				role: 'assistant',
+				content: '❌ 发生错误',
+				error: errorMessage,
+				streaming: false,
+				timestamp: new Date().toISOString(),
+			});
 		}
+		
+		// 清理状态
+		currentStatus.value = null;
+		toolExecutions.value = [];
 	};
 
 	const handleChatInterrupted = (message) => {

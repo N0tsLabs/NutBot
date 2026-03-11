@@ -676,6 +676,56 @@ class BrowserService {
 	getCurrentDataDir(): string | null {
 		return this.nutBotDataDir;
 	}
+
+	/**
+	 * 截图功能
+	 * @param fullPage 是否截取整个页面（默认 false，只截取可视区域）
+	 * @param selector 可选，截取特定元素的选择器
+	 */
+	async screenshot(
+		fullPage?: boolean,
+		selector?: string
+	): Promise<{ success: boolean; imageData: string; format: string; message?: string }> {
+		if (!this.page || this.page.isClosed()) {
+			return { success: false, imageData: '', format: 'png', message: '浏览器未打开' };
+		}
+
+		try {
+			let screenshotBuffer: Buffer;
+
+			if (selector) {
+				// 截取特定元素
+				const element = this.page.locator(selector).first();
+				await element.waitFor({ state: 'visible', timeout: 5000 });
+				screenshotBuffer = await element.screenshot();
+				console.log(`[BrowserService] 已截取元素截图: ${selector}`);
+			} else {
+				// 截取页面
+				screenshotBuffer = await this.page.screenshot({
+					fullPage: fullPage || false,
+				});
+				console.log(`[BrowserService] 已截取页面截图 (fullPage: ${fullPage || false})`);
+			}
+
+			// 转换为 base64
+			const imageData = screenshotBuffer.toString('base64');
+
+			return {
+				success: true,
+				imageData,
+				format: 'png',
+			};
+		} catch (e) {
+			const error = e as Error;
+			console.error('[BrowserService] 截图失败:', error.message);
+			return {
+				success: false,
+				imageData: '',
+				format: 'png',
+				message: `截图失败: ${error.message}`,
+			};
+		}
+	}
 }
 
 // 导出单例
