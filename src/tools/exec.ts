@@ -50,40 +50,7 @@ export function getSystemDescription(): string {
 	else if (isMac) osName = `macOS ${release}`;
 	else if (isLinux) osName = `Linux ${release}`;
 
-	return `
-系统环境信息：
-- 操作系统: ${osName} (${platform}/${arch})
-- 主机名: ${hostname}
-- 用户名: ${username}
-- 用户目录: ${homedir}
-- CPU 核心: ${cpus} 核
-- 内存: ${totalMemory} GB
-- 默认 Shell: ${shell}
-
-命令执行注意事项：
-${
-	isWindows
-		? `- 这是 Windows 系统，请使用 PowerShell 命令
-- 打开网页使用: Start-Process "https://..."
-- 查看目录使用: Get-ChildItem 或 dir
-- 路径分隔符使用反斜杠 \\
-- 不要使用 bash/linux 命令如 ls, cat, grep 等`
-		: ''
-}
-${
-	isMac
-		? `- 这是 macOS 系统，使用 bash/zsh 命令
-- 打开网页使用: open "https://..."
-- 打开应用使用: open -a "应用名"`
-		: ''
-}
-${
-	isLinux
-		? `- 这是 Linux 系统，使用 bash 命令
-- 打开网页使用: xdg-open "https://..." 或浏览器命令`
-		: ''
-}
-`.trim();
+	return `系统环境：${osName} (${platform}/${arch})，${cpus}核，${totalMemory}GB内存，Shell: ${shell}`;
 }
 
 export class ExecTool extends BaseTool {

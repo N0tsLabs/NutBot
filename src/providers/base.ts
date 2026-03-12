@@ -21,6 +21,7 @@ export interface ChatChunk {
 	reason?: string;
 	toolCalls?: unknown[];
 	toolUse?: unknown;
+	error?: string;
 }
 
 export interface ChatOptions {

@@ -189,9 +189,17 @@ export class Gateway {
 		let session = null;
 		if (sessionId) {
 			session = this.sessionManager.getSession(sessionId);
-			// 如果提供了 sessionId 但找不到会话，记录警告
+			// 如果提供了 sessionId 但找不到会话，尝试重新加载
 			if (!session) {
-				this.logger.warn(`[chat] 找不到会话 ${sessionId}，将创建新会话`);
+				this.logger.warn(`[chat] 内存中找不到会话 ${sessionId}，尝试从文件重新加载...`);
+				// 强制重新加载会话
+				await this.sessionManager.forceReloadSessions();
+				session = this.sessionManager.getSession(sessionId);
+				if (session) {
+					this.logger.info(`[chat] 成功从文件重新加载会话 ${sessionId}`);
+				} else {
+					this.logger.error(`[chat] 会话 ${sessionId} 不存在，将创建新会话`);
+				}
 			}
 		}
 		// 如果找不到会话或没有提供 sessionId，创建新会话
@@ -222,11 +230,14 @@ export class Gateway {
 	 * 中断当前正在运行的聊天任务
 	 */
 	async interrupt(reason: string = 'user_requested'): Promise<void> {
-		this.logger.info(`中断当前任务: ${reason}`);
+		this.logger.info(`[Gateway] 收到中断请求: ${reason}`);
 		
 		// 中断 Agent 的执行
 		if (this.agent) {
+			this.logger.info(`[Gateway] 调用 Agent.interrupt()`);
 			this.agent.interrupt(reason);
+		} else {
+			this.logger.warn(`[Gateway] Agent 未初始化，无法中断`);
 		}
 	}
 
@@ -242,6 +253,17 @@ export class Gateway {
 
 		if (!tool) {
 			throw new Error(`Tool not found: ${toolName}`);
+		}
+
+		// 检查是否已请求中断
+		if (this.agent?.isInterrupted()) {
+			throw new Error('任务已被用户中断');
+		}
+
+		// 如果工具支持 signal，传递它
+		const signal = options.signal as AbortSignal | undefined;
+		if (signal?.aborted) {
+			throw new Error('任务已被用户中断');
 		}
 
 		return await tool.execute(params, options);

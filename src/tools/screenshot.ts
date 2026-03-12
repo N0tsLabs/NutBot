@@ -36,31 +36,20 @@ export class ScreenshotTool extends BaseTool {
 	constructor(config: Record<string, unknown> = {}) {
 		super({
 			name: 'screenshot',
-			description: `屏幕截图工具，截取当前整个屏幕画面（桌面截图）。截图会自动压缩以节省资源。
+			description: `屏幕截图工具，截取整个屏幕画面（系统级截图）。配合 computer 工具使用：先截图分析，再用坐标操作。
 
-【重要区分】
-- screenshot 工具：截取整个屏幕/桌面（系统级截图）
-- browser 工具的 screenshot action：截取浏览器页面（网页截图）
-
-【使用场景】
-- 需要查看桌面整体状态时
-- 需要截取非浏览器应用窗口时
-- 需要获取屏幕上的所有元素（包括桌面应用）时
-
-【何时使用 browser screenshot】
-- 当正在操作浏览器网页时，应使用 browser 工具的 screenshot action
-- browser screenshot 专门用于截取网页内容，效率更高`,
+【注意】操作浏览器时请使用 browser 工具的 screenshot action。`,
 			parameters: {
 				action: {
 					type: 'string',
-					description: '操作类型: capture(截图返回图片), save(截图保存到文件), list_screens(列出屏幕)',
+					description: '操作类型：capture(截图), save(保存), list_screens(列出屏幕)',
 					required: false,
 					default: 'capture',
 					enum: ['capture', 'save', 'list_screens'],
 				},
 				screen: {
 					type: 'number',
-					description: '要截取的屏幕编号（多显示器时使用），默认为主屏幕',
+					description: '屏幕编号（多显示器时使用）',
 				},
 				path: {
 					type: 'string',
@@ -68,7 +57,7 @@ export class ScreenshotTool extends BaseTool {
 				},
 				quality: {
 					type: 'string',
-					description: '图片质量: low(更小), medium(平衡), high(更清晰)。默认 medium',
+					description: '图片质量：low, medium, high',
 					enum: ['low', 'medium', 'high'],
 				},
 			},

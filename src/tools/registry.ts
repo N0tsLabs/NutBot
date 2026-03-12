@@ -313,6 +313,7 @@ export class ToolRegistry {
 			{ name: 'notify', module: './notify.js' }, // 系统通知
 			{ name: 'window', module: './window.js' }, // 窗口管理
 			{ name: 'system_info', module: './system-info.js' }, // 系统信息（公网IP等）
+			{ name: 'identity', module: './identity.js' }, // 身份管理
 		];
 
 		for (const { name, module } of builtinTools) {

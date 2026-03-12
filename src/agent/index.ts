@@ -1,6 +1,6 @@
 /**
  * NutBot Agent 核心
- * 
+ *
  * 设计目标：
  * 1. 支持有/无 function call 的模型
  * 2. 支持有/无 vision 的模型
@@ -15,6 +15,7 @@ import type { AgentChunk, ToolCall, ToolUse, ContentBlock } from '../types/index
 import { SessionManager } from './session.js';
 import { securityGuard } from '../services/security-guard.js';
 import { parsePromptResponse, type ParsedToolCall, generateToolCallFormatPrompt } from './prompt-parser.js';
+import { loadSystemPrompt, isFirstConversation, loadCustomIdentity } from './prompt-loader.js';
 
 interface AgentRunOptions {
 	model?: string;
@@ -51,6 +52,7 @@ export class Agent {
 	private defaultSystemPrompt: string;
 	private currentRunId: string | null = null;
 	private interruptRequested = false;
+	private abortController: AbortController | null = null;
 
 	constructor(gateway: Gateway) {
 		this.gateway = gateway;
@@ -62,9 +64,34 @@ export class Agent {
 	 */
 	interrupt(reason: string = 'user_requested'): void {
 		if (this.currentRunId) {
-			this.logger.info(`中断任务 ${this.currentRunId}: ${reason}`);
+			this.logger.info(`[Agent] 中断任务 ${this.currentRunId}: ${reason}`);
 			this.interruptRequested = true;
+			this.logger.info(`[Agent] interruptRequested 已设置为 true`);
+			// 触发 abortController 来中断底层的 HTTP 请求
+			if (this.abortController) {
+				this.logger.info(`[Agent] 触发 abortController.abort()`);
+				this.abortController.abort();
+				this.abortController = null;
+			} else {
+				this.logger.warn(`[Agent] abortController 不存在，无法中止 HTTP 请求`);
+			}
+		} else {
+			this.logger.warn(`[Agent] 没有正在运行的任务，无法中断`);
 		}
+	}
+
+	/**
+	 * 检查是否已请求中断
+	 */
+	isInterrupted(): boolean {
+		return this.interruptRequested;
+	}
+
+	/**
+	 * 获取当前 AbortSignal
+	 */
+	getAbortSignal(): AbortSignal | undefined {
+		return this.abortController?.signal;
 	}
 
 	/**
@@ -128,16 +155,60 @@ export class Agent {
 
 	/**
 	 * 构建系统提示
+	 * 基于 SYSTEM.md + 动态工具描述 + 运行时上下文
 	 */
 	private buildSystemPrompt(
 		hasVision: boolean,
-		userInfo?: { name?: string; location?: UserLocation },
+		toolSchemas?: { name: string; description: string }[],
 		toolFormatPrompt?: string,
-		browserContext?: { url?: string; title?: string }
+		browserContext?: { url?: string; title?: string },
+		isFirstConversationFlag?: boolean
 	): string {
 		const parts: string[] = [];
 
-		// 浏览器操作说明
+		// 1. 加载 SYSTEM.md 作为基础
+		parts.push(loadSystemPrompt());
+
+		// 2. 检查是否有自定义身份
+		const customIdentity = loadCustomIdentity();
+		const hasIdentity = customIdentity && customIdentity.enabled;
+
+		// 3. 如果没有身份，添加提示让 AI 主动询问
+		if (!hasIdentity) {
+			parts.push('---');
+			parts.push(`## 身份设定
+
+你还没有设定身份，请主动询问用户希望你怎么称呼、是什么性格、什么风格。
+
+你可以这样说：
+"你好！我是 NutBot。在开始前，你想让我以什么样的身份为你服务？
+
+比如：
+- 叫我'小助手'，性格活泼可爱，风格亲切友好
+- 叫我'代码专家'，性格专业严谨，风格简洁直接
+- 或者其他你喜欢的设定"
+
+如果用户提供了设定，请使用 identity.set 工具保存。`);
+		} else {
+			// 有身份时，添加身份描述
+			parts.push('---');
+			parts.push(`## 你的身份
+
+你是 ${customIdentity.name}，${customIdentity.personality}。
+风格特点：${customIdentity.style}`);
+		}
+
+		// 4. 动态工具描述
+		if (toolSchemas && toolSchemas.length > 0) {
+			parts.push('---');
+			parts.push('## 可用工具');
+			for (const tool of toolSchemas) {
+				parts.push(`- **${tool.name}**: ${tool.description}`);
+			}
+		}
+
+		// 4. 浏览器操作说明
+		parts.push('---');
 		parts.push(`## 浏览器操作
 
 【搜索】
@@ -163,43 +234,21 @@ export class Agent {
 			parts.push(`如需分析页面，请使用 browser.snapshot 获取文本内容。`);
 		}
 
-		// 网页获取
-		parts.push(`## 网页获取
-{"action":"fetch","url":"URL"} → 获取网页内容`);
-
-		// 系统命令
-		parts.push(`## 系统命令
-- Windows：Start-Process 打开应用/文件`);
-
-		// 添加工具格式提示
+		// 5. 工具格式提示（用于非 function call 模式）
 		if (toolFormatPrompt) {
-			parts.push(`---\n${toolFormatPrompt}`);
+			parts.push('---');
+			parts.push(toolFormatPrompt);
 		}
 
-		// 浏览器上下文
+		// 6. 浏览器上下文
 		if (browserContext?.url) {
-			parts.push(`\n当前页面: ${browserContext.url}`);
+			parts.push('---');
+			parts.push(`## 当前页面`);
+			parts.push(`URL: ${browserContext.url}`);
 			if (browserContext.title) {
 				parts.push(`标题: ${browserContext.title}`);
 			}
 		}
-
-		// 任务完成规则
-		parts.push(`\n【任务完成规则】
-- 搜索完成 = 任务完成，可以直接总结告诉用户
-- 打开网页后，任务已完成，告诉用户这个网站是什么、做什么的
-- 不要说"如需进一步操作请告诉我"，直接告诉用户看到了什么
-
-【回复示例】
-用户: "打开wkea"
-你: "维嘉工业品商城 (wkea.cn)，1997年创立于上海的工业品MRO采购批发平台，定位是'工业品的Costco'。主要提供正品低价、现货清单、智能询价等服务。"
-
-用户: "搜索 wkea"
-你: "搜索到以下结果：
-1. 维嘉工业品商城 (wkea.cn) - 正品低价的工业品MRO采购批发平台
-2. WKEA 维嘉 App - 提供工业品采购服务的移动应用
-3. WKEA-FM - 美国阿拉巴马州的广播电台 (98.3 FM)
-..."`);
 
 		return parts.join('\n\n');
 	}
@@ -223,12 +272,27 @@ export class Agent {
 
 		// 设置当前运行ID
 		this.currentRunId = runId;
-		this.interruptRequested = false;
+		// 注意：不要在这里重置 interruptRequested，以允许在任务开始前中断
+		// 只有在没有中断请求的情况下才创建新的 abortController
+		if (!this.interruptRequested) {
+			this.abortController = new AbortController();
+		} else {
+			this.logger.info(`任务 ${runId} 在开始前已被标记为中断`);
+			yield { type: 'error', error: '任务已被用户中断' };
+			return;
+		}
 
 		try {
 			// ========== 检查中断 ==========
 			if (this.interruptRequested) {
 				this.logger.info(`任务 ${runId} 在开始前被中断`);
+				// 保存中断消息到 session
+				this.gateway.sessionManager.addMessage(session.id, {
+					role: 'assistant',
+					content: '操作已被终止',
+					metadata: { interrupted: true },
+				});
+				yield { type: 'content', content: '操作已被终止' };
 				return;
 			}
 
@@ -295,15 +359,22 @@ export class Agent {
 				? generateToolCallFormatPrompt(tools)
 				: undefined;
 
+			// 检查是否是首次对话
+			const isFirst = isFirstConversation();
+			if (isFirst) {
+				this.logger.info('首次对话，将询问身份设定');
+			}
+
 			const systemPrompt = this.buildSystemPrompt(
 				capabilities.hasVision,
-				{ location: userLocation },
+				tools,
 				toolFormatPrompt,
-				browserContext
+				browserContext,
+				isFirst
 			);
 
 			// 添加用户自定义提示
-			const finalSystemPrompt = customPrompt 
+			const finalSystemPrompt = customPrompt
 				? `${customPrompt}\n\n${systemPrompt}`
 				: systemPrompt;
 
@@ -321,6 +392,13 @@ export class Agent {
 				// 检查中断
 				if (this.interruptRequested) {
 					this.logger.info(`任务 ${runId} 被中断`);
+					// 保存中断消息到 session
+					this.gateway.sessionManager.addMessage(session.id, {
+						role: 'assistant',
+						content: '操作已被终止',
+						metadata: { interrupted: true },
+					});
+					yield { type: 'content', content: '操作已被终止' };
 					return;
 				}
 
@@ -369,6 +447,13 @@ export class Agent {
 				for await (const chunk of this.gateway.providerManager.chat(modelRef, messages, chatOptions)) {
 					if (this.interruptRequested) {
 						this.logger.info(`任务 ${runId} 被中断`);
+						// 保存中断消息到 session
+						this.gateway.sessionManager.addMessage(session.id, {
+							role: 'assistant',
+							content: '操作已被终止',
+							metadata: { interrupted: true },
+						});
+						yield { type: 'content', content: '操作已被终止' };
 						return;
 					}
 
@@ -382,6 +467,10 @@ export class Agent {
 
 					if (chunk.type === 'content') {
 						fullContent = chunk.fullContent || fullContent + (chunk.content || '');
+						// 实时转发内容块，实现流式输出效果
+						if (chunk.content) {
+							yield { type: 'content', content: chunk.content, fullContent };
+						}
 					} else if (chunk.type === 'tool_use') {
 						// 处理工具调用（Function Calling 模式）
 						const toolUse = chunk.toolUse as any;
@@ -416,9 +505,22 @@ export class Agent {
 				// ========== 7. 检查是否完成 ==========
 				// 核心逻辑：如果没有工具调用，说明 AI 认为任务完成
 				if (toolCalls.length === 0 || finishReason === 'stop') {
+					// 注意：内容已经在上面实时流式输出了，这里不需要再次 yield
+					// 只需要记录日志和标记完成
 					if (fullContent) {
 						this.logger.aiResponse(fullContent);
-						yield { type: 'content', content: fullContent };
+					}
+
+					// 保存 assistant 消息到 session（无工具调用的情况）
+					// 修复：确保没有工具调用的 AI 回复也能被持久化保存
+					if (fullContent) {
+						const msgId = `msg_${Date.now()}`;
+						this.gateway.sessionManager.addMessage(session.id, {
+							id: msgId,
+							role: 'assistant',
+							content: fullContent,
+						});
+						this.logger.debug(`[保存 assistant] msgId=${msgId}, 无工具调用`);
 					}
 
 					this.logger.info(`任务完成（无工具调用）`);
@@ -435,13 +537,24 @@ export class Agent {
 				if (toolCalls.length > 0) {
 					const msgId = `msg_${Date.now()}`;
 					// 使用前端期望的扁平格式存储 toolCalls
-					const toolCallsData = toolCalls.map((tc) => ({
-						id: tc.id || `call_${msgId}_${Date.now()}`,
-						name: tc.name,
-						arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments || {}),
-						status: 'running', // 初始状态为 running
-						result: undefined,
-					}));
+					const toolCallsData = toolCalls.map((tc) => {
+						// 从 arguments 中提取 action 字段
+						let action = '';
+						try {
+							const args = typeof tc.arguments === 'string' ? JSON.parse(tc.arguments) : tc.arguments;
+							action = args?.action || args?.method || '';
+						} catch {
+							action = '';
+						}
+						return {
+							id: tc.id || `call_${msgId}_${Date.now()}`,
+							name: tc.name,
+							action: action, // 保存 action 字段
+							arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments || {}),
+							status: 'running', // 初始状态为 running
+							result: undefined,
+						};
+					});
 					this.gateway.sessionManager.addMessage(session.id, {
 						id: msgId,
 						role: 'assistant',
@@ -452,6 +565,19 @@ export class Agent {
 				}
 
 				for (const toolCall of toolCalls) {
+					// 检查中断请求
+					if (this.interruptRequested) {
+						this.logger.info(`任务 ${runId} 在工具执行前被中断`);
+						// 保存中断消息到 session
+						this.gateway.sessionManager.addMessage(session.id, {
+							role: 'assistant',
+							content: '操作已被终止',
+							metadata: { interrupted: true },
+						});
+						yield { type: 'content', content: '操作已被终止' };
+						return;
+					}
+
 					const toolName = toolCall.name;
 					const toolArgs = toolCall.arguments;
 					const currentToolCallId = toolCall.id; // 使用当前工具调用的 id
@@ -480,7 +606,20 @@ export class Agent {
 					}
 
 					try {
-						const result = await this.gateway.executeTool(toolName, toolArgs);
+						// 检查中断请求（安全检查后）
+						if (this.interruptRequested) {
+							this.logger.info(`任务 ${runId} 在工具执行前被中断`);
+							// 保存中断消息到 session
+							this.gateway.sessionManager.addMessage(session.id, {
+								role: 'assistant',
+								content: '操作已被终止',
+								metadata: { interrupted: true },
+							});
+							yield { type: 'content', content: '操作已被终止' };
+							return;
+						}
+
+						const result = await this.gateway.executeTool(toolName, toolArgs, { signal: this.abortController?.signal });
 						// 精简工具结果日志
 						let resultSummary = '';
 						if (typeof result === 'object' && result !== null) {
@@ -535,6 +674,19 @@ export class Agent {
 					}
 				}
 
+				// 工具执行完成后，检查是否请求了中断
+				if (this.interruptRequested) {
+					this.logger.info(`任务 ${runId} 在工具执行完成后被中断`);
+					// 保存中断消息到 session
+					this.gateway.sessionManager.addMessage(session.id, {
+						role: 'assistant',
+						content: '操作已被终止',
+						metadata: { interrupted: true },
+					});
+					yield { type: 'content', content: '操作已被终止' };
+					return;
+				}
+
 				// ========== 9. 工具执行完成，调用 AI 总结 ==========
 				this.logger.debug(`工具执行完成，准备调用 AI 总结`);
 				yield { type: 'thinking', iteration: iteration + 0.5 };  // 使用半迭代号表示总结阶段
@@ -557,6 +709,13 @@ export class Agent {
 				for await (const chunk of this.gateway.providerManager.chat(modelRef, summaryMessages, summaryOptions)) {
 					if (this.interruptRequested) {
 						this.logger.info(`任务 ${runId} 被中断`);
+						// 保存中断消息到 session
+						this.gateway.sessionManager.addMessage(session.id, {
+							role: 'assistant',
+							content: '操作已被终止',
+							metadata: { interrupted: true },
+						});
+						yield { type: 'content', content: '操作已被终止' };
 						return;
 					}
 
@@ -647,6 +806,7 @@ export class Agent {
 		} finally {
 			this.currentRunId = null;
 			this.interruptRequested = false;
+			this.abortController = null;
 		}
 	}
 
@@ -678,17 +838,12 @@ export class Agent {
 				success: boolean;
 				action?: string;
 				aiSummary?: string;
-				elements?: Array<{
-					element_id: string;
-					tag: string;
-					text?: string;
-					href?: string;
-					role?: string;
-					placeholder?: string;
-				}>;
+				elements?: string[]; // 已经是格式化后的字符串数组
 				url?: string;
 				title?: string;
 				message?: string;
+				tabs?: Array<{ index: number; url: string; title: string; active: boolean }>;
+				currentTabIndex?: number;
 			};
 
 			if (!br.success) {
@@ -723,10 +878,22 @@ export class Agent {
 			if (br.title) {
 				aiContext += `\n标题: ${br.title}`;
 			}
+			// 包含标签页信息
+			if (br.tabs && br.tabs.length > 0) {
+				aiContext += `\n\n📑 标签页 (${br.tabs.length}个):`;
+				br.tabs.forEach(tab => {
+					const activeMark = tab.active ? ' [当前]' : '';
+					aiContext += `\n  [${tab.index}] ${tab.title}${activeMark}`;
+				});
+			}
 			if (br.aiSummary) {
 				aiContext += `\n\n${br.aiSummary}`;
 			}
-
+			// 关键：包含元素列表，让 AI 知道页面有哪些可交互元素
+			if (br.elements && br.elements.length > 0) {
+				aiContext += `\n\n页面元素:\n${br.elements.join('\n')}`;
+			}
+	
 			return {
 				displayContent,
 				aiContext,

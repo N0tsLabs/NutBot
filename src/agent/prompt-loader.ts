@@ -1,13 +1,15 @@
 /**
  * Prompt 加载器
  * 从配置文件读取 AI 行为定义
- * 架构：SYSTEM.md + IDENTITY.md + BEHAVIOR.md
+ * 架构：SYSTEM.md + 动态工具描述 + 动态身份配置
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { Memory, MemoryStore } from '../memory/index.js';
+import type { ToolSchema } from '../types/index.js';
+import { generateToolsDescription, generateMethodsCheatSheet } from '../tools/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPTS_DIR = join(__dirname, '../../config/prompts');
@@ -29,15 +31,18 @@ export interface PromptContext {
 	actionHistory: string;
 	/** 搜索任务指引（可选，用于特定搜索场景） */
 	searchGuidance?: string;
+	/** 工具 schemas（用于动态生成工具描述） */
+	toolSchemas?: ToolSchema[];
 }
 
 /**
- * 提示词配置
+ * 自定义身份配置
  */
-export interface PromptConfig {
-	system: string;    // SYSTEM.md - 系统提示词（不可修改）
-	identity: string;  // IDENTITY.md - 身份提示词（可修改）
-	behavior: string;  // BEHAVIOR.md - 行为提示词（可修改）
+export interface CustomIdentity {
+	name: string;
+	personality: string;
+	style: string;
+	enabled: boolean;
 }
 
 // ============================================================================
@@ -58,74 +63,166 @@ function readFileIfExists(path: string): string | null {
 	return null;
 }
 
+/**
+ * 获取 NutBot 配置目录
+ */
+function getNutBotDir(): string {
+	const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+	return join(homeDir, '.nutbot');
+}
+
+/**
+ * 获取 persona.json 路径
+ */
+function getPersonaPath(): string {
+	return join(getNutBotDir(), 'persona.json');
+}
+
+// ============================================================================
+// 身份管理
+// ============================================================================
+
+/**
+ * 加载自定义身份配置
+ */
+export function loadCustomIdentity(): CustomIdentity | null {
+	try {
+		const path = getPersonaPath();
+		if (existsSync(path)) {
+			const content = readFileSync(path, 'utf-8');
+			return JSON.parse(content);
+		}
+	} catch {
+		// 忽略错误
+	}
+	return null;
+}
+
+/**
+ * 保存自定义身份配置
+ */
+export function saveCustomIdentity(identity: CustomIdentity): void {
+	const nutbotDir = getNutBotDir();
+	if (!existsSync(nutbotDir)) {
+		mkdirSync(nutbotDir, { recursive: true });
+	}
+	const path = getPersonaPath();
+	writeFileSync(path, JSON.stringify(identity, null, 2), 'utf-8');
+}
+
+/**
+ * 重置自定义身份为默认
+ */
+export function resetCustomIdentity(): void {
+	const path = getPersonaPath();
+	if (existsSync(path)) {
+		// 保留文件但标记为禁用
+		const identity: CustomIdentity = {
+			name: 'NutBot',
+			personality: '简洁高效的浏览器自动化助手',
+			style: '直接、专业、简洁',
+			enabled: false,
+		};
+		saveCustomIdentity(identity);
+	}
+}
+
+/**
+ * 获取当前身份描述
+ * 优先使用自定义身份，无自定义身份时返回 null
+ */
+export function getCurrentIdentityDescription(): string | null {
+	const custom = loadCustomIdentity();
+
+	if (custom && custom.enabled) {
+		return `你是 ${custom.name}，${custom.personality}。风格特点：${custom.style}`;
+	}
+
+	// 无自定义身份时返回 null，不预设身份
+	return null;
+}
+
+/**
+ * 检查是否是首次对话（没有 persona.json）
+ */
+export function isFirstConversation(): boolean {
+	return !existsSync(getPersonaPath());
+}
+
 // ============================================================================
 // 加载函数
 // ============================================================================
 
 /**
- * 加载提示词配置
- * 使用 SYSTEM.md + IDENTITY.md + BEHAVIOR.md
+ * 加载系统提示词
+ * 读取 SYSTEM.md
  */
-export function loadPromptConfig(): PromptConfig {
+export function loadSystemPrompt(): string {
 	const systemPath = join(PROMPTS_DIR, 'SYSTEM.md');
-	const identityPath = join(PROMPTS_DIR, 'IDENTITY.md');
-	const behaviorPath = join(PROMPTS_DIR, 'BEHAVIOR.md');
-
-	return {
-		system: readFileIfExists(systemPath) || getDefaultSystem(),
-		identity: readFileIfExists(identityPath) || getDefaultIdentity(),
-		behavior: readFileIfExists(behaviorPath) || getDefaultBehavior(),
-	};
+	return readFileIfExists(systemPath) || getDefaultSystem();
 }
 
 /**
  * 构建 Agent 提示词（主入口）
- * 组合 SYSTEM + IDENTITY + BEHAVIOR，并注入运行时上下文
+ * 组合 SYSTEM + 动态身份 + 动态工具描述，并注入运行时上下文
  */
 export function buildAgentPrompt(context: PromptContext): string {
-	const config = loadPromptConfig();
 	const parts: string[] = [];
 
-	// 1. SYSTEM.md - 系统提示词（工具使用规范、输出格式等）
-	parts.push(config.system);
+	// 1. SYSTEM.md - 系统提示词（核心规范）
+	parts.push(loadSystemPrompt());
 	parts.push('');
 
-	// 2. IDENTITY.md - 身份提示词（性格、风格）
-	parts.push('---');
-	parts.push(config.identity);
-	parts.push('');
+	// 2. 动态身份配置（如果存在）
+	const identityDescription = getCurrentIdentityDescription();
+	if (identityDescription) {
+		parts.push('---');
+		parts.push('## 当前身份');
+		parts.push(identityDescription);
+		parts.push('');
+	}
 
-	// 3. 运行时上下文 - 用户任务
+	// 3. 动态工具描述（从 schemas 生成）
+	if (context.toolSchemas && context.toolSchemas.length > 0) {
+		parts.push('---');
+		parts.push(generateToolsDescription(context.toolSchemas));
+
+		// 添加方法速查表
+		const methodsSheet = generateMethodsCheatSheet(context.toolSchemas);
+		if (methodsSheet) {
+			parts.push('\n## 预定义方法速查');
+			parts.push(methodsSheet);
+		}
+
+		parts.push('');
+	}
+
+	// 4. 运行时上下文 - 用户任务
 	parts.push('---');
 	parts.push('## 当前任务');
 	parts.push(context.task);
 	parts.push('');
 
-	// 4. 运行时上下文 - 当前页面状态
+	// 5. 运行时上下文 - 当前页面状态
 	if (context.currentState) {
 		parts.push('## 当前页面状态');
 		parts.push(context.currentState);
 		parts.push('');
 	}
 
-	// 5. 运行时上下文 - 操作历史
+	// 6. 运行时上下文 - 操作历史
 	if (context.actionHistory) {
 		parts.push('## 操作历史');
 		parts.push(context.actionHistory);
 		parts.push('');
 	}
 
-	// 6. 搜索任务指引（可选）
+	// 7. 搜索任务指引（可选）
 	if (context.searchGuidance) {
 		parts.push('## 搜索指引');
 		parts.push(context.searchGuidance);
 		parts.push('');
 	}
-
-	// 7. BEHAVIOR.md - 行为规则（放在最后，作为执行指导）
-	parts.push('---');
-	parts.push(config.behavior);
-	parts.push('');
 
 	return parts.join('\n');
 }
@@ -162,6 +259,7 @@ function loadMemoryStore(): MemoryStore {
 /**
  * 获取 AI 当前身份（从记忆系统）
  * 不直接导入 memoryManager，避免初始化问题
+ * @deprecated 使用 loadCustomIdentity 替代
  */
 export function getCurrentIdentity(): string | undefined {
 	const store = loadMemoryStore();
@@ -209,86 +307,28 @@ export function getUserSummary(): string {
 // ============================================================================
 
 function getDefaultSystem(): string {
-	return `# 系统提示词
+	return `# 系统约束
 
-> 本文件定义了系统底层的工具使用规范和输出格式要求，不可修改。
-
-## 工具使用规范
-
-### Browser 工具
-
-| 方法 | 说明 | 参数 |
-|------|------|------|
-| \`goto(url)\` | 访问网页 | \`url\`: 网页地址 |
-| \`state()\` | 获取当前页面元素列表 | 无 |
-| \`click(index)\` | 点击指定编号的元素 | \`index\`: 元素编号 |
-| \`type(index, text)\` | 在指定输入框中输入文本 | \`index\`: 元素编号，\`text\`: 输入内容 |
-| \`press(key)\` | 按键操作 | \`key\`: Enter, Tab, Escape 等 |
-| \`scroll(direction)\` | 滚动页面 | \`direction\`: up/down |
-
-### 使用规则
-
-1. **必须先 \`state()\` 获取元素列表**
-2. **每次操作后自动返回新状态**
-3. **元素不存在时重新获取**
-4. **index 是数字，从 state() 结果获取**
-
-## JSON 输出格式
-
-所有决策必须返回严格的 JSON 格式：
-
+## 输出格式
+所有响应必须是 JSON：
 \`\`\`json
 {
   "action": "操作名称",
-  "tool": "browser",
-  "method": "goto/state/click/type/press/scroll",
+  "tool": "工具名",
+  "method": "方法名",
   "params": {},
-  "reason": "简短说明",
+  "reason": "原因",
   "done": false,
   "result": ""
 }
 \`\`\`
+
+## 完成标准
+done: true 时，result 必须包含具体信息，禁止"任务已完成"等废话。
+
+## 可用方法
+[由代码动态生成]
 `;
-}
-
-function getDefaultIdentity(): string {
-	return `# 身份定义
-
-## 基本信息
-
-- **名字**：NutBot
-- **身份**：浏览器自动化智能助手
-
-## 核心性格
-
-- 真诚帮助，不走形式
-- 有主见但不固执
-- 主动尝试，不要事事都问
-- 谨慎对待外部操作
-
-## 语言风格
-
-- 简洁优先，有信息量
-- 去掉客套话
-- 专业但不冷冰冰
-`;
-}
-
-function getDefaultBehavior(): string {
-	return `# BEHAVIOR.md - 行为规则
-
-## 浏览器操作
-- "X站搜索Y" → 使用该网站内部搜索
-- 操作步骤：goto → state → click → type → press Enter
-
-## 初始页面处理
-- 如果当前页面为空白或提示"浏览器已启动"，**必须**先使用 goto 访问目标网站
-- 不要重复获取空白页面的 state
-
-## 工作流程
-1. 先理解，再执行
-2. 保持上下文
-3. 错误处理：说明原因+提供方案`;
 }
 
 // ============================================================================
@@ -296,8 +336,13 @@ function getDefaultBehavior(): string {
 // ============================================================================
 
 export default {
-	loadPromptConfig,
 	buildAgentPrompt,
+	loadSystemPrompt,
 	getCurrentIdentity,
 	getUserSummary,
+	loadCustomIdentity,
+	saveCustomIdentity,
+	resetCustomIdentity,
+	getCurrentIdentityDescription,
+	isFirstConversation,
 };

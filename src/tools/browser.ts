@@ -43,6 +43,8 @@ interface PageState {
 	title: string;
 	elements: string[]; // 格式化后的元素列表，如 "[0] button: 搜索"
 	content?: string; // 页面主要内容文本
+	tabs?: Array<{ index: number; url: string; title: string; active: boolean }>; // 所有标签页信息
+	currentTabIndex?: number; // 当前标签页索引
 }
 
 export class BrowserTool extends BaseTool {
@@ -57,75 +59,33 @@ export class BrowserTool extends BaseTool {
 			name: 'browser',
 			description: `浏览器自动化工具。通过数字索引操作网页元素。
 
-【使用流程】
-1. goto(url) - 访问网页（自动返回页面状态）
-2. click(index) / type(index, text) - 操作指定编号的元素（自动返回页面状态）
-3. 根据返回的最新元素列表继续操作
+【绝对禁止 - 违反会导致重复操作】
+1. **严禁 goto 后调用 state** - goto 已返回完整页面状态（包含元素列表）
+2. **严禁 click/type/press/scroll 后调用 state** - 这些操作已自动返回新状态
+3. **严禁无目的截图** - 只有页面视觉变化时才截图
+4. **严禁重复获取状态** - 相信工具返回值，不要重复验证
 
-【自动 State 机制】
-以下操作执行后会自动获取并返回页面状态（URL、标题、可交互元素列表）：
-- goto - 导航到新页面后
-- click - 点击元素后
-- new_tab - 打开新标签页后
-- back / forward - 浏览器前进后退后
-- refresh - 刷新页面后
-- type / fill - 输入内容后
-- press - 按键后
-- scroll - 滚动后
-- switch_tab - 切换标签页后
+【正确执行流程】
+1. goto(url) - 访问网页，直接返回页面状态（包含元素列表）
+2. 根据返回的元素列表，立即执行 click(index) 或 type(index, text)
+3. 操作后自动返回新状态，继续下一步操作
+4. 只有页面意外变化且未返回状态时，才调用 state()
 
-【重要规则】
-- 每次操作后页面元素索引会重新分配
-- 使用返回的最新元素列表中的索引进行下一次操作
-- 不要使用之前返回的过期索引，它们可能已经无效
-- 如果元素找不到会报错，需要重新获取最新列表
+【元素类型标记】
+- [SEARCH][可输入] - 搜索输入框，可输入文本
+- [FORM][可输入] - 表单输入框，可输入文本
+- [BUTTON] - 按钮，只能点击
+- [LINK] - 普通链接，只能点击
+- [NAVIGATION] - 导航链接，只能点击
+- [PROMOTION] - 推广/广告，避免点击
 
-【元素类型说明】
-元素列表中的每个元素都有类型标记，帮助识别：
-- [SEARCH] - 搜索框，最高优先级，通常是需要输入的地方
-- [NAVIGATION] - 导航链接，如首页、分类等
-- [FORM] - 表单输入框（可输入）
-- [BUTTON] - 按钮（仅可点击，不可输入）
-- [LINK] - 普通链接（仅可点击，不可输入）
-- [PROMOTION] - 推广/广告，低优先级，尽量避免点击
-
-【type 操作重要警告】
-type 操作只能用于可输入元素（input、textarea、select、[contenteditable]）
-禁止对以下元素使用 type 操作：
-   - 按钮（BUTTON 类型）
-   - 链接（LINK 类型）
-   - 导航元素（NAVIGATION 类型）
-只能对以下元素使用 type 操作：
-   - 搜索框（SEARCH 类型）
-   - 表单输入框（FORM 类型）
-如果尝试对不可输入元素使用 type 操作，会报错："Element is not an <input>, <textarea>, <select> or [contenteditable]"
-
-【避免误点推广链接】
-警告：页面顶部常有推广横幅/广告，请注意：
-1. 优先点击带有明确文本描述的元素（如"搜索"、"登录"）
-2. 避免点击无名称或名称可疑的元素（如"点击领取"、"限时优惠"）
-3. 注意元素类型标记：[PROMOTION] 表示可能是广告
-4. 搜索框通常是 [SEARCH] 类型，优先选择此类元素进行搜索
-5. 如果不确定，可以先截图查看页面布局
-
-【选择元素的建议】
-- 搜索功能：找 [SEARCH] 类型的输入框
-- 导航跳转：找 [NAVIGATION] 类型的链接（只能 click）
-- 提交表单：找 [BUTTON] 类型的按钮（只能 click）
-- 输入文本：找 [FORM] 类型的输入框
-- 避免点击：[PROMOTION] 类型的元素
-
-【搜索场景优化建议】
-如果页面搜索功能复杂或搜索框难以定位，可以直接使用 goto 跳转到搜索 URL：
-- B站搜索：https://search.bilibili.com/all?keyword=关键词
-- 百度搜索：https://www.baidu.com/s?wd=关键词
-- Google搜索：https://www.google.com/search?q=关键词
-这样可以绕过在页面上查找搜索框的步骤，直接获取搜索结果。
-
-【截图功能说明】
-- screenshot action: 截取浏览器页面截图，保存为文件并返回文件路径
-- 使用场景：需要查看网页当前状态、确认页面布局、验证操作结果
-- 与系统截图工具的区别：browser screenshot 专门用于截取浏览器页面，而非整个屏幕`,
+【执行原则】
+- **立即执行** - 获取信息后马上执行下一步，不要犹豫
+- **不重复** - 每个操作只执行一次，不要重复验证
+- **相信返回** - 工具返回值包含完整信息，不需要额外确认
+- **type 只能用于带有 [可输入] 标记的元素** - 即 [SEARCH][可输入] 和 [FORM][可输入]
+- **严禁对 [BUTTON]、[LINK]、[NAVIGATION] 使用 type** - 这些元素只能点击
+- 必须使用最新元素索引，每次操作后索引会重新分配`,
 			parameters: {
 				action: {
 					type: 'string',
@@ -133,21 +93,21 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 					required: true,
 					enum: ['goto', 'state', 'click', 'type', 'press', 'scroll', 'tabs', 'switch_tab', 'new_tab', 'back', 'forward', 'refresh', 'close', 'screenshot'],
 				},
-			url: {
-				type: 'string',
-				description: 'goto 或 new_tab 的目标网址。搜索场景建议：可直接使用搜索URL如 https://search.bilibili.com/all?keyword=关键词',
-			},
+				url: {
+					type: 'string',
+					description: 'goto 或 new_tab 的目标网址',
+				},
 				index: {
 					type: 'number',
-					description: '元素编号（必须从最新的 state 结果获取，每次操作后索引会重新分配）',
+					description: '元素编号（从 state 结果获取）。**重要**: type操作只能用于带有[可输入]标记的元素（[SEARCH][可输入]或[FORM][可输入]），严禁用于没有[可输入]标记的元素如[BUTTON]、[LINK]、[NAVIGATION]',
 				},
 				text: {
 					type: 'string',
-					description: 'type 操作要输入的文本。⚠️ 注意：type 只能用于可输入元素（input、textarea、select），不能用于按钮或链接！',
+					description: 'type 操作要输入的文本',
 				},
 				key: {
 					type: 'string',
-					description: 'press 操作的按键：Enter, Tab, Escape, ArrowDown 等',
+					description: 'press 操作的按键：Enter, Tab, Escape 等',
 				},
 				direction: {
 					type: 'string',
@@ -156,15 +116,15 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 				},
 				fullPage: {
 					type: 'boolean',
-					description: 'screenshot 操作是否截取整个页面（默认 false，只截取可视区域）。注意：此截图仅截取浏览器页面内容，保存为文件后返回文件路径',
+					description: 'screenshot 是否截取整个页面',
 				},
 				selector: {
 					type: 'string',
-					description: 'screenshot 操作可选，截取特定元素的选择器',
+					description: 'screenshot 截取特定元素的选择器',
 				},
 				tab_index: {
 					type: 'number',
-					description: 'switch_tab 操作的目标标签页索引（从 tabs 操作返回的列表中获取）',
+					description: 'switch_tab 的目标标签页索引',
 				},
 			},
 			...config,
@@ -327,9 +287,50 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 
 	/**
 	 * 获取页面状态：URL + 标题 + 可交互元素列表
+	 *
+	 * 自动检测并切换到最新的活动标签页
 	 */
-	private async getState(): Promise<PageState & { success: boolean }> {
-		const page = await this.ensureBrowser();
+	private async getState(): Promise<PageState & { success: boolean; newTab?: boolean; tabSwitched?: boolean }> {
+		// 先确保浏览器已启动
+		if (!this.context) {
+			await this.ensureBrowser();
+		}
+
+		// 检查是否有新标签页打开，自动切换到最新的标签页
+		if (this.context) {
+			const pages = this.context.pages();
+			if (pages.length > 0) {
+				// 获取最后一个标签页（通常是最新打开的）
+				const lastPage = pages[pages.length - 1];
+				
+				// 如果当前页面不是最后一个标签页，切换到最新的
+				if (this.page !== lastPage && !lastPage.isClosed()) {
+					const oldUrl = this.page?.url();
+					this.page = lastPage;
+					await this.page.bringToFront();
+					
+					// 等待新页面加载完成
+					await this.page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+					
+					const newUrl = this.page.url();
+					this.logger.info(`自动切换到最新标签页: ${newUrl}`);
+					
+					// 返回状态，标记已切换标签页
+					const state = await this.getPageState();
+					return { ...state, newTab: true, tabSwitched: true };
+				}
+			}
+		}
+
+		// 没有标签页切换，直接获取当前页面状态
+		return await this.getPageState();
+	}
+
+	/**
+		* 获取当前页面的详细状态（不检查标签页切换）
+		*/
+	private async getPageState(): Promise<PageState & { success: boolean }> {
+		const page = this.page!;
 
 		// 使用 evaluate 获取页面可交互元素
 		// 使用字符串形式传递 JavaScript 代码，避免 TypeScript 编译问题
@@ -565,22 +566,37 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 				priority,
 				description
 			});
-
-			// 构建简化的元素显示字符串: [index] [类别] role: name
-			const elementStr = `[${displayIndex}] [${elementType.toUpperCase()}] ${el.role || el.tag}: ${displayName.slice(0, 40)}`;
-
-			elements.push(elementStr);
-			displayIndex++;
-		});
+	
+				// 构建元素显示字符串 - 明确标记可输入元素
+					const isInputtable = elementType === 'search' || elementType === 'form';
+					const inputtableMark = isInputtable ? '[可输入]' : '';
+					const elementStr = `[${displayIndex}] [${elementType.toUpperCase()}]${inputtableMark} ${el.role || el.tag}: ${displayName.slice(0, 50)}`;
+	
+				elements.push(elementStr);
+				displayIndex++;
+			});
 
 		this.logger.info(`页面状态: ${elements.length} 个可交互元素`);
+
+		// 获取所有标签页信息
+		const tabs = this.context ? await Promise.all(
+			this.context.pages().map(async (p, i) => ({
+				index: i,
+				url: p.url(),
+				title: await p.title().catch(() => ''),
+				active: p === this.page,
+			}))
+		) : [];
+		const currentTabIndex = tabs.findIndex((t: { active: boolean }) => t.active);
 
 		return {
 			success: true,
 			url: page.url(),
 			title: await page.title(),
 			elements,
-			content: pageDataTyped.content
+			content: pageDataTyped.content,
+			tabs,
+			currentTabIndex
 		};
 	}
 
@@ -603,7 +619,7 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 	/**
 	 * 访问 URL
 	 */
-	private async goto(url: string): Promise<PageState & { success: boolean; action: string }> {
+	private async goto(url: string): Promise<PageState & { success: boolean; action: string; newTab?: boolean; tabSwitched?: boolean }> {
 		const page = await this.ensureBrowser();
 
 		// 确保 URL 有协议
@@ -622,7 +638,7 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 	/**
 	 * 点击元素
 	 */
-	private async click(index: number): Promise<PageState & { success: boolean; action: string; clicked: string; newTab?: boolean }> {
+	private async click(index: number): Promise<PageState & { success: boolean; action: string; clicked: string; newTab?: boolean; tabSwitched?: boolean }> {
 		const page = await this.ensureBrowser();
 		const element = this.elementMap.get(index);
 
@@ -680,7 +696,7 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 	/**
 	 * 输入文本
 	 */
-	private async type(index: number, text: string): Promise<PageState & { success: boolean; action: string; typed: string }> {
+	private async type(index: number, text: string): Promise<PageState & { success: boolean; action: string; typed: string; newTab?: boolean; tabSwitched?: boolean }> {
 		const page = await this.ensureBrowser();
 		const element = this.elementMap.get(index);
 
@@ -689,6 +705,29 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 			throw new Error(
 				`找不到索引为 ${index} 的元素。当前页面只有 ${availableCount} 个可交互元素（索引 0-${availableCount - 1}）。\n` +
 				`可能原因：页面已变化或使用了过期的索引。请先执行 state() 获取最新元素列表。`
+			);
+		}
+
+		// 检查元素类型，确保只能在可输入元素上使用 type
+		if (element.elementType !== 'search' && element.elementType !== 'form') {
+			// 获取当前页面所有可输入元素的索引列表
+			const inputtableIndices: number[] = [];
+			this.elementMap.forEach((el, idx) => {
+				if (el.elementType === 'search' || el.elementType === 'form') {
+					inputtableIndices.push(idx);
+				}
+			});
+			
+			const inputtableList = inputtableIndices.length > 0
+				? inputtableIndices.map(i => `[${i}]`).join(', ')
+				: '无';
+			
+			throw new Error(
+				`❌ 无法在元素 [${index}] 上输入文本！\n` +
+				`元素类型: [${element.elementType.toUpperCase()}] ${element.role}: ${element.name}\n` +
+				`\n⚠️ type 操作只能用于带有 [可输入] 标记的元素（[SEARCH][可输入] 或 [FORM][可输入]）。\n` +
+				`当前页面可输入的元素索引: ${inputtableList}\n` +
+				`请使用正确的索引（从上述列表中选择）。`
 			);
 		}
 
@@ -705,7 +744,7 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 	/**
 	 * 按键
 	 */
-	private async press(key: string): Promise<PageState & { success: boolean; action: string; pressed: string }> {
+	private async press(key: string): Promise<PageState & { success: boolean; action: string; pressed: string; newTab?: boolean; tabSwitched?: boolean }> {
 		const page = await this.ensureBrowser();
 
 		await page.keyboard.press(key);
@@ -722,7 +761,7 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 	/**
 	 * 滚动页面
 	 */
-	private async scroll(direction: string): Promise<PageState & { success: boolean; action: string }> {
+	private async scroll(direction: string): Promise<PageState & { success: boolean; action: string; newTab?: boolean; tabSwitched?: boolean }> {
 		const page = await this.ensureBrowser();
 
 		const delta = direction === 'up' ? -800 : 800;
@@ -763,7 +802,7 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 	/**
 	 * 切换到指定标签页
 	 */
-	private async switchTab(tabIndex: number): Promise<PageState & { success: boolean; action: string; switched_to: number }> {
+	private async switchTab(tabIndex: number): Promise<PageState & { success: boolean; action: string; switched_to: number; newTab?: boolean; tabSwitched?: boolean }> {
 		if (!this.context) {
 			throw new Error('浏览器上下文未初始化');
 		}
@@ -785,7 +824,7 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 	/**
 	 * 返回上一页
 	 */
-	private async goBack(): Promise<PageState & { success: boolean; action: string }> {
+	private async goBack(): Promise<PageState & { success: boolean; action: string; newTab?: boolean; tabSwitched?: boolean }> {
 		const page = await this.ensureBrowser();
 
 		await page.goBack({ waitUntil: 'domcontentloaded' });
@@ -799,7 +838,7 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 	/**
 	 * 前进到下一页
 	 */
-	private async goForward(): Promise<PageState & { success: boolean; action: string }> {
+	private async goForward(): Promise<PageState & { success: boolean; action: string; newTab?: boolean; tabSwitched?: boolean }> {
 		const page = await this.ensureBrowser();
 
 		await page.goForward({ waitUntil: 'domcontentloaded' });
@@ -813,7 +852,7 @@ type 操作只能用于可输入元素（input、textarea、select、[contentedi
 	/**
 	 * 刷新当前页面
 	 */
-	private async refresh(): Promise<PageState & { success: boolean; action: string }> {
+	private async refresh(): Promise<PageState & { success: boolean; action: string; newTab?: boolean; tabSwitched?: boolean }> {
 		const page = await this.ensureBrowser();
 
 		await page.reload({ waitUntil: 'domcontentloaded' });

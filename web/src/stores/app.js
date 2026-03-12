@@ -435,21 +435,37 @@ export const useAppStore = defineStore('app', () => {
 		const lastMessage = messages.value[messages.value.length - 1];
 		const errorMessage = message.error?.message || message.error || '未知错误';
 		
+		// 检查是否是中断错误
+		const isInterruptError = errorMessage.includes('中断') || errorMessage.includes('interrupted');
+		
 		if (lastMessage && lastMessage.role === 'assistant') {
 			lastMessage.streaming = false;
 			lastMessage.error = errorMessage;
-			// 如果没有内容，添加错误提示
-			if (!lastMessage.content) {
-				lastMessage.content = '❌ 发生错误';
+			
+			if (isInterruptError) {
+				// 中断错误特殊处理 - 简化为一句话
+				const interruptMessage = '操作已被终止';
+				if (!lastMessage.content || lastMessage.content.trim() === '') {
+					lastMessage.content = interruptMessage;
+				} else if (!lastMessage.content?.includes('操作已被终止')) {
+					lastMessage.content = lastMessage.content + '\n\n' + interruptMessage;
+				}
+				lastMessage.interrupted = true;
+			} else {
+				// 普通错误
+				if (!lastMessage.content) {
+					lastMessage.content = '❌ 发生错误';
+				}
 			}
 		} else {
 			// 如果没有 assistant 消息，创建一个新的错误消息
 			messages.value.push({
 				id: Date.now().toString(),
 				role: 'assistant',
-				content: '❌ 发生错误',
+				content: isInterruptError ? '操作已被终止' : '❌ 发生错误',
 				error: errorMessage,
 				streaming: false,
+				interrupted: isInterruptError,
 				timestamp: new Date().toISOString(),
 			});
 		}
@@ -463,11 +479,31 @@ export const useAppStore = defineStore('app', () => {
 		const lastMessage = messages.value[messages.value.length - 1];
 		if (lastMessage && lastMessage.streaming) {
 			lastMessage.streaming = false;
-			lastMessage.content = (lastMessage.content || '') + '\n\n⚠️ **任务已中断**';
+			// 简化中断提示为一句话
+			const interruptMessage = '操作已被终止';
+			// 如果消息内容为空，直接设置为中断提示
+			if (!lastMessage.content || lastMessage.content.trim() === '') {
+				lastMessage.content = interruptMessage;
+			} else if (!lastMessage.content?.includes('操作已被终止')) {
+				// 如果已有内容，追加中断提示
+				lastMessage.content = lastMessage.content + '\n\n' + interruptMessage;
+			}
+			lastMessage.interrupted = true;
+		} else if (!lastMessage || lastMessage.role !== 'assistant') {
+			// 如果没有正在流式传输的助手消息，创建一个新的中断消息
+			messages.value.push({
+				id: Date.now().toString(),
+				role: 'assistant',
+				content: '操作已被终止',
+				streaming: false,
+				interrupted: true,
+				timestamp: new Date().toISOString(),
+			});
 		}
 		// 清理状态
 		currentStatus.value = null;
 		toolExecutions.value = [];
+		console.log('[handleChatInterrupted] 任务已中断:', message.reason);
 	};
 
 	const handleChatInterruptError = (message) => {
@@ -483,6 +519,18 @@ export const useAppStore = defineStore('app', () => {
 
 	// 发送消息
 	const sendMessage = async (content, options = {}) => {
+		// 确保有当前会话
+		if (!currentSessionId.value) {
+			console.log('[sendMessage] 没有当前会话，先创建会话');
+			await createSession();
+		}
+		
+		// 再次检查会话是否存在（可能在创建后仍然失败）
+		if (!currentSessionId.value) {
+			console.error('[sendMessage] 无法创建会话，无法发送消息');
+			throw new Error('无法创建会话');
+		}
+		
 		// 清理之前的状态
 		currentStatus.value = { type: 'sending' };
 		toolExecutions.value = [];
@@ -507,6 +555,8 @@ export const useAppStore = defineStore('app', () => {
 			timestamp: new Date().toISOString(),
 			agentId, // 记录使用的 Agent
 		});
+
+		console.log(`[sendMessage] 发送消息到会话: ${currentSessionId.value}`);
 
 		// 通过 WebSocket 发送
 		if (ws.value && ws.value.readyState === 1) {
@@ -564,11 +614,36 @@ export const useAppStore = defineStore('app', () => {
 		}
 	};
 
+	// 处理历史消息中的 toolCalls，确保 action 字段存在
+	const processHistoryToolCalls = (history) => {
+		if (!Array.isArray(history)) return history;
+		
+		return history.map(msg => {
+			if (msg.role === 'assistant' && msg.toolCalls && Array.isArray(msg.toolCalls)) {
+				msg.toolCalls = msg.toolCalls.map(tool => {
+					// 如果已经有 action 字段，不需要处理
+					if (tool.action) return tool;
+					
+					// 从 arguments 中提取 action
+					try {
+						const args = typeof tool.arguments === 'string' ? JSON.parse(tool.arguments) : tool.arguments;
+						tool.action = args?.action || args?.method || '';
+					} catch {
+						tool.action = '';
+					}
+					return tool;
+				});
+			}
+			return msg;
+		});
+	};
+
 	// 加载数据
 	const loadSessions = async () => {
 		try {
 			const list = await api.get('/api/sessions');
 			sessions.value = list;
+			console.log(`[loadSessions] 加载了 ${list.length} 个会话`);
 
 			// 尝试恢复最近的 sessionId
 			const savedId = localStorage.getItem('nutbot_currentSessionId');
@@ -576,39 +651,53 @@ export const useAppStore = defineStore('app', () => {
 				currentSessionId.value = savedId;
 				// 加载该会话的历史
 				try {
-					messages.value = await api.get(`/api/sessions/${savedId}/history`);
-					console.log(`[loadSessions] 成功加载 ${messages.value.length} 条历史消息`);
+					const history = await api.get(`/api/sessions/${savedId}/history`);
+					// 确保历史记录是数组
+					if (Array.isArray(history)) {
+						messages.value = processHistoryToolCalls(history);
+						console.log(`[loadSessions] 成功加载 ${history.length} 条历史消息`);
+					} else {
+						console.warn('[loadSessions] 返回的历史记录不是数组:', history);
+						messages.value = [];
+					}
 				} catch (e) {
 					console.warn(`[loadSessions] 会话历史加载失败: ${e.message}`);
-					// 不要清空消息，保留当前状态
+					messages.value = [];
 				}
 			} else if (list.length > 0) {
 				// 如果没有保存的，选择最近更新的
 				const sorted = [...list].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 				currentSessionId.value = sorted[0].id;
 				localStorage.setItem('nutbot_currentSessionId', sorted[0].id);
+				console.log(`[loadSessions] 选择最近更新的会话: ${sorted[0].id}`);
 				try {
-					messages.value = await api.get(`/api/sessions/${sorted[0].id}/history`);
+					const history = await api.get(`/api/sessions/${sorted[0].id}/history`);
+					if (Array.isArray(history)) {
+						messages.value = processHistoryToolCalls(history);
+						console.log(`[loadSessions] 成功加载 ${history.length} 条历史消息`);
+					} else {
+						messages.value = [];
+					}
 				} catch (e) {
 					console.warn(`[loadSessions] 会话历史加载失败: ${e.message}`);
 					messages.value = [];
 				}
 			} else {
 				// 没有会话，创建一个新会话
+				console.log('[loadSessions] 没有会话，创建新会话');
 				await createSession();
 			}
 		} catch (error) {
 			console.error('[loadSessions] 加载会话列表失败:', error);
-			// 出错时如果当前有会话，尝试加载它的历史
-			if (currentSessionId.value && sessions.value.find(s => s.id === currentSessionId.value)) {
-				try {
-					messages.value = await api.get(`/api/sessions/${currentSessionId.value}/history`);
-				} catch {
-					// 仍然失败则不清空消息
-				}
-			} else {
-				// 没有会话，创建一个新会话
+			// 出错时清空会话列表，等待下次重试
+			sessions.value = [];
+			currentSessionId.value = null;
+			messages.value = [];
+			// 尝试创建新会话
+			try {
 				await createSession();
+			} catch (e) {
+				console.error('[loadSessions] 创建新会话也失败:', e);
 			}
 		}
 	};
@@ -743,18 +832,12 @@ export const useAppStore = defineStore('app', () => {
 			currentSessionId.value = session.id;
 			localStorage.setItem('nutbot_currentSessionId', session.id);
 			messages.value = [];
+			console.log(`[createSession] 成功创建会话: ${session.id}`);
 		} catch (error) {
-			console.error('Failed to create session:', error);
-			// 回退到本地创建
-			const newSession = {
-				id: Date.now().toString(),
-				title: 'New Chat',
-				createdAt: new Date().toISOString(),
-			};
-			sessions.value.unshift(newSession);
-			currentSessionId.value = newSession.id;
-			localStorage.setItem('nutbot_currentSessionId', newSession.id);
-			messages.value = [];
+			console.error('[createSession] 创建会话失败:', error);
+			// 不再回退到本地创建，而是抛出错误让调用者处理
+			// 这样可以避免前后端会话 ID 不一致的问题
+			throw new Error(`创建会话失败: ${error.message}`);
 		}
 	};
 
@@ -799,10 +882,21 @@ export const useAppStore = defineStore('app', () => {
 	const selectSession = async (id) => {
 		currentSessionId.value = id;
 		localStorage.setItem('nutbot_currentSessionId', id);
+		console.log(`[selectSession] 切换到会话: ${id}`);
 		try {
-			messages.value = await api.get(`/api/sessions/${id}/history`);
+			const history = await api.get(`/api/sessions/${id}/history`);
+			if (Array.isArray(history)) {
+				messages.value = history;
+				console.log(`[selectSession] 成功加载 ${history.length} 条历史消息`);
+			} else if (history.error) {
+				console.error(`[selectSession] 加载历史失败: ${history.message}`);
+				messages.value = [];
+			} else {
+				console.warn('[selectSession] 返回的历史记录格式不正确:', history);
+				messages.value = [];
+			}
 		} catch (error) {
-			console.error('Failed to load session history:', error);
+			console.error('[selectSession] 加载会话历史失败:', error);
 			messages.value = [];
 		}
 	};
@@ -853,6 +947,7 @@ export const useAppStore = defineStore('app', () => {
 	return {
 		// 状态
 		connected,
+		ws,
 		sessions,
 		currentSessionId,
 		currentSession,

@@ -452,29 +452,29 @@ export class ComputerTool extends BaseTool {
 	constructor(config: Record<string, unknown> = {}) {
 		super({
 			name: 'computer',
-			description: `桌面控制工具，通过坐标操作鼠标键盘。配合 screenshot 工具使用：先截图分析界面，再用坐标点击操作。当前系统: ${systemInfo.isWindows ? 'Windows' : systemInfo.isMac ? 'macOS' : 'Linux'}`,
+			description: `桌面控制工具，通过坐标操作鼠标键盘。配合 screenshot 工具使用：先截图分析界面，再用坐标点击操作。`,
 			parameters: {
 				action: {
 					type: 'string',
 					description: '操作类型',
 					required: true,
 					enum: [
-						'mouse_move', // 移动鼠标到坐标
-						'left_click', // 左键单击
-						'right_click', // 右键单击
-						'double_click', // 双击
-						'scroll', // 滚动
-						'type', // 输入文本
-						'key', // 按键
-						'hotkey', // 快捷键组合
-						'cursor_position', // 获取当前鼠标位置
-						'list_elements', // 🆕 获取屏幕上所有可交互元素（精确坐标）
-						'click_element', // 🆕 点击指定名称的元素
+						'mouse_move',
+						'left_click',
+						'right_click',
+						'double_click',
+						'scroll',
+						'type',
+						'key',
+						'hotkey',
+						'cursor_position',
+						'list_elements',
+						'click_element',
 					],
 				},
 				coordinate: {
 					type: 'array',
-					description: '截图中的像素坐标 [x, y]。直接使用你在截图中看到的坐标，工具会自动处理屏幕缩放转换',
+					description: '截图中的像素坐标 [x, y]，工具会自动处理屏幕缩放',
 					items: { type: 'number' },
 				},
 				text: {
@@ -483,34 +483,33 @@ export class ComputerTool extends BaseTool {
 				},
 				key: {
 					type: 'string',
-					description: 'key 操作的按键 (Enter, Tab, Escape, F1-F12, Up, Down, Left, Right 等)',
+					description: 'key 操作的按键：Enter, Tab, Escape, F1-F12, Up, Down, Left, Right',
 				},
 				keys: {
 					type: 'array',
-					description:
-						'hotkey 操作的按键组合。Windows: ["ctrl","c"], ["win"], ["alt","tab"]。macOS: ["cmd","c"], ["cmd","space"](Spotlight)。Linux: ["super"], ["ctrl","c"]',
+					description: 'hotkey 操作的按键组合，如 ["ctrl","c"]',
 					items: { type: 'string' },
 				},
 				delay: {
 					type: 'number',
-					description: '操作后等待的毫秒数（用于等待界面响应），默认 0。建议：打开系统搜索后等待 500-1000ms',
+					description: '操作后等待的毫秒数',
 				},
 				direction: {
 					type: 'string',
-					description: 'scroll 操作的方向: up, down',
+					description: 'scroll 方向：up, down',
 					enum: ['up', 'down'],
 				},
 				amount: {
 					type: 'number',
-					description: 'scroll 操作的滚动量，默认 3（滚轮格数）',
+					description: 'scroll 滚动量',
 				},
 				element_name: {
 					type: 'string',
-					description: 'click_element 操作的目标元素名称，支持部分匹配（如 "QQ"、"微信"、"开始"）',
+					description: 'click_element 的目标元素名称，支持部分匹配',
 				},
 				filter_type: {
 					type: 'string',
-					description: 'list_elements 过滤元素类型: all, buttons, text, taskbar',
+					description: 'list_elements 过滤类型：all, buttons, text, taskbar',
 					enum: ['all', 'buttons', 'text', 'taskbar'],
 				},
 			},

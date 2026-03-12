@@ -78,6 +78,19 @@ export class SessionManager {
 		this.logger.info(`已加载 ${this.sessions.size} 个会话`);
 	}
 
+	/**
+	 * 强制重新加载所有会话（从文件系统）
+	 * 用于当内存中找不到会话时，尝试从文件重新加载
+	 */
+	async forceReloadSessions(): Promise<void> {
+		this.logger.info('[forceReloadSessions] 强制重新加载会话...');
+		// 清空当前内存中的会话，重新加载
+		const previousCount = this.sessions.size;
+		this.sessions.clear();
+		await this.loadSessions();
+		this.logger.info(`[forceReloadSessions] 重新加载完成: ${previousCount} -> ${this.sessions.size} 个会话`);
+	}
+
 	private async loadSessions(): Promise<void> {
 		try {
 			const files = await fs.readdir(this.sessionsDir);
@@ -136,7 +149,19 @@ export class SessionManager {
 
 	getOrCreateSession(id: string): StoredSession {
 		let session = this.sessions.get(id);
-		if (!session) session = this.createSession({ id });
+		if (!session) {
+			// 如果会话不存在，先尝试从文件系统重新加载
+			this.logger.warn(`[getOrCreateSession] 内存中未找到会话 ${id}，尝试重新加载...`);
+			// 重新加载所有会话
+			this.loadSessions().catch(() => {});
+			// 再次检查
+			session = this.sessions.get(id);
+			if (!session) {
+				// 仍然找不到，创建新会话
+				this.logger.warn(`[getOrCreateSession] 会话 ${id} 不存在，创建新会话`);
+				session = this.createSession({ id });
+			}
+		}
 		return session;
 	}
 

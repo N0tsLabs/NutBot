@@ -334,10 +334,14 @@ export class Server {
 		payload: Record<string, unknown> | undefined
 	): Promise<void> {
 		const { reason } = payload || {};
+		
+		console.log(`[WebSocket] 收到中断请求，clientId=${clientId}, reason=${reason || 'user_requested'}`);
 
 		try {
 			// 通知网关中断当前聊天
 			await this.gateway.interrupt(reason as string);
+			
+			console.log(`[WebSocket] 中断命令已发送给 Gateway`);
 
 			this.sendToClient(clientId, {
 				type: 'chat:interrupted',
@@ -345,6 +349,7 @@ export class Server {
 				reason: reason || 'user_requested',
 			});
 		} catch (error) {
+			console.error(`[WebSocket] 中断失败:`, error);
 			this.sendToClient(clientId, {
 				type: 'chat:interrupt_error',
 				id: messageId,

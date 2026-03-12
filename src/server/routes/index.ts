@@ -439,13 +439,26 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 		fastify.get<{ Params: { id: string } }>('/sessions/:id/history', async (request, reply) => {
 			const { id } = request.params;
 			try {
+				// 先尝试重新加载会话（以防会话在内存中不存在但在文件中存在）
+				let session = gateway.sessionManager.getSession(id);
+				if (!session) {
+					console.log(`[history] 会话 ${id} 不在内存中，尝试重新加载...`);
+					await gateway.sessionManager.forceReloadSessions();
+					session = gateway.sessionManager.getSession(id);
+				}
+				
+				if (!session) {
+					console.warn(`[history] 会话 ${id} 不存在`);
+					return reply.code(404).send({ error: true, message: 'Session not found' });
+				}
+				
 				const history = gateway.sessionManager.getHistory(id);
+				console.log(`[history] 成功获取会话 ${id} 的历史，共 ${history.length} 条消息`);
 				return history;
 			} catch (error) {
 				const message = (error as Error).message;
 				console.error(`[history] 获取会话 ${id} 历史失败: ${message}`);
-				// 返回空数组而不是抛出错误
-				return [];
+				return reply.code(500).send({ error: true, message: `Failed to load history: ${message}` });
 			}
 		});
 
