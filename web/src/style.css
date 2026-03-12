@@ -187,6 +187,7 @@ body {
 
 .markdown {
 	@apply leading-relaxed;
+	word-break: break-word;
 }
 
 .markdown h1,
@@ -207,7 +208,8 @@ body {
 }
 
 .markdown p {
-	@apply mb-3;
+	@apply mb-1;
+	word-break: break-word;
 }
 
 .markdown code {
@@ -228,12 +230,13 @@ body {
 }
 
 .markdown ul,
+.markdown ul,
 .markdown ol {
-	@apply pl-6 mb-3;
+	@apply pl-5 mb-2;
 }
 
 .markdown li {
-	@apply mb-1;
+	@apply mb-0.5;
 }
 
 .markdown a {

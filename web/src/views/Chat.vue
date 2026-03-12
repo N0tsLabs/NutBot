@@ -1698,6 +1698,7 @@ onMounted(async () => {
 	font-size: 14px;
 	line-height: 1.7;
 	color: var(--text-primary);
+	word-break: break-word;
 }
 
 .msg-error {
@@ -1731,7 +1732,6 @@ onMounted(async () => {
 .msg-error .error-message {
 	color: #f87171;
 	word-break: break-word;
-	white-space: pre-wrap;
 }
 
 /* ========== 工具调用（简洁折叠式）========== */
@@ -1947,7 +1947,6 @@ onMounted(async () => {
 	color: var(--text-primary);
 	overflow-x: auto;
 	max-height: 200px;
-	white-space: pre-wrap;
 	word-break: break-all;
 }
 

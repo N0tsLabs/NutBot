@@ -245,13 +245,12 @@ export class ScreenshotTool extends BaseTool {
 		coordinateHelp: string;
 		// OCR-SoM 相关
 		ocrEnabled?: boolean;
-		// 【优化】移除 markedImage，减少数据传输量
-		// markedImage?: string;
+		// 【重要】必须返回标注图，否则 AI 无法理解屏幕内容
+		markedImage?: string;
 		elements?: Array<{
 			id: number;
 			text: string;
 			center: [number, number];
-			// 【优化】移除 mouseCenter 和 box，AI 只需要 center 坐标
 		}>;
 		elementsHelp?: string;
 		ocrError?: string;  // OCR 错误信息
@@ -309,14 +308,16 @@ export class ScreenshotTool extends BaseTool {
 			scale: number;
 			coordinateHelp: string;
 			ocrEnabled?: boolean;
-			// 【优化】移除 markedImage，减少数据传输量
+			// 【重要】必须返回标注图，否则 AI 无法理解屏幕内容
+			markedImage?: string;
 			elements?: Array<{
 				id: number;
 				text: string;
 				center: [number, number];
-				// 【优化】移除 mouseCenter，AI 只需要 center 坐标
 			}>;
 			elementsHelp?: string;
+			ocrError?: string;
+			ocrFatal?: boolean;
 		} = {
 			success: true,
 			base64,
@@ -336,9 +337,9 @@ export class ScreenshotTool extends BaseTool {
 		if (ocrEnabled) {
 			this.logger.info('调用 OCR-SoM 识别屏幕元素...');
 			
-			// 【优化】默认不返回标注图，大幅减少数据量（标注图约 200KB-500KB base64）
-			// AI 只需要元素列表即可定位和点击，无需可视化标注图
-			const somResult = await ocrSomService.analyze(base64, { returnImage: false });
+			// 【重要】必须返回标注图，否则 AI 无法理解屏幕内容
+			// 标注图帮助 AI 识别屏幕上的元素位置和类型
+			const somResult = await ocrSomService.analyze(base64, { returnImage: true });
 			
 			// 检查是否有致命错误
 			if (!somResult.success && somResult.fatal) {
@@ -354,8 +355,8 @@ export class ScreenshotTool extends BaseTool {
 			
 			if (somResult.success && somResult.elements.length > 0) {
 				result.ocrEnabled = true;
-				// 【优化】不再返回 markedImage，减少数据传输量
-				// result.markedImage = somResult.marked_image;
+				// 【重要】必须返回标注图，否则 AI 无法理解屏幕内容
+				result.markedImage = somResult.marked_image;
 				
 				// 格式化元素列表
 				// 【优化】精简元素数据：截断长文本、移除 box 字段（AI 只需要 center）

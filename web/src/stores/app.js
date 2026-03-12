@@ -240,13 +240,17 @@ export const useAppStore = defineStore('app', () => {
 				currentStatus.value = { type: 'thinking', iteration: chunk.iteration };
 				break;
 
-			case 'content':
-				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
-					// 直接累积到 content 实现流式显示
-					lastMessage.content = (lastMessage.content || '') + (chunk.content || '');
+		case 'content':
+			if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
+				// 直接累积到 content 实现流式显示
+				const newContent = chunk.content || '';
+				if (newContent) {
+					// 直接追加内容，不做任何换行处理
+					lastMessage.content = (lastMessage.content || '') + newContent;
 				}
-				currentStatus.value = { type: 'generating' };
-				break;
+			}
+			currentStatus.value = { type: 'generating' };
+			break;
 
 			case 'tools':
 				currentStatus.value = { type: 'tools', count: chunk.count };

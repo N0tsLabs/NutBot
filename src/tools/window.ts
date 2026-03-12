@@ -308,31 +308,51 @@ export class WindowTool extends BaseTool {
 	): Promise<{
 		success: boolean;
 		window?: string;
+		error?: string;
 	}> {
 		const searchTerm = title || processName || '';
 
 		if (systemInfo.isWindows) {
+			// 使用 Base64 编码避免引号和特殊字符问题
 			const psScript = `
-				Add-Type @"
-				using System;
-				using System.Runtime.InteropServices;
-				public class WindowFocus {
-					[DllImport("user32.dll")]
-					public static extern bool SetForegroundWindow(IntPtr hWnd);
-					[DllImport("user32.dll")]
-					public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-				}
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class WindowFocus {
+		  [DllImport("user32.dll")]
+		  public static extern bool SetForegroundWindow(IntPtr hWnd);
+		  [DllImport("user32.dll")]
+		  public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
 "@
-				$procs = Get-Process | Where-Object { $_.MainWindowTitle -like "*${searchTerm}*" -or $_.ProcessName -like "*${searchTerm}*" }
-				if ($procs) {
-					$hwnd = $procs[0].MainWindowHandle
-					[WindowFocus]::ShowWindow($hwnd, 9)
-					[WindowFocus]::SetForegroundWindow($hwnd)
-					Write-Output $procs[0].MainWindowTitle
-				}
-			`;
-			const { stdout } = await execAsync(`powershell -command "${psScript.replace(/\n/g, ' ')}"`, { encoding: 'utf-8' });
-			this.logger.info(`聚焦窗口: ${stdout.trim() || searchTerm}`);
+$procs = Get-Process | Where-Object { $_.MainWindowTitle -like "*${searchTerm}*" -or $_.ProcessName -like "*${searchTerm}*" }
+if (-not $procs) {
+		  Write-Error "未找到匹配的进程: ${searchTerm}"
+		  exit 1
+}
+$hwnd = $procs[0].MainWindowHandle
+if ($hwnd -eq 0) {
+		  Write-Error "进程没有窗口句柄"
+		  exit 1
+}
+$showResult = [WindowFocus]::ShowWindow($hwnd, 9)
+$focusResult = [WindowFocus]::SetForegroundWindow($hwnd)
+if (-not $showResult -or -not $focusResult) {
+		  Write-Error "窗口激活失败"
+		  exit 1
+}
+Write-Output $procs[0].MainWindowTitle
+`;
+			// 将脚本转换为 Base64，避免引号和特殊字符问题
+			const psBase64 = Buffer.from(psScript, 'utf16le').toString('base64');
+			const { stdout, stderr } = await execAsync(`powershell -EncodedCommand ${psBase64}`, { encoding: 'utf-8' });
+			
+			if (stderr) {
+				this.logger.error(`聚焦窗口失败: ${stderr}`);
+				return { success: false, error: stderr.trim() };
+			}
+			
+			this.logger.info(`聚焦窗口成功: ${stdout.trim() || searchTerm}`);
 			return { success: true, window: stdout.trim() || searchTerm };
 		} else if (systemInfo.isMac) {
 			const script = `

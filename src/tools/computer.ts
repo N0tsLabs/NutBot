@@ -460,6 +460,7 @@ export class ComputerTool extends BaseTool {
 					required: true,
 					enum: [
 						'mouse_move',
+						'click',
 						'left_click',
 						'right_click',
 						'double_click',
@@ -821,6 +822,7 @@ export class ComputerTool extends BaseTool {
 				});
 			}
 
+			case 'click':
 			case 'left_click': {
 				if (coordinate && coordinate.length === 2) {
 					const [imgX, imgY] = coordinate;

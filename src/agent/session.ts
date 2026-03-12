@@ -518,7 +518,20 @@ export class SessionManager {
 			const msgRole = msg.role || 'unknown';
 
 			if (msgRole === 'user') {
-				formattedMessages.push({ role: 'user', content: msg.content });
+				// 检查是否是图片消息
+				if (msg.metadata?.isImageMessage && msg.metadata?.imageUrl) {
+					// 多模态图片消息
+					const textContent = typeof msg.content === 'string' ? msg.content : '';
+					formattedMessages.push({
+						role: 'user',
+						content: [
+							{ type: 'text', text: textContent },
+							{ type: 'image_url', image_url: { url: msg.metadata.imageUrl as string } }
+						]
+					});
+				} else {
+					formattedMessages.push({ role: 'user', content: msg.content });
+				}
 			} else if (msgRole === 'assistant') {
 				const aiMsg: ChatMessage = { role: 'assistant', content: msg.content as string || '' };
 				if (msg.toolCalls !== undefined && msg.toolCalls.length > 0) {
@@ -543,25 +556,32 @@ export class SessionManager {
 				const aiContent = msg.metadata?.aiContext;
 				const displayContent = typeof msg.content === 'string' ? msg.content : '操作完成';
 
-				let content: string;
-				if (aiContent !== undefined) {
-					if (isMultimodal && Array.isArray(aiContent)) {
-						const textContent = aiContent.find((c: any) => c.type === 'text');
-						content = textContent?.text || displayContent;
-					} else if (typeof aiContent === 'string') {
-						content = aiContent;
-					} else {
-						content = JSON.stringify(aiContent);
-					}
+				if (aiContent !== undefined && isMultimodal && Array.isArray(aiContent)) {
+					// 多模态内容：保留完整的 content blocks（包括图片）
+					formattedMessages.push({
+						role: 'tool',
+						content: aiContent as ContentBlock[],
+						tool_call_id: toolCallId,
+					});
 				} else {
-					content = displayContent;
-				}
+					// 纯文本内容
+					let content: string;
+					if (aiContent !== undefined) {
+						if (typeof aiContent === 'string') {
+							content = aiContent;
+						} else {
+							content = JSON.stringify(aiContent);
+						}
+					} else {
+						content = displayContent;
+					}
 
-				formattedMessages.push({
-					role: 'tool',
-					content,
-					tool_call_id: toolCallId,
-				});
+					formattedMessages.push({
+						role: 'tool',
+						content,
+						tool_call_id: toolCallId,
+					});
+				}
 			}
 		}
 

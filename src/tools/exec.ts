@@ -57,7 +57,13 @@ export class ExecTool extends BaseTool {
 	constructor(config: Record<string, unknown> = {}) {
 		super({
 			name: 'exec',
-			description: `执行系统命令。当前系统: ${systemInfo.isWindows ? 'Windows (PowerShell)' : systemInfo.isMac ? 'macOS (bash)' : 'Linux (bash)'}`,
+			description: `执行系统命令。当前系统: ${systemInfo.isWindows ? 'Windows (PowerShell)' : systemInfo.isMac ? 'macOS (bash)' : 'Linux (bash)'}
+
+【适用场景】
+- 文件和目录操作（mkdir, rm, cp, mv 等）
+- 系统信息查询（ps, top, df 等）
+- 软件包管理（npm, pip, apt 等）
+- 其他系统管理任务`,
 			parameters: {
 				command: {
 					type: 'string',

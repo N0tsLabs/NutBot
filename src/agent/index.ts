@@ -44,6 +44,24 @@ interface ModelCapabilities {
 }
 
 /**
+ * 工具调用历史记录
+ */
+interface ToolCallRecord {
+	toolName: string;
+	args: Record<string, unknown>;
+	timestamp: number;
+}
+
+/**
+ * 重复操作检测结果
+ */
+interface DuplicateCheckResult {
+	isDuplicate: boolean;
+	count: number;
+	message: string;
+}
+
+/**
  * Agent 类
  */
 export class Agent {
@@ -53,6 +71,9 @@ export class Agent {
 	private currentRunId: string | null = null;
 	private interruptRequested = false;
 	private abortController: AbortController | null = null;
+	private toolCallHistory: ToolCallRecord[] = [];
+	private readonly DUPLICATE_THRESHOLD = 5; // 重复操作阈值
+	private readonly DUPLICATE_WINDOW = 10; // 检查最近10次操作
 
 	constructor(gateway: Gateway) {
 		this.gateway = gateway;
@@ -92,6 +113,83 @@ export class Agent {
 	 */
 	getAbortSignal(): AbortSignal | undefined {
 		return this.abortController?.signal;
+	}
+
+	/**
+	 * 记录工具调用
+	 */
+	private recordToolCall(toolName: string, args: Record<string, unknown>): void {
+		this.toolCallHistory.push({
+			toolName,
+			args,
+			timestamp: Date.now(),
+		});
+
+		// 只保留最近的操作记录
+		if (this.toolCallHistory.length > this.DUPLICATE_WINDOW * 2) {
+			this.toolCallHistory = this.toolCallHistory.slice(-this.DUPLICATE_WINDOW);
+		}
+	}
+
+	/**
+	 * 检查是否重复操作
+	 * 如果同一个工具+参数组合在最近的 DUPLICATE_WINDOW 次操作中出现 DUPLICATE_THRESHOLD 次以上，
+	 * 则判定为重复操作
+	 */
+	private checkDuplicateOperation(toolName: string, args: Record<string, unknown>): DuplicateCheckResult {
+		// 获取最近的操作记录
+		const recentCalls = this.toolCallHistory.slice(-this.DUPLICATE_WINDOW);
+
+		// 统计相同工具+参数的出现次数
+		let duplicateCount = 0;
+		for (const record of recentCalls) {
+			if (record.toolName === toolName && this.argsMatch(record.args, args)) {
+				duplicateCount++;
+			}
+		}
+
+		if (duplicateCount >= this.DUPLICATE_THRESHOLD) {
+			return {
+				isDuplicate: true,
+				count: duplicateCount,
+				message: `检测到重复操作：工具 "${toolName}" 在最近的 ${this.DUPLICATE_WINDOW} 次操作中被调用了 ${duplicateCount} 次，参数相同。这可能表示任务陷入循环或需要用户干预（如登录）。`,
+			};
+		}
+
+		return {
+			isDuplicate: false,
+			count: duplicateCount,
+			message: '',
+		};
+	}
+
+	/**
+	 * 比较两个参数对象是否匹配（忽略时间戳等动态字段）
+	 */
+	private argsMatch(args1: Record<string, unknown>, args2: Record<string, unknown>): boolean {
+		// 提取关键字段进行比较
+		const keyFields = ['url', 'action', 'index', 'path', 'command'];
+
+		for (const field of keyFields) {
+			const val1 = args1[field];
+			const val2 = args2[field];
+
+			// 如果字段存在且不相等，返回 false
+			if (val1 !== undefined || val2 !== undefined) {
+				if (val1 !== val2) {
+					return false;
+				}
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * 清除工具调用历史
+	 */
+	private clearToolCallHistory(): void {
+		this.toolCallHistory = [];
 	}
 
 	/**
@@ -272,6 +370,8 @@ export class Agent {
 
 		// 设置当前运行ID
 		this.currentRunId = runId;
+		// 清除工具调用历史（新任务开始时重置）
+		this.clearToolCallHistory();
 		// 注意：不要在这里重置 interruptRequested，以允许在任务开始前中断
 		// 只有在没有中断请求的情况下才创建新的 abortController
 		if (!this.interruptRequested) {
@@ -582,9 +682,42 @@ export class Agent {
 					const toolArgs = toolCall.arguments;
 					const currentToolCallId = toolCall.id; // 使用当前工具调用的 id
 
+					// 解析参数用于重复检测
+					const parsedArgs = typeof toolArgs === 'string' ? JSON.parse(toolArgs) : toolArgs;
+
+					// 检查重复操作
+					const duplicateCheck = this.checkDuplicateOperation(toolName, parsedArgs as Record<string, unknown>);
+					if (duplicateCheck.isDuplicate) {
+						this.logger.error(`🔄 ${duplicateCheck.message}`);
+						yield {
+							type: 'tool_result',
+							tool: toolName,
+							result: {
+								success: false,
+								error: duplicateCheck.message,
+								duplicateDetected: true,
+							},
+						};
+						this.gateway.sessionManager.addMessage(session.id, {
+							role: 'tool',
+							content: JSON.stringify({
+								success: false,
+								error: duplicateCheck.message,
+								duplicateDetected: true,
+							}),
+							toolCallId: currentToolCallId || undefined,
+							metadata: { toolName },
+						});
+						// 继续执行，让 AI 收到这个错误后决定如何处理
+						continue;
+					}
+
+					// 记录工具调用（用于重复检测）
+					this.recordToolCall(toolName, parsedArgs as Record<string, unknown>);
+
 					// 记录 AI 决策
 					const intent = toolArgs && typeof toolArgs === 'object'
-						? Object.entries(toolArgs).map(([k, v]) => `${k}=${JSON.stringify(v).substring(0, 50)}`).join(', ')
+						? Object.entries(parsedArgs).map(([k, v]) => `${k}=${JSON.stringify(v).substring(0, 50)}`).join(', ')
 						: '';
 					this.logger.aiDecision(toolName, intent.substring(0, 100));
 
@@ -644,8 +777,11 @@ export class Agent {
 						yield { type: 'tool_result', tool: toolName, result };
 	
 						const processed = this.processToolResult(toolName, result, capabilities.hasVision);
+						
+						// 添加 tool 结果消息（纯文本）
 						this.gateway.sessionManager.addMessage(session.id, {
-							role: 'tool', content: processed.displayContent,
+							role: 'tool',
+							content: processed.displayContent,
 							toolCallId: currentToolCallId || undefined,
 							metadata: {
 								toolName,
@@ -653,24 +789,58 @@ export class Agent {
 								aiContext: processed.aiContext,
 							},
 						});
+						
+						// 如果是多模态内容（如截图），额外添加一个 user 消息包含图片
+						// 因为 OpenAI API 不支持 tool 消息中的图片
+						if (processed.isMultimodal && Array.isArray(processed.aiContext)) {
+							const imageBlock = processed.aiContext.find((c: any) => c.type === 'image_url');
+							const textBlocks = processed.aiContext.filter((c: any) => c.type === 'text');
+							
+							if (imageBlock) {
+								// 构建包含图片和文本的 user 消息
+								// 使用字符串格式，前端可以显示为文本
+								const textContent = textBlocks.map((t: any) => t.text).join('\n');
+								const imageUrl = imageBlock.image_url?.url || '';
+								
+								this.gateway.sessionManager.addMessage(session.id, {
+									role: 'user',
+									content: `[截图结果]\n${textContent}\n\n[图片]`,
+									metadata: {
+										isImageMessage: true,
+										imageUrl: imageUrl,
+									},
+								});
+							}
+						}
 	
 						// 更新 assistant 消息中的 toolCall，添加执行结果
 						if (currentToolCallId) {
 							this.gateway.sessionManager.updateToolCallResult(session.id, currentToolCallId, result);
 						}
 					} catch (error) {
+						const errorMessage = (error as Error).message;
 						this.logger.error(`工具执行失败 [${toolName}]`, error);
-						yield { type: 'tool_error', tool: toolName, error: (error as Error).message };
+						yield { type: 'tool_error', tool: toolName, error: errorMessage };
+						
+						// 添加错误消息到会话
 						this.gateway.sessionManager.addMessage(session.id, {
-							role: 'tool', content: JSON.stringify({ error: (error as Error).message }),
+							role: 'tool',
+							content: JSON.stringify({ error: errorMessage }),
 							toolCallId: currentToolCallId || undefined,
 							metadata: { toolName, error: true },
 						});
-
-						// 更新 assistant 消息中的 toolCall，添加错误结果
+						
+						// 更新 assistant 消息中的 toolCall
 						if (currentToolCallId) {
-							this.gateway.sessionManager.updateToolCallResult(session.id, currentToolCallId, { success: false, error: (error as Error).message });
+							this.gateway.sessionManager.updateToolCallResult(session.id, currentToolCallId, {
+								success: false,
+								error: errorMessage
+							});
 						}
+						
+						// 工具执行失败，终止任务，让 AI 总结错误原因
+						this.logger.warn(`工具执行失败，终止任务: ${errorMessage}`);
+						break;
 					}
 				}
 
@@ -698,11 +868,16 @@ export class Agent {
 					preserveRecentRounds: 6,
 				});
 
-				// 总结阶段恢复工具调用能力，允许 AI 继续执行下一步
-				const summaryOptions = { tools: tools as any[], tool_choice: 'auto' };
+			// 总结阶段恢复工具调用能力，允许 AI 继续执行下一步
+			const summaryOptions = { tools: tools as any[], tool_choice: 'auto' };
 
-				summaryContent = '';
-				let prevSummaryContentLength = 0; // 用于流式输出：只返回新内容
+			// 在每次总结开始前添加换行分隔（如果不是第一次总结）
+			if (iteration > 1) {
+				yield { type: 'content', content: '\n\n' };
+			}
+
+			summaryContent = '';
+			let prevSummaryContentLength = 0; // 用于流式输出：只返回新内容
 				hasMoreToolCalls = false;
 				summaryDone = false;
 
@@ -815,19 +990,45 @@ export class Agent {
 	 */
 	private processToolResult(toolName: string, result: unknown, hasVision: boolean): { displayContent: string; aiContext?: unknown; isMultimodal: boolean } {
 		if (toolName === 'screenshot') {
-			const sr = result as { success: boolean; base64?: string };
+			const sr = result as {
+				success: boolean;
+				base64?: string;
+				markedImage?: string;
+				elements?: Array<{ id: number; text: string; center: [number, number] }>;
+				ocrEnabled?: boolean;
+			};
 			if (sr.success && sr.base64) {
 				const sizeKB = Math.round((sr.base64.length * 0.75) / 1024);
+				
+				// 构建 AI 上下文
+				const aiContext: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
+					{ type: 'text', text: `截图成功 (${sizeKB}KB)` }
+				];
+				
+				// 添加元素列表信息（如果有）
+				if (sr.ocrEnabled && sr.elements && sr.elements.length > 0) {
+					const elementsText = sr.elements.map(e => `[${e.id}] ${e.text} (坐标: ${e.center[0]}, ${e.center[1]})`).join('\n');
+					aiContext.push({ type: 'text', text: `识别到的元素列表：\n${elementsText}` });
+				}
+				
 				if (hasVision) {
+					// 优先使用标注图（markedImage），如果没有则使用原图（base64）
+					const imageToShow = sr.markedImage || sr.base64;
+					aiContext.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageToShow}` } });
+					
 					return {
-						displayContent: `截图成功 (${sizeKB}KB)`,
-						aiContext: [{ type: 'text', text: `截图成功 (${sizeKB}KB)` }, { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${sr.base64}` } }],
+						displayContent: `截图成功 (${sizeKB}KB)${sr.ocrEnabled ? `, 识别到 ${sr.elements?.length || 0} 个元素` : ''}`,
+						aiContext: aiContext,
 						isMultimodal: true,
 					};
 				}
 				return {
 					displayContent: '截图成功',
-					aiContext: { success: true, message: `截图成功 (${sizeKB}KB)` },
+					aiContext: {
+						success: true,
+						message: `截图成功 (${sizeKB}KB)`,
+						elements: sr.elements
+					},
 					isMultimodal: false,
 				};
 			}
