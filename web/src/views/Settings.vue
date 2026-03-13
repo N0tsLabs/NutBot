@@ -230,51 +230,7 @@
 					</div>
 				</section>
 
-				<!-- OCR-SoM -->
-				<section id="ocr" class="settings-section">
-					<h2 class="section-title">
-						<span>👁️</span>
-						OCR-SoM 视觉识别
-					</h2>
-					<p class="section-desc">识别屏幕上的文字和 UI 元素，为 AI 提供精确点击坐标</p>
-					
-					<div class="settings-grid cols-2">
-						<div class="setting-item">
-							<div class="setting-header">
-								<span class="setting-label">启用 OCR-SoM</span>
-								<label class="switch">
-									<input type="checkbox" v-model="ocrConfig.enabled" @change="saveOcrConfig" />
-									<span class="slider"></span>
-								</label>
-							</div>
-						</div>
-						
-						<div class="setting-item">
-							<div class="setting-header">
-								<span class="setting-label">超时 (ms)</span>
-								<input v-model.number="ocrConfig.timeout" type="number" min="5000" max="120000" step="1000" class="input-xs w-24" @blur="saveOcrConfig" />
-							</div>
-						</div>
-					</div>
-					
-					<div class="setting-item full-width">
-						<div class="setting-header">
-							<span class="setting-label">服务地址</span>
-							<div class="flex gap-2 items-center">
-								<input v-model="ocrConfig.baseUrl" placeholder="http://localhost:5000" class="input-sm w-64" @blur="saveOcrConfig" />
-								<button @click="testOcrConnection" :disabled="loadingStates['ocr-test']" class="btn-sm">
-									{{ loadingStates['ocr-test'] ? '检测中' : '测试' }}
-								</button>
-							</div>
-						</div>
-						<div v-if="ocrStatus" class="ocr-status" :class="ocrStatus.connected ? 'connected' : 'disconnected'">
-							<span>{{ ocrStatus.connected ? '🟢' : '🔴' }} {{ ocrStatus.message }}</span>
-							<span v-if="ocrStatus.info" class="ocr-info">设备: {{ ocrStatus.info.device }}</span>
-						</div>
-					</div>
-				</section>
-
-				<!-- 记忆管理 -->
+			<!-- 记忆管理 -->
 				<section id="memory" class="settings-section">
 					<h2 class="section-title">
 						<span>🧠</span>
@@ -403,7 +359,6 @@ const categories = [
 	{ id: 'browser', icon: '🌐', label: '浏览器', important: true },
 	{ id: 'user', icon: '👤', label: '个人设置' },
 	{ id: 'agent', icon: '🤖', label: 'Agent' },
-	{ id: 'ocr', icon: '👁️', label: 'OCR-SoM' },
 	{ id: 'memory', icon: '🧠', label: 'AI 记忆' },
 	{ id: 'server', icon: '🖥️', label: '服务器' },
 	{ id: 'sandbox', icon: '🔒', label: '安全沙盒' },
@@ -551,13 +506,6 @@ const agentSettings = reactive({
 	debugMode: false,
 });
 
-// OCR 配置
-const ocrConfig = reactive({
-	enabled: true,
-	baseUrl: 'http://localhost:5000',
-	timeout: 30000,
-});
-const ocrStatus = ref(null);
 const loadingStates = reactive({});
 
 // 记忆
@@ -638,49 +586,6 @@ const saveAgentSettings = async () => {
 		await store.loadConfig();
 	} catch (error) {
 		console.error('Save agent settings failed:', error);
-	}
-};
-
-// ========== OCR-SoM 设置 ==========
-
-const loadOcrConfig = async () => {
-	try {
-		const data = await api.get('/api/ocr/config');
-		ocrConfig.enabled = data.enabled ?? true;
-		ocrConfig.baseUrl = data.baseUrl || 'http://localhost:5000';
-		ocrConfig.timeout = data.timeout || 30000;
-	} catch (error) {
-		console.error('Load OCR config failed:', error);
-	}
-};
-
-const saveOcrConfig = async () => {
-	try {
-		await api.put('/api/ocr/config', {
-			enabled: ocrConfig.enabled,
-			baseUrl: ocrConfig.baseUrl,
-			timeout: ocrConfig.timeout,
-		});
-	} catch (error) {
-		console.error('Save OCR config failed:', error);
-	}
-};
-
-const testOcrConnection = async () => {
-	if (loadingStates['ocr-test']) return;
-	loadingStates['ocr-test'] = true;
-	ocrStatus.value = null;
-
-	try {
-		const result = await api.get('/api/ocr/status');
-		ocrStatus.value = result;
-	} catch (error) {
-		ocrStatus.value = {
-			connected: false,
-			message: error.message || '连接失败',
-		};
-	} finally {
-		loadingStates['ocr-test'] = false;
 	}
 };
 
@@ -1092,31 +997,6 @@ onMounted(async () => {
 .status-actions {
 	display: flex;
 	gap: 8px;
-}
-
-/* OCR 状态 */
-.ocr-status {
-	margin-top: 8px;
-	padding: 8px 12px;
-	border-radius: 6px;
-	font-size: 12px;
-	display: flex;
-	align-items: center;
-	gap: 12px;
-}
-
-.ocr-status.connected {
-	background-color: rgba(16, 185, 129, 0.1);
-	color: #10b981;
-}
-
-.ocr-status.disconnected {
-	background-color: rgba(239, 68, 68, 0.1);
-	color: #ef4444;
-}
-
-.ocr-info {
-	color: var(--text-muted);
 }
 
 /* 记忆列表 */

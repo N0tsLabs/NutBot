@@ -873,11 +873,10 @@ export class Agent {
 
 			// 在每次总结开始前添加换行分隔（如果不是第一次总结）
 			if (iteration > 1) {
-				yield { type: 'content', content: '\n\n' };
+				yield { type: 'content', content: '\n\n', isSummary: true };
 			}
 
 			summaryContent = '';
-			let prevSummaryContentLength = 0; // 用于流式输出：只返回新内容
 				hasMoreToolCalls = false;
 				summaryDone = false;
 
@@ -902,17 +901,17 @@ export class Agent {
 						return;
 					}
 
-					if (chunk.type === 'content') {
-						const chunkContent = chunk.fullContent || chunk.content || '';
-						this.logger.debug(`[总结阶段] 收到 content chunk`);
-						// 只返回新产生的内容，实现真正的流式输出
-						const newContent = chunkContent.slice(prevSummaryContentLength);
-						if (newContent) {
-							yield { type: 'content', content: newContent };
-						}
-						summaryContent = chunkContent;
-						prevSummaryContentLength = summaryContent.length;
-					} else if (chunk.type === 'tool_use') {
+				if (chunk.type === 'content') {
+					const chunkContent = chunk.fullContent || chunk.content || '';
+					this.logger.debug(`[总结阶段] 收到 content chunk`);
+					// 总结阶段实时输出内容，但使用不同的类型标记
+					// 前端会根据这个标记决定是否创建新消息
+					const newContent = chunkContent.slice(summaryContent.length);
+					if (newContent) {
+						yield { type: 'content', content: newContent, isSummary: true };
+					}
+					summaryContent = chunkContent;
+				} else if (chunk.type === 'tool_use') {
 						// 如果有新的工具调用，继续执行
 						hasMoreToolCalls = true;
 						const toolUse = chunk.toolUse as any;

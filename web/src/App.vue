@@ -55,17 +55,7 @@
 					<span>{{ theme === 'dark' ? '深色' : '浅色' }}</span>
 				</button>
 
-				<!-- 连接状态 -->
-					<div class="connection-status">
-						<span class="status-item">
-							SoM识别：
-							<span :class="store.connectionStatus?.som?.connected ? 'status-green' : 'status-red'">
-								{{ store.connectionStatus?.som?.connected ? '已连接' : '未连接' }}
-							</span>
-						</span>
-					</div>
-	
-					<!-- 打开独立浏览器按钮 -->
+			<!-- 打开独立浏览器按钮 -->
 					<button
 						@click="openBrowser"
 						:disabled="browserLoading"

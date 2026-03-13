@@ -2,7 +2,7 @@
  * 屏幕截图工具
  * 使用 screenshot-desktop 进行屏幕截图
  * 使用 sharp 进行图片压缩
- * 集成 OCR-SoM 识别屏幕元素
+ * 【优化】移除 OCR-SoM，直接返回截图给 AI 进行视觉分析
  */
 
 import { BaseTool } from './registry.js';
@@ -10,8 +10,6 @@ import { systemInfo } from './exec.js';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
-import { ocrSomService } from '../services/ocr-som.js';
-import { configManager } from '../utils/config.js';
 
 // 截图保存目录
 const SCREENSHOT_DIR = join(systemInfo.homedir, '.nutbot', 'screenshots');
@@ -29,6 +27,7 @@ export class ScreenshotTool extends BaseTool {
 				jpeg: (options?: { quality?: number }) => unknown;
 				png: (options?: { quality?: number; compressionLevel?: number }) => unknown;
 				toBuffer: () => Promise<Buffer>;
+				metadata: () => Promise<{ width?: number; height?: number }>;
 		  })
 		| null = null;
 	private available = false;
@@ -36,9 +35,18 @@ export class ScreenshotTool extends BaseTool {
 	constructor(config: Record<string, unknown> = {}) {
 		super({
 			name: 'screenshot',
-			description: `屏幕截图工具，截取整个屏幕画面（系统级截图）。配合 computer 工具使用：先截图分析，再用坐标操作。
+			description: `屏幕截图工具，截取整个屏幕画面并返回给 AI 进行视觉分析。
 
-【注意】操作浏览器时请使用 browser 工具的 screenshot action。`,
+【使用方式】
+1. 调用 screenshot 工具截取屏幕
+2. 将返回的 base64 图片直接发送给 AI
+3. AI 通过视觉能力分析图片内容并返回操作坐标
+4. 使用 computer 工具的 click 操作执行点击
+
+【坐标说明】
+- AI 返回的坐标是相对于截图的像素坐标
+- 如果屏幕有缩放，坐标会自动转换
+- 支持多显示器，可通过 screen 参数指定`,
 			parameters: {
 				action: {
 					type: 'string',
@@ -132,12 +140,7 @@ export class ScreenshotTool extends BaseTool {
 		const config = qualityConfig[quality as keyof typeof qualityConfig] || qualityConfig.medium;
 
 		try {
-			const compressed = await (
-				this.sharp(buffer) as unknown as {
-					jpeg: (options: { quality: number }) => unknown;
-					toBuffer: () => Promise<Buffer>;
-				}
-			)
+			const compressed = await this.sharp(buffer)
 				.jpeg({ quality: config.jpegQuality })
 				.toBuffer();
 
@@ -160,11 +163,9 @@ export class ScreenshotTool extends BaseTool {
 			const fileSize = buffer.length;
 
 			// 尝试使用 iTerm2 图像协议
-			// 格式: \033]1337;File=inline=1;size=<size>:<base64>\a
 			const iterm2Sequence = `\x1b]1337;File=inline=1;size=${fileSize}:${base64}\x07`;
 
 			// 尝试使用 Kitty 图像协议
-			// 格式: \033_G...<base64>\033\\
 			const kittyStart = `\x1b_Gf=100,i=1,s=${fileSize},v=1`;
 			const kittyEnd = `\x1b\\\x1b]1337;File=done`;
 			const kittySequence = `${kittyStart};${base64}${kittyEnd}`;
@@ -175,7 +176,6 @@ export class ScreenshotTool extends BaseTool {
 
 			this.logger.debug('图片已发送到终端显示');
 		} catch (error) {
-			// 静默失败，不影响主要功能
 			this.logger.debug('终端图片显示失败:', error);
 		}
 	}
@@ -186,8 +186,6 @@ export class ScreenshotTool extends BaseTool {
 	private async getScreenInfo(buffer: Buffer): Promise<{
 		imageWidth: number;
 		imageHeight: number;
-		mouseWidth: number;
-		mouseHeight: number;
 		scale: number;
 	}> {
 		// 获取截图的实际像素尺寸
@@ -196,9 +194,7 @@ export class ScreenshotTool extends BaseTool {
 
 		if (this.sharp) {
 			try {
-				const metadata = await (
-					this.sharp(buffer) as unknown as { metadata: () => Promise<{ width?: number; height?: number }> }
-				).metadata();
+				const metadata = await this.sharp(buffer).metadata();
 				imageWidth = metadata.width || 1920;
 				imageHeight = metadata.height || 1080;
 			} catch {
@@ -206,28 +202,15 @@ export class ScreenshotTool extends BaseTool {
 			}
 		}
 
-		// 获取 nut.js 的鼠标坐标系统尺寸
-		let mouseWidth = imageWidth;
-		let mouseHeight = imageHeight;
+		// 计算缩放比例（假设标准 DPI 为 96）
+		const scale = 1;
 
-		try {
-			const nutjs = await import('@nut-tree-fork/nut-js');
-			const { screen } = nutjs;
-			mouseWidth = await screen.width();
-			mouseHeight = await screen.height();
-		} catch {
-			// 忽略错误
-		}
-
-		// 计算缩放比例
-		const scale = imageWidth / mouseWidth;
-
-		return { imageWidth, imageHeight, mouseWidth, mouseHeight, scale };
+		return { imageWidth, imageHeight, scale };
 	}
 
 	/**
 	 * 截图并返回 base64
-	 * 如果启用 OCR-SoM，会同时返回元素列表和标注图
+	 * 【优化】直接返回截图给 AI 进行视觉分析，不再调用 SoM
 	 */
 	private async capture(
 		screen?: number,
@@ -239,22 +222,8 @@ export class ScreenshotTool extends BaseTool {
 		originalSize: number;
 		compressedSize: number;
 		savedPath: string;
-		imageSize: string;
-		mouseCoordSize: string;
+		imageSize: { width: number; height: number };
 		scale: number;
-		coordinateHelp: string;
-		// OCR-SoM 相关
-		ocrEnabled?: boolean;
-		// 【重要】必须返回标注图，否则 AI 无法理解屏幕内容
-		markedImage?: string;
-		elements?: Array<{
-			id: number;
-			text: string;
-			center: [number, number];
-		}>;
-		elementsHelp?: string;
-		ocrError?: string;  // OCR 错误信息
-		ocrFatal?: boolean; // 是否是致命错误
 	}> {
 		const options: { format?: string; screen?: number } = { format: 'png' };
 		if (screen !== undefined) {
@@ -265,7 +234,7 @@ export class ScreenshotTool extends BaseTool {
 		const originalBuffer = await this.screenshotDesktop!(options);
 		const originalSize = originalBuffer.length;
 
-		// 获取屏幕信息（包括缩放）
+		// 获取屏幕信息
 		const screenInfo = await this.getScreenInfo(originalBuffer);
 
 		// 压缩（只压缩质量，不改变尺寸）
@@ -277,119 +246,23 @@ export class ScreenshotTool extends BaseTool {
 		const savedPath = join(SCREENSHOT_DIR, filename);
 		await fs.writeFile(savedPath, compressedBuffer);
 
-		// 生成坐标转换帮助信息
-		const coordinateHelp =
-			screenInfo.scale > 1.01
-				? `⚠️ 重要：屏幕有 ${Math.round(screenInfo.scale * 100)}% 缩放！
-图片坐标需要除以 ${screenInfo.scale.toFixed(2)} 才能用于点击。
-例如：图片坐标 (1000, 800) → 点击坐标 (${Math.round(1000 / screenInfo.scale)}, ${Math.round(800 / screenInfo.scale)})`
-				: `图片坐标可直接用于点击`;
-
 		this.logger.info(
-			`截图完成: ${originalSize} -> ${compressedBuffer.length} 字节 (压缩 ${Math.round((1 - compressedBuffer.length / originalSize) * 100)}%), 保存: ${savedPath}`
-		);
-		this.logger.info(
-			`截图尺寸: ${screenInfo.imageWidth}x${screenInfo.imageHeight}, 鼠标坐标系: ${screenInfo.mouseWidth}x${screenInfo.mouseHeight}, 缩放: ${screenInfo.scale.toFixed(2)}x`
+			`截图完成: ${originalSize} -> ${compressedBuffer.length} 字节 (压缩 ${Math.round((1 - compressedBuffer.length / originalSize) * 100)}%), 尺寸: ${screenInfo.imageWidth}x${screenInfo.imageHeight}`
 		);
 
-		// 在终端显示图片（使用 iTerm2 或 Kitty 协议）
+		// 在终端显示图片
 		this.displayImageInTerminal(compressedBuffer);
 
-		// 基础返回结果
-		const result: {
-			success: boolean;
-			base64: string;
-			format: string;
-			originalSize: number;
-			compressedSize: number;
-			savedPath: string;
-			imageSize: string;
-			mouseCoordSize: string;
-			scale: number;
-			coordinateHelp: string;
-			ocrEnabled?: boolean;
-			// 【重要】必须返回标注图，否则 AI 无法理解屏幕内容
-			markedImage?: string;
-			elements?: Array<{
-				id: number;
-				text: string;
-				center: [number, number];
-			}>;
-			elementsHelp?: string;
-			ocrError?: string;
-			ocrFatal?: boolean;
-		} = {
+		return {
 			success: true,
 			base64,
 			format: 'jpeg',
 			originalSize,
 			compressedSize: compressedBuffer.length,
 			savedPath,
-			imageSize: `${screenInfo.imageWidth}x${screenInfo.imageHeight}`,
-			mouseCoordSize: `${screenInfo.mouseWidth}x${screenInfo.mouseHeight}`,
+			imageSize: { width: screenInfo.imageWidth, height: screenInfo.imageHeight },
 			scale: screenInfo.scale,
-			coordinateHelp,
 		};
-
-		// 尝试调用 OCR-SoM
-		const ocrEnabled = configManager.get<boolean>('ocr.enabled', true);
-		
-		if (ocrEnabled) {
-			this.logger.info('调用 OCR-SoM 识别屏幕元素...');
-			
-			// 【重要】必须返回标注图，否则 AI 无法理解屏幕内容
-			// 标注图帮助 AI 识别屏幕上的元素位置和类型
-			const somResult = await ocrSomService.analyze(base64, { returnImage: true });
-			
-			// 检查是否有致命错误
-			if (!somResult.success && somResult.fatal) {
-				this.logger.error('OCR-SoM 致命错误:', somResult.error);
-				return {
-					...result,
-					success: false,
-					ocrEnabled: true,
-					ocrError: somResult.error,
-					ocrFatal: true,
-				};
-			}
-			
-			if (somResult.success && somResult.elements.length > 0) {
-				result.ocrEnabled = true;
-				// 【重要】必须返回标注图，否则 AI 无法理解屏幕内容
-				result.markedImage = somResult.marked_image;
-				
-				// 格式化元素列表
-				// 【优化】精简元素数据：截断长文本、移除 box 字段（AI 只需要 center）
-				// 【优化】过滤太小的元素（宽高都小于 5px 的通常是噪点）
-				result.elements = somResult.elements
-					.filter(el => {
-						const [x1, y1, x2, y2] = el.box;
-						const width = x2 - x1;
-						const height = y2 - y1;
-						// 保留至少一个维度大于 5px 的元素
-						return width >= 5 || height >= 5;
-					})
-					.map(el => {
-						const [x1, y1, x2, y2] = el.box;
-						const centerX = Math.round((x1 + x2) / 2);
-						const centerY = Math.round((y1 + y2) / 2);
-						return {
-							id: el.id,
-							// 【优化】截断长文本，避免元素列表过大（保留前 50 个字符）
-							text: (el.text || '(无文字)').slice(0, 50),
-							center: [centerX, centerY] as [number, number],
-							// 【优化】移除 box 字段，AI 点击只需要 center 坐标
-						};
-					});
-
-				this.logger.info(`OCR-SoM 识别到 ${result.elements.length} 个元素（已过滤小元素）`);
-			} else if (!somResult.success) {
-				// 非致命错误，只记录警告
-				this.logger.warn('OCR-SoM 调用失败:', somResult.error);
-			}
-		}
-
-		return result;
 	}
 
 	/**

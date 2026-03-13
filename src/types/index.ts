@@ -232,6 +232,7 @@ export interface AgentChunk {
 	thinking?: string;
 	description?: string;
 	confirmId?: string;
+	isSummary?: boolean; // 标记是否为总结阶段的内容
 }
 
 export interface AgentOptions {

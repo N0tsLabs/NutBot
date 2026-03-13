@@ -34,7 +34,6 @@ export const useAppStore = defineStore('app', () => {
 
 	// ========== 连接状态管理 ==========
 	const connectionStatus = ref({
-		som: { connected: false, latency: null },
 		lastUpdate: null,
 	});
 	const heartbeatTimer = ref(null);
@@ -59,43 +58,7 @@ export const useAppStore = defineStore('app', () => {
 	// 检查连接状态
 	const checkConnectionStatus = async () => {
 		try {
-			const startTime = Date.now();
-
-			// 只检查 SoM 服务状态，不再检查浏览器扩展状态
-			let somConnected = false;
-
-			try {
-				// 使用 AbortSignal.timeout 设置 2 秒超时
-				const ocrRes = await fetch('/api/ocr/status', { 
-					signal: AbortSignal.timeout(2000) 
-				}).catch((err) => {
-					// 优雅处理网络错误或超时
-					console.warn('[checkConnectionStatus] OCR 状态检查失败:', err?.message || err);
-					return null;
-				});
-
-				// 检查 SoM 服务实际状态
-				if (ocrRes && ocrRes.ok) {
-					try {
-						const somData = await ocrRes.json();
-						somConnected = somData.connected || somData.available || false;
-					} catch (parseErr) {
-						console.warn('[checkConnectionStatus] 解析 OCR 状态响应失败:', parseErr);
-					}
-				}
-			} catch (e) {
-				// 获取失败，SoM 服务可能未运行
-				console.warn('[checkConnectionStatus] 检查过程出错:', e);
-				somConnected = false;
-			}
-
-			const latency = Date.now() - startTime;
-
 			connectionStatus.value = {
-				som: {
-					connected: somConnected && connected.value,  // SoM 服务 + WebSocket 连接
-					latency: (somConnected && connected.value) ? latency : null,
-				},
 				lastUpdate: new Date().toISOString(),
 			};
 		} catch (error) {
@@ -241,7 +204,16 @@ export const useAppStore = defineStore('app', () => {
 				break;
 
 		case 'content':
-			if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
+			if (chunk.isSummary && lastMessage && lastMessage.role === 'assistant' && lastMessage.content && !lastMessage.streaming) {
+				// 总结阶段的内容，创建新消息
+				messages.value.push({
+					id: Date.now().toString(),
+					role: 'assistant',
+					content: chunk.content || '',
+					streaming: true,
+					timestamp: new Date().toISOString(),
+				});
+			} else if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
 				// 直接累积到 content 实现流式显示
 				const newContent = chunk.content || '';
 				if (newContent) {
@@ -426,10 +398,13 @@ export const useAppStore = defineStore('app', () => {
 	};
 
 	const handleChatDone = (message) => {
-		const lastMessage = messages.value[messages.value.length - 1];
-		if (lastMessage && lastMessage.role === 'assistant') {
-			lastMessage.streaming = false;
-		}
+		// 将所有 assistant 消息的 streaming 状态设为 false
+		// 因为可能有多个 assistant 消息（思考阶段和总结阶段）
+		messages.value.forEach((msg) => {
+			if (msg.role === 'assistant') {
+				msg.streaming = false;
+			}
+		});
 		// 清理状态
 		currentStatus.value = null;
 		toolExecutions.value = [];

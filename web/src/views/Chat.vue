@@ -176,22 +176,29 @@
 								</span>
 							</div>
 							
-							<!-- 工具调用（简洁折叠式）-->
+							<!-- 工具调用（流式横向布局）-->
 							<div v-if="msg.toolCalls && msg.toolCalls.length > 0" class="tool-calls">
 								<div class="tool-calls-header" @click="toggleTools(msg.id)">
-									<div class="tool-calls-dots">
-										<span
+									<div class="tool-flow-list">
+										<div
 											v-for="(tool, idx) in msg.toolCalls"
 											:key="idx"
-											class="dot"
+											class="tool-flow-item"
 											:class="{
 												running: tool.status === 'running',
 												success: tool.status === 'success' || tool.result?.success,
 												error: tool.status === 'error' || tool.result?.error,
 											}"
-										></span>
+										>
+											<span class="tool-flow-icon">
+												<span v-if="tool.status === 'running'" class="spin">⚙️</span>
+												<span v-else-if="tool.status === 'success' || tool.result?.success">✅</span>
+												<span v-else-if="tool.status === 'error' || tool.result?.error">❌</span>
+												<span v-else>🔧</span>
+											</span>
+											<span class="tool-flow-name">{{ getToolChineseName(tool) }}</span>
+										</div>
 									</div>
-									<span class="tool-calls-text">{{ getToolsHeaderText(msg.toolCalls) }}</span>
 									<span class="tool-calls-toggle">{{ isToolsExpanded(msg.id) ? '收起' : '展开' }}</span>
 								</div>
 								
@@ -209,7 +216,7 @@
 												<span v-else-if="tool.status === 'error' || tool.result?.error">❌</span>
 												<span v-else>🔧</span>
 											</span>
-											<span class="tool-name">{{ getToolDisplayName(tool) }}</span>
+											<span class="tool-name">{{ getToolChineseName(tool) }}</span>
 											<span class="tool-duration">{{ formatToolDuration(tool) }}</span>
 											<span class="tool-expand">{{ isToolExpanded(msg.id, idx) ? '−' : '+' }}</span>
 										</div>
@@ -358,15 +365,6 @@
 								:src="'data:image/png;base64,' + store.debugConfirm.debug.originalImage" 
 								class="debug-image"
 								@click="openImageModal(store.debugConfirm.debug.originalImage)"
-							/>
-						</div>
-						
-						<div class="debug-image-item" v-if="store.debugConfirm.debug?.markedImage">
-							<div class="debug-image-label">🏷️ OCR-SoM 标注</div>
-							<img 
-								:src="'data:image/png;base64,' + store.debugConfirm.debug.markedImage" 
-								class="debug-image"
-								@click="openImageModal(store.debugConfirm.debug.markedImage)"
 							/>
 						</div>
 						
@@ -633,71 +631,14 @@ const aiName = computed(() => {
 	return store.config?.user?.aiName || 'NutBot';
 });
 
-// 合并连续的消息（将连续的 assistant 消息合并为一个）
+// 消息列表（不再合并连续的 assistant 消息）
 const groupedMessages = computed(() => {
 	const messages = store.messages;
 	if (!messages || messages.length === 0) return [];
 	
-	const result = [];
-	let currentGroup = null;
-	
-	for (const msg of messages) {
-		if (msg.role === 'user') {
-			// 用户消息直接添加，结束当前 assistant 分组
-			if (currentGroup) {
-				result.push(currentGroup);
-				currentGroup = null;
-			}
-			result.push(msg);
-		} else if (msg.role === 'assistant') {
-			// assistant 消息，尝试合并到当前分组
-			if (!currentGroup) {
-				// 创建新分组
-				currentGroup = {
-					...msg,
-					_grouped: true,
-					_groupedIds: [msg.id],
-				};
-			} else {
-				// 合并到现有分组
-				currentGroup._groupedIds.push(msg.id);
-				// 合并 content（如果有）
-				if (msg.content) {
-					if (currentGroup.content) {
-						currentGroup.content += '\n\n' + msg.content;
-					} else {
-						currentGroup.content = msg.content;
-					}
-				}
-				// 合并 toolCalls
-				if (msg.toolCalls && msg.toolCalls.length > 0) {
-					if (!currentGroup.toolCalls) {
-						currentGroup.toolCalls = [];
-					}
-					currentGroup.toolCalls.push(...msg.toolCalls);
-				}
-				// 保留 streaming 状态（如果任意消息在流式输出）
-				if (msg.streaming) {
-					currentGroup.streaming = true;
-				}
-				// 保留 error 状态
-				if (msg.error) {
-					currentGroup.error = msg.error;
-				}
-				// 更新 timestamp 为最新的
-				if (msg.timestamp > currentGroup.timestamp) {
-					currentGroup.timestamp = msg.timestamp;
-				}
-			}
-		}
-	}
-	
-	// 添加最后一个分组
-	if (currentGroup) {
-		result.push(currentGroup);
-	}
-	
-	return result;
+	// 直接返回原始消息列表，不再合并
+	// 每个 assistant 消息会独立显示，避免内容重复
+	return messages;
 });
 
 // 格式化工具执行时间
@@ -930,6 +871,33 @@ const getToolsSummaryWithThinking = (toolCalls) => {
 		return `已完成 ${total} 步: ${thinking}`;
 	}
 	return `已完成 ${total} 步`;
+};
+
+// 工具中文名称映射
+const toolNameMap = {
+	// 浏览器工具
+	browser: '浏览器',
+	// 截图工具
+	screenshot: '截图',
+	// 电脑控制工具
+	computer: '电脑控制',
+	// 命令执行工具
+	exec: '执行命令',
+	// 文件工具
+	file: '文件操作',
+	// MCP 工具
+	mcp: '扩展工具',
+};
+
+// 获取工具中文名称
+const getToolChineseName = (tool) => {
+	if (!tool) return '';
+	const chineseName = toolNameMap[tool.name] || tool.name;
+	const action = getToolAction(tool);
+	if (action) {
+		return `${chineseName} · ${action}`;
+	}
+	return chineseName;
 };
 
 // 获取工具显示名称（格式：工具名.action）
@@ -1734,7 +1702,7 @@ onMounted(async () => {
 	word-break: break-word;
 }
 
-/* ========== 工具调用（简洁折叠式）========== */
+/* ========== 工具调用（流式横向布局）========== */
 .tool-calls {
 	margin-bottom: 12px;
 }
@@ -1754,6 +1722,81 @@ onMounted(async () => {
 	background-color: var(--bg-hover);
 }
 
+/* 流式工具列表 */
+.tool-flow-list {
+	flex: 1;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	overflow: hidden;
+}
+
+.tool-flow-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 4px 10px;
+	background-color: var(--bg-secondary);
+	border-radius: 16px;
+	font-size: 12px;
+	transition: all 0.2s;
+	border: 1px solid transparent;
+}
+
+.tool-flow-item.running {
+	background-color: rgba(245, 158, 11, 0.15);
+	border-color: rgba(245, 158, 11, 0.3);
+	animation: toolPulse 1.5s infinite;
+}
+
+.tool-flow-item.success {
+	background-color: rgba(16, 185, 129, 0.15);
+	border-color: rgba(16, 185, 129, 0.3);
+}
+
+.tool-flow-item.error {
+	background-color: rgba(239, 68, 68, 0.15);
+	border-color: rgba(239, 68, 68, 0.3);
+}
+
+@keyframes toolPulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.7; }
+}
+
+.tool-flow-icon {
+	font-size: 12px;
+	display: flex;
+	align-items: center;
+}
+
+.tool-flow-item.running .tool-flow-icon {
+	animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
+.tool-flow-name {
+	color: var(--text-secondary);
+	white-space: nowrap;
+}
+
+.tool-flow-item.running .tool-flow-name {
+	color: #f59e0b;
+}
+
+.tool-flow-item.success .tool-flow-name {
+	color: #10b981;
+}
+
+.tool-flow-item.error .tool-flow-name {
+	color: #ef4444;
+}
+
+/* 旧版点状指示器（保留兼容） */
 .tool-calls-dots {
 	display: flex;
 	gap: 4px;
@@ -1798,6 +1841,7 @@ onMounted(async () => {
 	font-size: 12px;
 	color: var(--accent);
 	font-weight: 500;
+	white-space: nowrap;
 }
 
 .tool-calls-list {
