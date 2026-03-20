@@ -4,7 +4,7 @@
  */
 
 export { BrowserManager, browserManager } from './manager.js';
-export { launchBrowser, findBrowserExecutable, getDefaultConfig, clearSessionRestore, DEFAULT_USER_DATA_DIR } from './launcher.js';
+export { launchBrowser, findBrowserExecutable, getDefaultConfig, clearSessionRestore, DEFAULT_USER_DATA_DIR, getSystemDefaultBrowser } from './launcher.js';
 export { evaluatePage, getPageEvaluatorScript } from './page-evaluator.js';
 export type {
 	BrowserType,

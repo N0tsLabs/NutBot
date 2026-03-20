@@ -14,7 +14,7 @@ import { fileURLToPath } from 'url';
 import { WebSocket } from 'ws';
 import { logger, Logger, LogEntry } from '../utils/logger.js';
 import { generateId } from '../utils/helpers.js';
-import { registerRoutes } from './routes/index.js';
+import { registerRoutes, registerScreenshotRoutes } from './routes/index.js';
 import type { Gateway } from '../gateway/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -134,8 +134,11 @@ export class Server {
 			});
 		});
 
-		// 注册 API 路由
+		// 注册 API 路由（带 /api 前缀）
 		await this.app.register(registerRoutes(this.gateway), { prefix: '/api' });
+
+		// 注册截图服务路由（不带前缀，直接访问）
+		await this.app.register(registerScreenshotRoutes(), { prefix: '/screenshots' });
 
 		// 静态文件服务（Web UI）
 		const webDistPath = join(__dirname, '../../web/dist');
@@ -147,7 +150,7 @@ export class Server {
 
 			// SPA fallback
 			this.app.setNotFoundHandler((request, reply) => {
-				if (request.url.startsWith('/api') || request.url.startsWith('/ws') || request.url.startsWith('/mcp')) {
+				if (request.url.startsWith('/api') || request.url.startsWith('/ws') || request.url.startsWith('/mcp') || request.url.startsWith('/screenshots')) {
 					return reply.code(404).send({ error: true, message: 'Not found' });
 				}
 				return reply.sendFile('index.html');

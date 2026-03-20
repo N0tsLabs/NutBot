@@ -3,6 +3,7 @@
  * 使用 screenshot-desktop 进行屏幕截图
  * 使用 sharp 进行图片压缩
  * 【优化】移除 OCR-SoM，直接返回截图给 AI 进行视觉分析
+ * 【新增】集成窗口信息获取，帮助 AI 识别任务栏图标等
  */
 
 import { BaseTool } from './registry.js';
@@ -10,9 +11,10 @@ import { systemInfo } from './exec.js';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import { getWindowInfo, formatWindowInfo } from '../utils/window-info.js';
 
-// 截图保存目录
-const SCREENSHOT_DIR = join(systemInfo.homedir, '.nutbot', 'screenshots');
+// 截图保存目录 - 使用项目根目录下的 data 文件夹
+const SCREENSHOT_DIR = join(process.cwd(), 'data', 'screenshots');
 
 // 确保目录存在
 if (!existsSync(SCREENSHOT_DIR)) {
@@ -44,8 +46,9 @@ export class ScreenshotTool extends BaseTool {
 4. 使用 computer 工具的 click 操作执行点击
 
 【坐标说明】
-- AI 返回的坐标是相对于截图的像素坐标
-- 如果屏幕有缩放，坐标会自动转换
+- AI 必须返回相对坐标 [x, y]，范围 [0.0, 1.0]
+- 例如：[0.5, 0.5] 表示屏幕中心，[1.0, 1.0] 表示右下角
+- 不要返回绝对像素坐标，系统会自动处理屏幕缩放
 - 支持多显示器，可通过 screen 参数指定`,
 			parameters: {
 				action: {
@@ -72,7 +75,7 @@ export class ScreenshotTool extends BaseTool {
 			...config,
 		});
 
-		this.checkDependency();
+		// 注意：构造函数中不能 await，依赖检查在第一次 execute 时进行
 	}
 
 	private async checkDependency(): Promise<void> {
@@ -103,6 +106,11 @@ export class ScreenshotTool extends BaseTool {
 		},
 		context: Record<string, unknown> = {}
 	): Promise<unknown> {
+		// 首次执行时检查依赖
+		if (!this.available && !this.screenshotDesktop) {
+			await this.checkDependency();
+		}
+		
 		if (!this.available) {
 			throw new Error('screenshot-desktop 未安装。请运行: npm install screenshot-desktop');
 		}
@@ -122,30 +130,37 @@ export class ScreenshotTool extends BaseTool {
 	}
 
 	/**
-	 * 压缩图片（只做质量压缩，不改变尺寸）
+	 * 压缩图片（使用 PNG 无损压缩，保持清晰度）
 	 * 保持原始尺寸确保 AI 返回的坐标与屏幕坐标一致
+	 * 【优化】使用 PNG 代替 JPEG，避免小图标模糊
+	 * 【优化】高质量模式不压缩，直接返回原图
 	 */
 	private async compressImage(buffer: Buffer, quality: string): Promise<Buffer> {
 		if (!this.sharp) {
 			return buffer; // 没有 sharp 就返回原图
 		}
 
-		// 质量配置（只压缩质量，不改变尺寸）
+		// high 质量直接返回原图，确保清晰度
+		if (quality === 'high') {
+			this.logger.debug('高质量模式: 跳过压缩，使用原图');
+			return buffer;
+		}
+
+		// PNG 压缩配置（无损压缩，保持清晰度）
 		const qualityConfig = {
-			low: { jpegQuality: 50 },
-			medium: { jpegQuality: 70 },
-			high: { jpegQuality: 85 },
+			low: { compressionLevel: 9 },    // 最高压缩，文件小
+			medium: { compressionLevel: 6 }, // 平衡
 		};
 
 		const config = qualityConfig[quality as keyof typeof qualityConfig] || qualityConfig.medium;
 
 		try {
 			const compressed = await this.sharp(buffer)
-				.jpeg({ quality: config.jpegQuality })
+				.png({ compressionLevel: config.compressionLevel })
 				.toBuffer();
 
 			this.logger.debug(
-				`图片压缩: ${buffer.length} -> ${compressed.length} 字节 (${Math.round((compressed.length / buffer.length) * 100)}%)`
+				`图片压缩: ${buffer.length} -> ${compressed.length} 字节 (${Math.round((compressed.length / buffer.length) * 100)}%), 格式: PNG`
 			);
 			return compressed;
 		} catch (error) {
@@ -211,6 +226,8 @@ export class ScreenshotTool extends BaseTool {
 	/**
 	 * 截图并返回 base64
 	 * 【优化】直接返回截图给 AI 进行视觉分析，不再调用 SoM
+	 * 【重要】原封不动返回原始截图，不做任何压缩或处理
+	 * 【新增】同时获取窗口信息，帮助 AI 识别任务栏图标等
 	 */
 	private async capture(
 		screen?: number,
@@ -224,44 +241,59 @@ export class ScreenshotTool extends BaseTool {
 		savedPath: string;
 		imageSize: { width: number; height: number };
 		scale: number;
+		windowInfo?: string;
 	}> {
 		const options: { format?: string; screen?: number } = { format: 'png' };
 		if (screen !== undefined) {
 			options.screen = screen;
 		}
 
-		// 截图
+		// 截图 - 直接获取原始 buffer，不做任何处理
 		const originalBuffer = await this.screenshotDesktop!(options);
 		const originalSize = originalBuffer.length;
 
 		// 获取屏幕信息
 		const screenInfo = await this.getScreenInfo(originalBuffer);
 
-		// 压缩（只压缩质量，不改变尺寸）
-		const compressedBuffer = await this.compressImage(originalBuffer, quality);
-		const base64 = compressedBuffer.toString('base64');
+		// 【重要】原封不动返回原始截图，不做任何压缩或处理
+		// 确保 AI 收到的图片和测试用例中的图片完全一致
+		const base64 = originalBuffer.toString('base64');
 
-		// 保存到文件
-		const filename = `screenshot_${Date.now()}.jpg`;
+		// 保存到文件（保存原始图片）
+		const filename = `screenshot_${Date.now()}.png`;
 		const savedPath = join(SCREENSHOT_DIR, filename);
-		await fs.writeFile(savedPath, compressedBuffer);
+		await fs.writeFile(savedPath, originalBuffer);
+
+		// 【新增】获取窗口信息
+		let windowInfoText = '';
+		try {
+			const windowInfoResult = await getWindowInfo();
+			if (windowInfoResult.success) {
+				windowInfoText = formatWindowInfo(windowInfoResult);
+				this.logger.debug(`获取到 ${windowInfoResult.windows.length} 个窗口信息`);
+			}
+		} catch (error) {
+			this.logger.warn('获取窗口信息失败:', error);
+		}
 
 		this.logger.info(
-			`截图完成: ${originalSize} -> ${compressedBuffer.length} 字节 (压缩 ${Math.round((1 - compressedBuffer.length / originalSize) * 100)}%), 尺寸: ${screenInfo.imageWidth}x${screenInfo.imageHeight}`
+			`截图完成: ${originalSize} 字节, 尺寸: ${screenInfo.imageWidth}x${screenInfo.imageHeight}, 格式: PNG (原图，无压缩)`
 		);
 
 		// 在终端显示图片
-		this.displayImageInTerminal(compressedBuffer);
+		this.displayImageInTerminal(originalBuffer);
 
 		return {
 			success: true,
 			base64,
-			format: 'jpeg',
+			format: 'png',
 			originalSize,
-			compressedSize: compressedBuffer.length,
-			savedPath,
+			compressedSize: originalSize, // 无压缩，大小相同
+			// 只返回文件名，前端通过 /screenshots/system/{filename} 访问
+			savedPath: filename,
 			imageSize: { width: screenInfo.imageWidth, height: screenInfo.imageHeight },
 			scale: screenInfo.scale,
+			windowInfo: windowInfoText || undefined,
 		};
 	}
 

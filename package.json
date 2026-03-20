@@ -93,7 +93,7 @@
 		"ora": "^8.1.0",
 		"pdf-parse": "^1.1.1",
 		"playwright": "^1.58.2",
-		"screenshot-desktop": "^1.15.0",
+		"screenshot-desktop": "^1.15.3",
 		"systeminformation": "^5.30.6",
 		"uuid": "^10.0.0",
 		"ws": "^8.19.0",

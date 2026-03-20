@@ -132,7 +132,11 @@ export class ComputerTool extends BaseTool {
 	constructor(config: Record<string, unknown> = {}) {
 		super({
 			name: 'computer',
-			description: `桌面控制工具，通过坐标操作鼠标键盘。配合 screenshot 工具使用：先截图分析界面，再用坐标点击操作。`,
+			description: `桌面控制工具，通过坐标操作鼠标键盘。配合 screenshot 工具使用：先截图分析界面，再用坐标点击操作。
+
+重要：coordinate 参数必须是相对坐标 [x, y]，范围是 [0.0, 1.0]。
+例如：要点击屏幕中心，应返回 [0.5, 0.5]；要点击左上角，返回 [0.0, 0.0]；要点击右下角，返回 [1.0, 1.0]。
+不要返回绝对像素坐标（如 [960, 540]），必须返回相对值！`,
 			parameters: {
 				action: {
 					type: 'string',
@@ -151,22 +155,22 @@ export class ComputerTool extends BaseTool {
 						'cursor_position',
 					],
 				},
-				coordinate: {
-					type: 'array',
-					description: '截图中的像素坐标 [x, y]，工具会自动处理屏幕缩放',
-					items: { type: 'number' },
-				},
+			coordinate: {
+				type: 'array',
+				description: '截图中的相对坐标 [x, y]，范围 [0.0, 1.0]。例如 [0.5, 0.5] 表示屏幕中心，[1.0, 1.0] 表示右下角。工具会自动转换为实际鼠标坐标。',
+				items: { type: 'number' },
+			},
 				text: {
 					type: 'string',
 					description: 'type 操作要输入的文本',
 				},
 				key: {
 					type: 'string',
-					description: 'key 操作的按键：Enter, Tab, Escape, F1-F12, Up, Down, Left, Right',
+					description: 'key 操作的按键：Enter, Tab, Escape, Space, Backspace, Delete, Up, Down, Left, Right, Home, End, PageUp, PageDown, F1-F12。注意：Windows 键请使用 hotkey 操作',
 				},
 				keys: {
 					type: 'array',
-					description: 'hotkey 操作的按键组合，如 ["ctrl","c"]',
+					description: 'hotkey 操作的按键组合，如 ["ctrl","c"]、["win"]（打开开始菜单）、["alt","tab"]',
 					items: { type: 'string' },
 				},
 				delay: {
@@ -281,12 +285,21 @@ export class ComputerTool extends BaseTool {
 						f10: 'F10',
 						f11: 'F11',
 						f12: 'F12',
+						win: 'LeftSuper',
+						cmd: 'LeftSuper',
+						super: 'LeftSuper',
+						ctrl: 'LeftControl',
+						control: 'LeftControl',
+						alt: 'LeftAlt',
+						shift: 'LeftShift',
 					};
 					const mapped = keyMap[keyName.toLowerCase()] || keyName;
 					const key = Key[mapped as keyof typeof Key];
 					if (key !== undefined) {
 						await keyboard.pressKey(key);
 						await keyboard.releaseKey(key);
+					} else {
+						throw new Error(`未知的按键: ${keyName}，请使用 hotkey 操作发送组合键，或检查按键名称`);
 					}
 				},
 				hotkey: async (keys) => {
@@ -296,25 +309,48 @@ export class ComputerTool extends BaseTool {
 						alt: 'LeftAlt',
 						shift: 'LeftShift',
 						win: 'LeftSuper',
+						windows: 'LeftSuper',
 						cmd: 'LeftSuper',
 						super: 'LeftSuper',
 						enter: 'Return',
+						return: 'Return',
 						tab: 'Tab',
 						escape: 'Escape',
+						esc: 'Escape',
 						space: 'Space',
 						backspace: 'Backspace',
 						delete: 'Delete',
 					};
-
+	
 					const keyObjects: (typeof Key)[keyof typeof Key][] = [];
+					const platform = process.platform;
+					
 					for (const k of keys) {
-						const mapped = keyMap[k.toLowerCase()] || k.toUpperCase();
+						const keyLower = k.toLowerCase();
+						let mapped = keyMap[keyLower];
+						
+						// Windows 平台特殊处理 Win 键
+						if (!mapped && (keyLower === 'win' || keyLower === 'windows') && platform === 'win32') {
+							// 在 Windows 上使用 PowerShell SendInput 发送 Win 键
+							this.logger.debug('Windows 平台使用 PowerShell 发送 Win 键');
+							await execAsync('powershell -NoProfile -Command "[System.Windows.Forms.SendKeys]::SendWait(\'{LWIN}\')"', {
+								windowsHide: true,
+							});
+							continue;
+						}
+						
+						if (!mapped) {
+							mapped = k.toUpperCase() as keyof typeof Key;
+						}
+						
 						const key = Key[mapped as keyof typeof Key];
 						if (key !== undefined) {
 							keyObjects.push(key);
+						} else {
+							this.logger.warn(`未知的按键: ${k} (映射: ${mapped})，已跳过`);
 						}
 					}
-
+	
 					// 按下所有键
 					for (const key of keyObjects) {
 						await keyboard.pressKey(key);
@@ -388,17 +424,171 @@ export class ComputerTool extends BaseTool {
 
 	/**
 	 * 将截图坐标转换为鼠标坐标
+	 * 支持绝对坐标和相对坐标（0-1之间）
 	 */
 	private async convertCoordinate(imageX: number, imageY: number): Promise<{ x: number; y: number }> {
 		const scale = await this.getScale();
-		const x = Math.round(imageX / scale);
-		const y = Math.round(imageY / scale);
-
-		if (scale > 1.01) {
-			this.logger.debug(`坐标转换: 截图(${imageX}, ${imageY}) → 鼠标(${x}, ${y})`);
+		
+		// 获取屏幕尺寸（鼠标坐标系）
+		const screenSize = await this.lib!.getScreenSize();
+		
+		// 判断是否为相对坐标（0-1之间）
+		const isRelativeX = imageX >= 0 && imageX <= 1;
+		const isRelativeY = imageY >= 0 && imageY <= 1;
+		
+		let x: number;
+		let y: number;
+		
+		if (isRelativeX && isRelativeY) {
+			// 相对坐标：乘以屏幕尺寸
+			x = Math.round(imageX * screenSize.width);
+			y = Math.round(imageY * screenSize.height);
+			this.logger.debug(`坐标转换(相对): 截图(${imageX}, ${imageY}) → 鼠标(${x}, ${y}) [屏幕: ${screenSize.width}x${screenSize.height}]`);
+		} else {
+			// 绝对坐标：除以缩放比例
+			x = Math.round(imageX / scale);
+			y = Math.round(imageY / scale);
+			if (scale > 1.01) {
+				this.logger.debug(`坐标转换(绝对): 截图(${imageX}, ${imageY}) → 鼠标(${x}, ${y}) [缩放: ${scale.toFixed(2)}x]`);
+			}
 		}
 
 		return { x, y };
+	}
+
+	/**
+	 * 生成带点击标记的截图
+	 * 在截图上标记点击位置，便于调试
+	 * 
+	 * @param clickX - AI 提供的相对坐标 x (0-1)
+	 * @param clickY - AI 提供的相对坐标 y (0-1)
+	 * @param actualX - 实际点击的屏幕坐标 x
+	 * @param actualY - 实际点击的屏幕坐标 y
+	 * @param action - 点击动作类型
+	 */
+	private async createMarkedScreenshot(
+		clickX: number,
+		clickY: number,
+		actualX: number,
+		actualY: number,
+		action: string
+	): Promise<string | undefined> {
+		try {
+			const screenshotDesktop = (await import('screenshot-desktop')).default;
+			const sharp = (await import('sharp')).default;
+			const { existsSync, mkdirSync } = await import('fs');
+
+			// 截图目录 - 使用项目根目录下的 data 文件夹
+			const MARKED_DIR = join(process.cwd(), 'data', 'marked-clicks');
+			if (!existsSync(MARKED_DIR)) {
+				mkdirSync(MARKED_DIR, { recursive: true });
+			}
+
+			// 获取截图
+			const buffer = await screenshotDesktop({ format: 'png' });
+			const metadata = await sharp(buffer).metadata();
+			const width = metadata.width || 1920;
+			const height = metadata.height || 1080;
+
+			// 将相对坐标转换为截图上的像素坐标
+			// clickX 和 clickY 是 AI 提供的相对坐标 (0-1)
+			const pixelX = Math.round(clickX * width);
+			const pixelY = Math.round(clickY * height);
+
+			// 创建 SVG 标记
+			const markerSize = 30;
+			const svg = `
+				<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+					<defs>
+						<marker id="arrow" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto">
+							<path d="M0,0 L10,5 L0,10" fill="#ff0000" />
+						</marker>
+					</defs>
+					
+					<!-- 十字准星 -->
+					<line x1="${pixelX - markerSize}" y1="${pixelY}" x2="${pixelX + markerSize}" y2="${pixelY}" 
+						stroke="#ff0000" stroke-width="3" />
+					<line x1="${pixelX}" y1="${pixelY - markerSize}" x2="${pixelX}" y2="${pixelY + markerSize}" 
+						stroke="#ff0000" stroke-width="3" />
+					
+					<!-- 中心点 -->
+					<circle cx="${pixelX}" cy="${pixelY}" r="6" fill="#ff0000" />
+					<circle cx="${pixelX}" cy="${pixelY}" r="10" fill="none" stroke="#ff0000" stroke-width="2" />
+					
+					<!-- 标签背景 -->
+					<rect x="${pixelX + 15}" y="${pixelY - 35}" width="280" height="50" 
+						fill="rgba(255, 0, 0, 0.8)" rx="4" />
+					
+					<!-- 标签文字 -->
+					<text x="${pixelX + 20}" y="${pixelY - 18}" fill="white" font-size="14" font-weight="bold"
+						font-family="Arial, sans-serif">${action}</text>
+					<text x="${pixelX + 20}" y="${pixelY}" fill="white" font-size="12"
+						font-family="Arial, sans-serif">相对: (${clickX.toFixed(3)}, ${clickY.toFixed(3)})</text>
+					<text x="${pixelX + 20}" y="${pixelY + 14}" fill="white" font-size="12"
+						font-family="Arial, sans-serif">实际: (${actualX}, ${actualY})</text>
+				</svg>
+			`;
+
+			// 合成图片
+			const markedBuffer = await sharp(buffer)
+				.composite([{ input: Buffer.from(svg), blend: 'over' }])
+				.png()
+				.toBuffer();
+
+			// 保存文件
+			const filename = `click-${Date.now()}.png`;
+			const filepath = join(MARKED_DIR, filename);
+			await sharp(markedBuffer).toFile(filepath);
+
+			this.logger.info(`已生成点击标记截图: ${filepath}`);
+			// 返回文件名，前端通过 /screenshots/marked-clicks/{filename} 访问
+			return filename;
+		} catch (error) {
+			this.logger.warn('生成点击标记截图失败:', error);
+			return undefined;
+		}
+	}
+
+	/**
+	 * 截图并返回 base64（用于 click 等操作后自动截图）
+	 */
+	private async captureScreenshot(): Promise<{
+		success: boolean;
+		base64?: string;
+		format?: string;
+		imageSize?: { width: number; height: number };
+		error?: string;
+	}> {
+		try {
+			const screenshotDesktop = (await import('screenshot-desktop')).default;
+			const sharp = (await import('sharp')).default;
+
+			// 截图
+			const buffer = await screenshotDesktop({ format: 'png' });
+			
+			// 压缩为 JPEG 以减少传输大小
+			const compressedBuffer = await sharp(buffer)
+				.jpeg({ quality: 70 })
+				.toBuffer();
+			
+			const metadata = await sharp(compressedBuffer).metadata();
+			
+			return {
+				success: true,
+				base64: compressedBuffer.toString('base64'),
+				format: 'jpeg',
+				imageSize: { 
+					width: metadata.width || 1920, 
+					height: metadata.height || 1080 
+				},
+			};
+		} catch (error) {
+			this.logger.warn('自动截图失败:', error);
+			return {
+				success: false,
+				error: String(error),
+			};
+		}
 	}
 
 	/**
@@ -468,84 +658,172 @@ export class ComputerTool extends BaseTool {
 		};
 
 		switch (action) {
-			case 'mouse_move': {
-				if (!coordinate || coordinate.length !== 2) {
-					throw new Error('mouse_move 需要 coordinate 参数，格式: [x, y]');
-				}
+		case 'mouse_move': {
+			if (!coordinate || coordinate.length !== 2) {
+				throw new Error('mouse_move 需要 coordinate 参数，格式: [x, y]');
+			}
+			const [imgX, imgY] = coordinate;
+			const scale = await this.getScale();
+			const { x, y } = await this.convertCoordinate(imgX, imgY);
+			const finalPos = await this.calibratedMove(x, y);
+			this.logger.debug(`鼠标移动到: 截图(${imgX}, ${imgY}) → 实际(${finalPos.x}, ${finalPos.y})`);
+			
+			// 获取屏幕信息用于调试
+			const screenSize = await this.lib.getScreenSize();
+			
+			return withDelay({
+				success: true,
+				action: 'mouse_move',
+				imageCoordinate: { x: imgX, y: imgY },
+				convertedCoordinate: { x, y },
+				actualCoordinate: finalPos,
+				scale: scale,
+				screenSize: screenSize,
+			});
+		}
+
+		case 'click':
+		case 'left_click': {
+			if (coordinate && coordinate.length === 2) {
 				const [imgX, imgY] = coordinate;
+				const scale = await this.getScale();
 				const { x, y } = await this.convertCoordinate(imgX, imgY);
 				const finalPos = await this.calibratedMove(x, y);
-				this.logger.debug(`鼠标移动到: 截图(${imgX}, ${imgY}) → 实际(${finalPos.x}, ${finalPos.y})`);
+				// 增加延迟，确保鼠标移动完成后再点击
+				await new Promise(r => setTimeout(r, 100));
+				await this.lib.mouse.leftClick();
+				this.logger.debug(`左键点击: 截图(${imgX}, ${imgY}) → 实际(${finalPos.x}, ${finalPos.y})`);
+
+				// 【关键】等待界面响应（优先使用用户传入的 delay）
+				const waitTime = delay > 0 ? delay : 500;
+				await new Promise(r => setTimeout(r, waitTime));
+
+				// 自动截图返回给 AI
+				const screenshotResult = await this.captureScreenshot();
+
+				// 生成带标记的截图
+				const markedImage = await this.createMarkedScreenshot(imgX, imgY, finalPos.x, finalPos.y, 'left_click');
+
+				// 获取屏幕信息用于调试
+				const screenSize = await this.lib.getScreenSize();
+
 				return withDelay({
 					success: true,
-					action: 'mouse_move',
+					action: 'left_click',
 					imageCoordinate: { x: imgX, y: imgY },
+					convertedCoordinate: { x, y },
 					actualCoordinate: finalPos,
+					scale: scale,
+					screenSize: screenSize,
+					markedScreenshot: markedImage,
+					// 包含截图结果，让 AI 直接看到点击后的界面
+					screenshot: screenshotResult.success ? {
+						base64: screenshotResult.base64,
+						format: screenshotResult.format,
+						imageSize: screenshotResult.imageSize,
+					} : undefined,
+					message: `已在坐标 (${imgX.toFixed(3)}, ${imgY.toFixed(3)}) 执行左键点击，当前屏幕截图已返回，请分析点击后的界面状态。`,
 				});
+			} else {
+				await this.lib.mouse.leftClick();
+				this.logger.debug(`左键点击: 当前位置`);
+				return withDelay({ success: true, action: 'left_click', coordinate: 'current' });
 			}
+		}
 
-			case 'click':
-			case 'left_click': {
-				if (coordinate && coordinate.length === 2) {
-					const [imgX, imgY] = coordinate;
-					const { x, y } = await this.convertCoordinate(imgX, imgY);
-					const finalPos = await this.calibratedMove(x, y);
-					await this.lib.mouse.leftClick();
-					this.logger.debug(`左键点击: 截图(${imgX}, ${imgY}) → 实际(${finalPos.x}, ${finalPos.y})`);
-					return withDelay({
-						success: true,
-						action: 'left_click',
-						imageCoordinate: { x: imgX, y: imgY },
-						actualCoordinate: finalPos,
-					});
-				} else {
-					await this.lib.mouse.leftClick();
-					this.logger.debug(`左键点击: 当前位置`);
-					return withDelay({ success: true, action: 'left_click', coordinate: 'current' });
-				}
-			}
+		case 'right_click': {
+			if (coordinate && coordinate.length === 2) {
+				const [imgX, imgY] = coordinate;
+				const scale = await this.getScale();
+				const { x, y } = await this.convertCoordinate(imgX, imgY);
+				const finalPos = await this.calibratedMove(x, y);
+				await this.lib.mouse.rightClick();
+				this.logger.debug(`右键点击: 截图(${imgX}, ${imgY}) → 实际(${finalPos.x}, ${finalPos.y})`);
 
-			case 'right_click': {
-				if (coordinate && coordinate.length === 2) {
-					const [imgX, imgY] = coordinate;
-					const { x, y } = await this.convertCoordinate(imgX, imgY);
-					const finalPos = await this.calibratedMove(x, y);
-					await this.lib.mouse.rightClick();
-					this.logger.debug(`右键点击: 截图(${imgX}, ${imgY}) → 实际(${finalPos.x}, ${finalPos.y})`);
-					return withDelay({
-						success: true,
-						action: 'right_click',
-						imageCoordinate: { x: imgX, y: imgY },
-						actualCoordinate: finalPos,
-					});
-				} else {
-					await this.lib.mouse.rightClick();
-					this.logger.debug(`右键点击: 当前位置`);
-					return withDelay({ success: true, action: 'right_click', coordinate: 'current' });
-				}
-			}
+				// 【关键】等待界面响应
+				const waitTime = delay > 0 ? delay : 500;
+				await new Promise(r => setTimeout(r, waitTime));
 
-			case 'double_click': {
-				if (coordinate && coordinate.length === 2) {
-					const [imgX, imgY] = coordinate;
-					const { x, y } = await this.convertCoordinate(imgX, imgY);
-					const finalPos = await this.calibratedMove(x, y);
-					await this.lib.mouse.leftClick();
-					await new Promise((r) => setTimeout(r, 50));
-					await this.lib.mouse.leftClick();
-					this.logger.debug(`双击: 截图(${imgX}, ${imgY}) → 实际(${finalPos.x}, ${finalPos.y})`);
-					return withDelay({
-						success: true,
-						action: 'double_click',
-						imageCoordinate: { x: imgX, y: imgY },
-						actualCoordinate: finalPos,
-					});
-				} else {
-					await this.lib.doubleClick();
-					this.logger.debug(`双击: 当前位置`);
-					return withDelay({ success: true, action: 'double_click', coordinate: 'current' });
-				}
+				// 自动截图返回给 AI
+				const screenshotResult = await this.captureScreenshot();
+
+				// 生成带标记的截图
+				const markedImage = await this.createMarkedScreenshot(imgX, imgY, finalPos.x, finalPos.y, 'right_click');
+
+				// 获取屏幕信息用于调试
+				const screenSize = await this.lib.getScreenSize();
+
+				return withDelay({
+					success: true,
+					action: 'right_click',
+					imageCoordinate: { x: imgX, y: imgY },
+					convertedCoordinate: { x, y },
+					actualCoordinate: finalPos,
+					scale: scale,
+					screenSize: screenSize,
+					markedScreenshot: markedImage,
+					// 包含截图结果，让 AI 直接看到右键点击后的界面
+					screenshot: screenshotResult.success ? {
+						base64: screenshotResult.base64,
+						format: screenshotResult.format,
+						imageSize: screenshotResult.imageSize,
+					} : undefined,
+					message: `已在坐标 (${imgX.toFixed(3)}, ${imgY.toFixed(3)}) 执行右键点击，当前屏幕截图已返回，请分析右键菜单是否出现。`,
+				});
+			} else {
+				await this.lib.mouse.rightClick();
+				this.logger.debug(`右键点击: 当前位置`);
+				return withDelay({ success: true, action: 'right_click', coordinate: 'current' });
 			}
+		}
+
+		case 'double_click': {
+			if (coordinate && coordinate.length === 2) {
+				const [imgX, imgY] = coordinate;
+				const scale = await this.getScale();
+				const { x, y } = await this.convertCoordinate(imgX, imgY);
+				const finalPos = await this.calibratedMove(x, y);
+				await this.lib.mouse.leftClick();
+				await new Promise((r) => setTimeout(r, 50));
+				await this.lib.mouse.leftClick();
+				this.logger.debug(`双击: 截图(${imgX}, ${imgY}) → 实际(${finalPos.x}, ${finalPos.y})`);
+
+				// 【关键】等待界面响应（双击打开应用需要时间，优先使用用户传入的 delay）
+				const waitTime = delay > 0 ? delay : 800;
+				await new Promise(r => setTimeout(r, waitTime));
+
+				// 自动截图返回给 AI
+				const screenshotResult = await this.captureScreenshot();
+
+				// 生成带标记的截图
+				const markedImage = await this.createMarkedScreenshot(imgX, imgY, finalPos.x, finalPos.y, 'double_click');
+
+				// 获取屏幕信息用于调试
+				const screenSize = await this.lib.getScreenSize();
+
+				return withDelay({
+					success: true,
+					action: 'double_click',
+					imageCoordinate: { x: imgX, y: imgY },
+					convertedCoordinate: { x, y },
+					actualCoordinate: finalPos,
+					scale: scale,
+					screenSize: screenSize,
+					markedScreenshot: markedImage,
+					// 包含截图结果，让 AI 直接看到双击后的界面
+					screenshot: screenshotResult.success ? {
+						base64: screenshotResult.base64,
+						format: screenshotResult.format,
+						imageSize: screenshotResult.imageSize,
+					} : undefined,
+					message: `已在坐标 (${imgX.toFixed(3)}, ${imgY.toFixed(3)}) 执行双击操作，当前屏幕截图已返回，请分析双击后的界面状态（如应用是否已打开）。`,
+				});
+			} else {
+				await this.lib.doubleClick();
+				this.logger.debug(`双击: 当前位置`);
+				return withDelay({ success: true, action: 'double_click', coordinate: 'current' });
+			}
+		}
 
 			case 'scroll': {
 				const dir = direction || 'down';

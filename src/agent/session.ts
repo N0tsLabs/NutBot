@@ -275,6 +275,58 @@ export class SessionManager {
 	}
 
 	/**
+	 * 更新指定消息的内容
+	 * 用于在总结阶段更新 assistant 消息，而不是创建新消息
+	 */
+	updateMessage(
+		sessionId: string,
+		messageId: string,
+		updates: { content?: string; metadata?: Record<string, unknown> }
+	): void {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+
+		const message = session.messages.find((m) => m.id === messageId);
+		if (message) {
+			if (updates.content !== undefined) {
+				message.content = updates.content;
+			}
+			if (updates.metadata !== undefined) {
+				message.metadata = { ...message.metadata, ...updates.metadata };
+			}
+			this.saveSession(session);
+			this.logger.debug(`更新消息 ${messageId} 成功`);
+		} else {
+			this.logger.warn(`未找到消息: ${messageId}`);
+		}
+	}
+
+	/**
+	 * 向现有 assistant 消息追加 toolCalls
+	 * 用于在同一轮次中追加新的工具调用
+	 */
+	appendToolCalls(
+		sessionId: string,
+		messageId: string,
+		toolCalls: unknown[]
+	): void {
+		const session = this.sessions.get(sessionId);
+		if (!session) return;
+
+		const message = session.messages.find((m) => m.id === messageId);
+		if (message && message.role === 'assistant') {
+			if (!message.toolCalls) {
+				message.toolCalls = [];
+			}
+			(message.toolCalls as unknown[]).push(...toolCalls);
+			this.saveSession(session);
+			this.logger.debug(`向消息 ${messageId} 追加 ${toolCalls.length} 个 toolCalls`);
+		} else {
+			this.logger.warn(`未找到 assistant 消息: ${messageId}`);
+		}
+	}
+
+	/**
 	 * 更新 assistant 消息中的 toolCall，添加执行结果
 	 * 用于在 tool 执行完成后，将结果同步到 assistant 消息中
 	 */

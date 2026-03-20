@@ -100,18 +100,30 @@ class BrowserService {
 	 * 自动检测系统浏览器
 	 */
 	async detectBrowsers(): Promise<DetectedBrowser[]> {
-		const { findBrowserExecutable } = await import('./browser/launcher.js');
+		const { findBrowserExecutable, getSystemDefaultBrowser } = await import('./browser/launcher.js');
 		const browsers: DetectedBrowser[] = [];
+
+		// 先获取系统默认浏览器
+		const defaultBrowser = getSystemDefaultBrowser();
+		
+		// 如果检测到了默认浏览器且不是 chromium，优先添加
+		if (defaultBrowser.type !== 'chromium' && defaultBrowser.executablePath) {
+			if (defaultBrowser.type === 'edge') {
+				browsers.push({ name: 'Microsoft Edge (默认)', path: defaultBrowser.executablePath, channel: 'msedge' });
+			} else if (defaultBrowser.type === 'chrome') {
+				browsers.push({ name: 'Google Chrome (默认)', path: defaultBrowser.executablePath, channel: 'chrome' });
+			}
+		}
 
 		// 检测 Edge
 		const edgePath = findBrowserExecutable('edge');
-		if (edgePath) {
+		if (edgePath && !browsers.find(b => b.path === edgePath)) {
 			browsers.push({ name: 'Microsoft Edge', path: edgePath, channel: 'msedge' });
 		}
 
 		// 检测 Chrome
 		const chromePath = findBrowserExecutable('chrome');
-		if (chromePath) {
+		if (chromePath && !browsers.find(b => b.path === chromePath)) {
 			browsers.push({ name: 'Google Chrome', path: chromePath, channel: 'chrome' });
 		}
 
@@ -125,14 +137,24 @@ class BrowserService {
 		try {
 			const config = this.getConfig();
 			
-			// 确定浏览器类型
+			// 确定浏览器类型和路径
 			let browserType: BrowserType = 'chromium';
+			let executablePath: string | undefined = config.browserPath || undefined;
+			
 			if (config.browserPath) {
+				// 用户指定了浏览器路径
 				if (config.browserPath.includes('edge') || config.browserPath.includes('msedge')) {
 					browserType = 'edge';
 				} else if (config.browserPath.includes('chrome')) {
 					browserType = 'chrome';
 				}
+			} else {
+				// 未指定路径，自动检测系统默认浏览器
+				const { getSystemDefaultBrowser } = await import('./browser/launcher.js');
+				const defaultBrowser = getSystemDefaultBrowser();
+				browserType = defaultBrowser.type;
+				executablePath = defaultBrowser.executablePath;
+				console.log(`[BrowserService] 自动检测到系统默认浏览器: ${browserType}`);
 			}
 
 			// 如果浏览器未启动，先启动
@@ -140,7 +162,7 @@ class BrowserService {
 			if (!state.isRunning) {
 				await browserManager.launch({
 					type: browserType,
-					executablePath: config.browserPath || undefined,
+					executablePath,
 					headless: config.headless,
 					navigationTimeout: config.timeout
 				});
@@ -154,7 +176,7 @@ class BrowserService {
 			return {
 				success: true,
 				message: url ? `已打开浏览器并导航到 ${url}` : '浏览器已启动',
-				browser: config.browserPath || browserType
+				browser: executablePath || browserType
 			};
 		} catch (error) {
 			return {

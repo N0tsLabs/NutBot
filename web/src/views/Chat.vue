@@ -228,14 +228,17 @@
 												</div>
 												<pre class="tool-code">{{ formatToolArgs(tool.arguments) }}</pre>
 											</div>
-											<!-- 系统截图工具 (screenshot) 的截图显示 -->
-											<div v-if="tool.name === 'screenshot' && tool.result?.base64" class="tool-section">
-												<div class="tool-section-head"><span>截图预览</span></div>
-												<div class="screenshot-box" @click="openImageModal(tool.result.base64)">
-													<img :src="'data:image/jpeg;base64,' + tool.result.base64" alt="截图" />
-													<div class="screenshot-hover">🔍 点击放大</div>
-												</div>
-											</div>
+													<!-- 系统截图工具 (screenshot) 的截图显示 -->
+													<div v-if="tool.name === 'screenshot' && (tool.result?.base64 || tool.result?.savedPath)" class="tool-section">
+														<div class="tool-section-head"><span>截图预览</span></div>
+														<div class="screenshot-box" @click="openImageModal(tool.result.base64 || tool.result.savedPath)">
+															<img 
+																:src="tool.result.savedPath ? getSystemScreenshotUrl(tool.result.savedPath) : 'data:image/jpeg;base64,' + tool.result.base64" 
+																alt="截图" 
+															/>
+															<div class="screenshot-hover">🔍 点击放大</div>
+														</div>
+													</div>
 											<!-- 浏览器工具 (browser) 的截图显示 -->
 											<div v-if="tool.name === 'browser' && tool.result?.action === 'screenshot' && tool.result?.imageUrl" class="tool-section">
 												<div class="tool-section-head"><span>浏览器截图预览</span></div>
@@ -244,6 +247,17 @@
 													<div class="screenshot-hover">🔍 点击放大</div>
 												</div>
 											</div>
+													<!-- computer 工具的点击标记截图显示 -->
+													<div v-if="tool.name === 'computer' && tool.result?.markedScreenshot" class="tool-section">
+														<div class="tool-section-head"><span>点击位置标记</span></div>
+														<div class="screenshot-box" @click="openMarkedScreenshotModal(tool.result.markedScreenshot)">
+															<img 
+																:src="getMarkedScreenshotUrl(tool.result.markedScreenshot)" 
+																alt="点击标记"
+															/>
+															<div class="screenshot-hover">🔍 点击放大</div>
+														</div>
+													</div>
 											<div v-if="tool.result" class="tool-section">
 												<div class="tool-section-head">
 													<span>结果</span>
@@ -345,6 +359,22 @@
 				<img :src="browserImageModal.imageUrl" class="image-modal-img" />
 			</div>
 		</div>
+
+											<!-- 标记截图预览模态框 -->
+											<div v-if="markedScreenshotModal.visible" class="image-modal" @click="closeMarkedScreenshotModal">
+												<div class="image-modal-content" @click.stop>
+													<button class="image-modal-close" @click="closeMarkedScreenshotModal">✕</button>
+													<div class="image-modal-info">
+														<div class="image-modal-title">🎯 点击位置标记</div>
+														<div class="image-modal-path">{{ markedScreenshotModal.imagePath }}</div>
+													</div>
+													<img 
+														:src="getMarkedScreenshotUrl(markedScreenshotModal.imagePath)" 
+														class="image-modal-img"
+														@error="(e) => console.error('模态框截图加载失败:', markedScreenshotModal.imagePath, 'URL:', getMarkedScreenshotUrl(markedScreenshotModal.imagePath), '错误:', e)"
+													/>
+												</div>
+											</div>
 
 		<!-- 调试确认模态框 -->
 		<div v-if="store.debugConfirm" class="debug-modal-overlay">
@@ -756,6 +786,22 @@ const closeBrowserImageModal = () => {
 	browserImageModal.value.imageUrl = '';
 };
 
+// 标记截图预览模态框（用于 computer 工具的点击标记截图）
+const markedScreenshotModal = ref({
+	visible: false,
+	imagePath: '',
+});
+
+const openMarkedScreenshotModal = (imagePath) => {
+	markedScreenshotModal.value.imagePath = imagePath;
+	markedScreenshotModal.value.visible = true;
+};
+
+const closeMarkedScreenshotModal = () => {
+	markedScreenshotModal.value.visible = false;
+	markedScreenshotModal.value.imagePath = '';
+};
+
 // 格式化安全消息（保留换行）
 const formatSecurityMessage = (message) => {
 	if (!message) return '';
@@ -913,8 +959,12 @@ const getToolDisplayName = (tool) => {
 // 获取工具操作简述
 const getToolAction = (tool) => {
 	if (!tool) return '';
+	// 优先使用已解析的 action
+	if (tool.action) return tool.action;
+	// 否则从 params 或 arguments 中解析
 	try {
-		const args = typeof tool.arguments === 'string' ? JSON.parse(tool.arguments) : tool.arguments;
+		const params = tool.params || tool.arguments;
+		const args = typeof params === 'string' ? JSON.parse(params) : params;
 		const method = args?.method || args?.action || '';
 		
 		if (tool.name === 'browser') {
@@ -1176,6 +1226,26 @@ const copyToClipboard = async (text) => {
 const getRawResult = (result) => {
 	if (!result) return '';
 	return JSON.stringify(result, null, 2);
+};
+
+// 获取标记截图的 URL
+const getMarkedScreenshotUrl = (filePath) => {
+	if (!filePath) return '';
+	// 从完整路径中提取文件名
+	const filename = filePath.split(/[\\/]/).pop();
+	if (!filename) return '';
+	// 使用后端 API 地址
+	return `${api.getBaseUrl()}/screenshots/marked-clicks/${filename}`;
+};
+
+// 获取系统截图的 URL
+const getSystemScreenshotUrl = (filePath) => {
+	if (!filePath) return '';
+	// 从完整路径中提取文件名
+	const filename = filePath.split(/[\\/]/).pop();
+	if (!filename) return '';
+	// 使用后端 API 地址
+	return `${api.getBaseUrl()}/screenshots/system/${filename}`;
 };
 
 // 提取 <thinking> 标签内容

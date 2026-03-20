@@ -76,7 +76,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted, watch } from 'vue';
 import { useAppStore } from './stores/app';
 import { getBaseUrl } from './utils/api';
 import { toast } from './utils/toast';
@@ -129,10 +129,17 @@ const navItems = [
 	{ path: '/settings', name: '设置', icon: '⚙️' },
 ];
 
+// 应用主题到 document
+const applyTheme = (themeValue) => {
+	document.documentElement.setAttribute('data-theme', themeValue);
+	document.documentElement.style.colorScheme = themeValue;
+};
+
 // 主题切换
 const toggleTheme = () => {
 	theme.value = theme.value === 'dark' ? 'light' : 'dark';
 	localStorage.setItem('nutbot-theme', theme.value);
+	applyTheme(theme.value);
 };
 
 // 初始化主题
@@ -143,7 +150,14 @@ const initTheme = () => {
 	} else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
 		theme.value = 'light';
 	}
+	// 应用主题
+	applyTheme(theme.value);
 };
+
+// 监听主题变化
+watch(theme, (newTheme) => {
+	applyTheme(newTheme);
+});
 
 // WebSocket 连接
 let ws = null;
@@ -191,6 +205,8 @@ onMounted(() => {
 	window.addEventListener('resize', handleResize);
 	// 启动心跳检测
 	store.startHeartbeat();
+	// 加载会话列表和历史记录
+	store.loadSessions();
 });
 
 onUnmounted(() => {

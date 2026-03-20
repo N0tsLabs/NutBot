@@ -1,6 +1,6 @@
 /**
- * AI 点击位置测试用例
- * 调用 AI 视觉模型识别点击位置，并在原图上标记后输出图片
+ * AI 点击 QQ 图标测试用例
+ * 调用 AI 视觉模型识别 QQ 图标位置，并在原图上标记后输出图片
  */
 
 import fs from 'fs';
@@ -21,8 +21,8 @@ const AI_CONFIG = {
 // 测试场景
 const TEST_SCENARIOS = [
   {
-    name: '点击wifi图标',
-    description: '点击wifi图标',
+    name: '点击QQ图标',
+    description: '请仔细查看任务栏上的所有图标，找到QQ企鹅图标（通常是白色企鹅在蓝色或彩色背景上），返回QQ图标的准确中心坐标。如果找不到QQ图标，请返回 {"action": "not_found", "reason": "未找到QQ图标"}',
     color: '#ff0000'
   }
 ];
@@ -232,11 +232,11 @@ async function drawMarkersOnImage(imagePath, results) {
  * 主测试函数
  */
 async function runTest() {
-  const imagePath = path.join(__dirname, 'PixPin_2026-03-16_17-31-51.jpg');
-  const outputPath = path.join(__dirname, 'ai-click-result.png');
+  const imagePath = path.join(__dirname, 'qq-test-screenshot.png');
+  const outputPath = path.join(__dirname, 'qq-click-result.png');
   
   console.log('========================================');
-  console.log('AI 点击位置测试');
+  console.log('AI 点击 QQ 图标测试');
   console.log('========================================');
   console.log('图片路径:', imagePath);
   console.log('');

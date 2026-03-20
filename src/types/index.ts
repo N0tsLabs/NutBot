@@ -210,6 +210,8 @@ export interface AgentChunk {
 	type:
 		| 'thinking'
 		| 'content'
+		| 'step_thinking'  // 步骤中的实时思考内容
+		| 'step_summary'   // 步骤总结内容
 		| 'done'
 		| 'tools'
 		| 'tool_start'
@@ -222,6 +224,7 @@ export interface AgentChunk {
 		| 'debug_confirm';
 	status?: string;
 	iteration?: number;
+	step?: number;      // 当前步骤序号
 	content?: string;
 	fullContent?: string; // 累积的完整内容
 	count?: number;

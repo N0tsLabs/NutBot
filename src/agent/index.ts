@@ -386,7 +386,7 @@ export class Agent {
 			// ========== 检查中断 ==========
 			if (this.interruptRequested) {
 				this.logger.info(`任务 ${runId} 在开始前被中断`);
-				// 保存中断消息到 session
+				// 任务开始前中断，创建新消息
 				this.gateway.sessionManager.addMessage(session.id, {
 					role: 'assistant',
 					content: '操作已被终止',
@@ -482,22 +482,30 @@ export class Agent {
 			const maxIterations = options.maxIterations || this.gateway.config.get<number>('agent.maxIterations', 30);
 			const debugMode = options.debugMode ?? this.gateway.config.get<boolean>('agent.debugMode', false);
 
-			let iteration = 0;
-			let shouldStop = false;  // 控制是否停止循环
+		let iteration = 0;
+		let shouldStop = false;  // 控制是否停止循环
+		let currentAssistantMsgId: string | null = null;  // 当前轮次的 assistant 消息 ID
 
-			while (iteration < maxIterations && !shouldStop) {
+		while (iteration < maxIterations && !shouldStop) {
 				iteration++;
 				this.logger.info(`── 迭代 ${iteration}/${maxIterations} ──`);
 
 				// 检查中断
 				if (this.interruptRequested) {
 					this.logger.info(`任务 ${runId} 被中断`);
-					// 保存中断消息到 session
-					this.gateway.sessionManager.addMessage(session.id, {
-						role: 'assistant',
-						content: '操作已被终止',
-						metadata: { interrupted: true },
-					});
+					// 更新现有 assistant 消息或创建新消息
+					if (currentAssistantMsgId) {
+						this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+							content: '操作已被终止',
+							metadata: { interrupted: true },
+						});
+					} else {
+						this.gateway.sessionManager.addMessage(session.id, {
+							role: 'assistant',
+							content: '操作已被终止',
+							metadata: { interrupted: true },
+						});
+					}
 					yield { type: 'content', content: '操作已被终止' };
 					return;
 				}
@@ -528,8 +536,8 @@ export class Agent {
 
 				this.logger.debug(`📊 tokens: ~${estimatedTokens}`);
 
-				// 调用 AI
-				yield { type: 'thinking', iteration };
+				// 调用 AI - 标记新步骤开始
+				yield { type: 'thinking', iteration, step: iteration };
 
 				let fullContent = '';
 				let toolCalls: ParsedToolCall[] = [];
@@ -547,12 +555,19 @@ export class Agent {
 				for await (const chunk of this.gateway.providerManager.chat(modelRef, messages, chatOptions)) {
 					if (this.interruptRequested) {
 						this.logger.info(`任务 ${runId} 被中断`);
-						// 保存中断消息到 session
-						this.gateway.sessionManager.addMessage(session.id, {
-							role: 'assistant',
-							content: '操作已被终止',
-							metadata: { interrupted: true },
-						});
+						// 更新现有 assistant 消息或创建新消息
+						if (currentAssistantMsgId) {
+							this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+								content: '操作已被终止',
+								metadata: { interrupted: true },
+							});
+						} else {
+							this.gateway.sessionManager.addMessage(session.id, {
+								role: 'assistant',
+								content: '操作已被终止',
+								metadata: { interrupted: true },
+							});
+						}
 						yield { type: 'content', content: '操作已被终止' };
 						return;
 					}
@@ -565,13 +580,15 @@ export class Agent {
 						return;
 					}
 
-					if (chunk.type === 'content') {
-						fullContent = chunk.fullContent || fullContent + (chunk.content || '');
-						// 实时转发内容块，实现流式输出效果
-						if (chunk.content) {
-							yield { type: 'content', content: chunk.content, fullContent };
-						}
-					} else if (chunk.type === 'tool_use') {
+				if (chunk.type === 'content') {
+					const newContent = chunk.content || '';
+					fullContent = chunk.fullContent || fullContent + newContent;
+					// 【修改】实时输出思考内容，让用户看到 AI 的思考过程
+					// 使用 step_thinking 类型标记这是步骤中的思考
+					if (newContent) {
+						yield { type: 'step_thinking', content: newContent, iteration };
+					}
+				} else if (chunk.type === 'tool_use') {
 						// 处理工具调用（Function Calling 模式）
 						const toolUse = chunk.toolUse as any;
 						if (toolUse?.function?.name) {
@@ -635,7 +652,6 @@ export class Agent {
 				// 保存 assistant 消息到 session（必须在执行工具前保存）
 				// 这样总结时才能读取到完整的消息链
 				if (toolCalls.length > 0) {
-					const msgId = `msg_${Date.now()}`;
 					// 使用前端期望的扁平格式存储 toolCalls
 					const toolCallsData = toolCalls.map((tc) => {
 						// 从 arguments 中提取 action 字段
@@ -647,7 +663,7 @@ export class Agent {
 							action = '';
 						}
 						return {
-							id: tc.id || `call_${msgId}_${Date.now()}`,
+							id: tc.id || `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
 							name: tc.name,
 							action: action, // 保存 action 字段
 							arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments || {}),
@@ -655,25 +671,44 @@ export class Agent {
 							result: undefined,
 						};
 					});
-					this.gateway.sessionManager.addMessage(session.id, {
-						id: msgId,
-						role: 'assistant',
-						content: fullContent || '',
-						toolCalls: toolCallsData,
-					});
-					this.logger.debug(`[保存 assistant] msgId=${msgId}, toolCalls=${JSON.stringify(toolCalls.map(tc => tc.name))}`);
+					
+					if (currentAssistantMsgId) {
+						// 如果当前轮次已有 assistant 消息，追加 toolCalls
+						this.gateway.sessionManager.appendToolCalls(session.id, currentAssistantMsgId, toolCallsData);
+						this.logger.debug(`[追加 toolCalls] msgId=${currentAssistantMsgId}, toolCalls=${JSON.stringify(toolCalls.map(tc => tc.name))}`);
+					} else {
+						// 创建新的 assistant 消息
+						currentAssistantMsgId = `msg_${Date.now()}`;
+						// 将思考内容包裹在 <thinking> 标签中，便于前端识别
+						const thinkingContent = fullContent ? `<thinking>\n${fullContent}\n</thinking>` : '';
+						this.gateway.sessionManager.addMessage(session.id, {
+							id: currentAssistantMsgId,
+							role: 'assistant',
+							content: thinkingContent,
+							toolCalls: toolCallsData,
+						});
+						this.logger.debug(`[保存 assistant] msgId=${currentAssistantMsgId}, toolCalls=${JSON.stringify(toolCalls.map(tc => tc.name))}`);
+					}
 				}
-
+	
 				for (const toolCall of toolCalls) {
 					// 检查中断请求
 					if (this.interruptRequested) {
 						this.logger.info(`任务 ${runId} 在工具执行前被中断`);
-						// 保存中断消息到 session
-						this.gateway.sessionManager.addMessage(session.id, {
-							role: 'assistant',
-							content: '操作已被终止',
-							metadata: { interrupted: true },
-						});
+						// 更新现有 assistant 消息，而不是创建新消息
+						if (currentAssistantMsgId) {
+							this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+								content: '操作已被终止',
+								metadata: { interrupted: true },
+							});
+						} else {
+							// 如果没有现有消息，创建新消息
+							this.gateway.sessionManager.addMessage(session.id, {
+								role: 'assistant',
+								content: '操作已被终止',
+								metadata: { interrupted: true },
+							});
+						}
 						yield { type: 'content', content: '操作已被终止' };
 						return;
 					}
@@ -721,7 +756,7 @@ export class Agent {
 						: '';
 					this.logger.aiDecision(toolName, intent.substring(0, 100));
 
-					yield { type: 'tool_start', tool: toolName, args: toolArgs };
+					yield { type: 'tool_start', tool: toolName, args: toolArgs, step: iteration };
 
 					// 安全检查
 					const operationInfo = securityGuard.extractOperationInfo(toolName, toolArgs as Record<string, unknown>);
@@ -742,12 +777,19 @@ export class Agent {
 						// 检查中断请求（安全检查后）
 						if (this.interruptRequested) {
 							this.logger.info(`任务 ${runId} 在工具执行前被中断`);
-							// 保存中断消息到 session
-							this.gateway.sessionManager.addMessage(session.id, {
-								role: 'assistant',
-								content: '操作已被终止',
-								metadata: { interrupted: true },
-							});
+							// 更新现有 assistant 消息或创建新消息
+							if (currentAssistantMsgId) {
+								this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+									content: '操作已被终止',
+									metadata: { interrupted: true },
+								});
+							} else {
+								this.gateway.sessionManager.addMessage(session.id, {
+									role: 'assistant',
+									content: '操作已被终止',
+									metadata: { interrupted: true },
+								});
+							}
 							yield { type: 'content', content: '操作已被终止' };
 							return;
 						}
@@ -774,7 +816,7 @@ export class Agent {
 							}
 						}
 
-						yield { type: 'tool_result', tool: toolName, result };
+						yield { type: 'tool_result', tool: toolName, result, step: iteration };
 	
 						const processed = this.processToolResult(toolName, result, capabilities.hasVision);
 						
@@ -847,12 +889,19 @@ export class Agent {
 				// 工具执行完成后，检查是否请求了中断
 				if (this.interruptRequested) {
 					this.logger.info(`任务 ${runId} 在工具执行完成后被中断`);
-					// 保存中断消息到 session
-					this.gateway.sessionManager.addMessage(session.id, {
-						role: 'assistant',
-						content: '操作已被终止',
-						metadata: { interrupted: true },
-					});
+					// 更新现有 assistant 消息或创建新消息
+					if (currentAssistantMsgId) {
+						this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+							content: '操作已被终止',
+							metadata: { interrupted: true },
+						});
+					} else {
+						this.gateway.sessionManager.addMessage(session.id, {
+							role: 'assistant',
+							content: '操作已被终止',
+							metadata: { interrupted: true },
+						});
+					}
 					yield { type: 'content', content: '操作已被终止' };
 					return;
 				}
@@ -883,12 +932,19 @@ export class Agent {
 				for await (const chunk of this.gateway.providerManager.chat(modelRef, summaryMessages, summaryOptions)) {
 					if (this.interruptRequested) {
 						this.logger.info(`任务 ${runId} 被中断`);
-						// 保存中断消息到 session
-						this.gateway.sessionManager.addMessage(session.id, {
-							role: 'assistant',
-							content: '操作已被终止',
-							metadata: { interrupted: true },
-						});
+						// 更新现有 assistant 消息或创建新消息
+						if (currentAssistantMsgId) {
+							this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+								content: '操作已被终止',
+								metadata: { interrupted: true },
+							});
+						} else {
+							this.gateway.sessionManager.addMessage(session.id, {
+								role: 'assistant',
+								content: '操作已被终止',
+								metadata: { interrupted: true },
+							});
+						}
 						yield { type: 'content', content: '操作已被终止' };
 						return;
 					}
@@ -904,11 +960,11 @@ export class Agent {
 				if (chunk.type === 'content') {
 					const chunkContent = chunk.fullContent || chunk.content || '';
 					this.logger.debug(`[总结阶段] 收到 content chunk`);
-					// 总结阶段实时输出内容，但使用不同的类型标记
-					// 前端会根据这个标记决定是否创建新消息
+					// 总结阶段实时输出内容，使用 step_summary 类型
+					// 这样前端可以区分步骤思考和最终总结
 					const newContent = chunkContent.slice(summaryContent.length);
 					if (newContent) {
-						yield { type: 'content', content: newContent, isSummary: true };
+						yield { type: 'step_summary', content: newContent, step: iteration };
 					}
 					summaryContent = chunkContent;
 				} else if (chunk.type === 'tool_use') {
@@ -939,15 +995,44 @@ export class Agent {
 				if (!hasMoreToolCalls) {
 					this.logger.info(`任务完成（AI 总结完成）`);
 					// 保存总结消息到 session
+					// 修复：如果当前轮次已有 assistant 消息（带 toolCalls），则更新该消息
+					// 否则创建新的 assistant 消息
 					if (summaryContent) {
-						this.gateway.sessionManager.addMessage(session.id, {
-							role: 'assistant',
-							content: summaryContent,
-						});
-						this.logger.debug(`[保存总结] 内容长度: ${summaryContent.length}`);
+						if (currentAssistantMsgId) {
+							// 获取现有消息的内容，追加总结内容
+							const sessionData = this.gateway.sessionManager.getSession(session.id);
+							const existingMsg = sessionData?.messages.find(m => m.id === currentAssistantMsgId);
+							const existingContent = typeof existingMsg?.content === 'string' ? existingMsg.content : '';
+							// 在 </thinking> 标签后追加总结内容
+							let newContent: string;
+							if (existingContent.includes('</thinking>')) {
+								// 在 </thinking> 后追加总结
+								newContent = existingContent.replace('</thinking>', `</thinking>\n\n${summaryContent}`);
+							} else {
+								// 没有 thinking 标签，直接追加
+								newContent = existingContent ? existingContent + '\n\n' + summaryContent : summaryContent;
+							}
+							this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+								content: newContent,
+							});
+							this.logger.debug(`[更新总结] msgId=${currentAssistantMsgId}, 内容长度: ${newContent.length}`);
+						} else {
+							// 当前轮次没有 toolCalls，创建新消息
+							this.gateway.sessionManager.addMessage(session.id, {
+								role: 'assistant',
+								content: summaryContent,
+							});
+							this.logger.debug(`[保存总结] 新消息，内容长度: ${summaryContent.length}`);
+						}
 					}
 					yield { type: 'done', content: summaryContent };
 					shouldStop = true;
+					// 重置当前轮次的 assistant 消息 ID（任务完成时）
+					currentAssistantMsgId = null;
+				} else {
+					// 总结阶段产生了新的 toolCalls，继续下一轮迭代
+					// 此时 currentAssistantMsgId 保持不变，新的 toolCalls 会在下一轮被添加到同一个消息中
+					this.logger.info(`总结阶段产生新的 toolCalls，继续迭代`);
 				}
 			}
 
@@ -995,6 +1080,7 @@ export class Agent {
 				markedImage?: string;
 				elements?: Array<{ id: number; text: string; center: [number, number] }>;
 				ocrEnabled?: boolean;
+				windowInfo?: string;
 			};
 			if (sr.success && sr.base64) {
 				const sizeKB = Math.round((sr.base64.length * 0.75) / 1024);
@@ -1010,10 +1096,16 @@ export class Agent {
 					aiContext.push({ type: 'text', text: `识别到的元素列表：\n${elementsText}` });
 				}
 				
+				// 【新增】添加窗口信息（如果有）
+				if (sr.windowInfo) {
+					aiContext.push({ type: 'text', text: sr.windowInfo });
+				}
+				
 				if (hasVision) {
 					// 优先使用标注图（markedImage），如果没有则使用原图（base64）
 					const imageToShow = sr.markedImage || sr.base64;
-					aiContext.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageToShow}` } });
+					// 【修复】使用 PNG 格式，与截图工具保持一致
+					aiContext.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${imageToShow}` } });
 					
 					return {
 						displayContent: `截图成功 (${sizeKB}KB)${sr.ocrEnabled ? `, 识别到 ${sr.elements?.length || 0} 个元素` : ''}`,
@@ -1031,6 +1123,106 @@ export class Agent {
 					isMultimodal: false,
 				};
 			}
+		}
+
+		// computer 工具 - 处理点击等操作后的自动截图
+		if (toolName === 'computer') {
+			const cr = result as {
+				success: boolean;
+				action?: string;
+				message?: string;
+				screenshot?: {
+					base64: string;
+					format: string;
+					imageSize: { width: number; height: number };
+				};
+				imageCoordinate?: { x: number; y: number };
+				actualCoordinate?: { x: number; y: number };
+			};
+
+			if (!cr.success) {
+				return {
+					displayContent: `操作失败`,
+					aiContext: JSON.stringify(result),
+					isMultimodal: false,
+				};
+			}
+
+			// 生成简洁的状态（给用户看）
+			const actionMap: Record<string, string> = {
+				'left_click': '【已点击】',
+				'right_click': '【已右键点击】',
+				'double_click': '【已双击】',
+				'mouse_move': '【已移动鼠标】',
+				'scroll': '【已滚动】',
+				'type': '【已输入】',
+				'key': '【已按键】',
+			};
+			const displayContent = actionMap[cr.action || ''] || '【操作完成】';
+
+			// 如果有截图，构建多模态上下文
+			if (cr.screenshot?.base64 && hasVision) {
+				const sizeKB = Math.round((cr.screenshot.base64.length * 0.75) / 1024);
+				const format = cr.screenshot.format || 'jpeg';
+				const aiContext: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
+					{ type: 'text', text: cr.message || `操作完成 (${cr.action})` },
+					{ type: 'image_url', image_url: { url: `data:image/${format};base64,${cr.screenshot.base64}` } },
+				];
+				
+				return {
+					displayContent: `${displayContent} (${sizeKB}KB)`,
+					aiContext,
+					isMultimodal: true,
+				};
+			}
+
+			// 没有截图，返回文本结果
+			return {
+				displayContent,
+				aiContext: cr.message || JSON.stringify(result),
+				isMultimodal: false,
+			};
+		}
+
+		// app 工具 - 处理应用启动后的自动截图
+		if (toolName === 'app') {
+			const ar = result as {
+				success?: boolean;
+				name?: string;
+				isRunning?: boolean;
+				message?: string;
+				screenshot?: {
+					base64: string;
+					format: string;
+					imageSize: { width: number; height: number };
+				};
+			};
+
+			// 生成简洁的状态（给用户看）
+			const displayContent = ar.isRunning ? `【${ar.name} 已启动】` : '【操作完成】';
+
+			// 如果有截图，构建多模态上下文
+			if (ar.screenshot?.base64 && hasVision) {
+				const sizeKB = Math.round((ar.screenshot.base64.length * 0.75) / 1024);
+				const format = ar.screenshot.format || 'jpeg';
+				const aiContext: Array<{ type: string; text?: string; image_url?: { url: string } }> = [
+					{ type: 'text', text: ar.message || `${ar.name} 已启动` },
+					{ type: 'image_url', image_url: { url: `data:image/${format};base64,${ar.screenshot.base64}` } },
+				];
+				
+				return {
+					displayContent: `${displayContent} (${sizeKB}KB)`,
+					aiContext,
+					isMultimodal: true,
+				};
+			}
+
+			// 没有截图，返回文本结果
+			return {
+				displayContent,
+				aiContext: ar.message || JSON.stringify(result),
+				isMultimodal: false,
+			};
 		}
 
 		if (toolName === 'browser') {

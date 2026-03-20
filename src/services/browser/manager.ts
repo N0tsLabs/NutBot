@@ -83,14 +83,29 @@ export class BrowserManager {
 		// 启动浏览器
 		this.context = await launchBrowser(this.config);
 
-		// 获取或创建页面
-		const pages = this.context.pages();
+		// 等待一小段时间，确保所有恢复的标签页都加载完成
+		await new Promise(resolve => setTimeout(resolve, 500));
+
+		// 获取所有页面
+		let pages = this.context.pages();
+		
 		if (pages.length > 0) {
-			// 使用第一个页面，关闭其他页面
+			// 关闭所有页面，只保留一个空白页面
 			this.page = pages[0];
+			
+			// 先导航到空白页，防止恢复之前的页面
+			try {
+				await this.page.goto('about:blank', { timeout: 5000 });
+			} catch {
+				// 忽略导航错误
+			}
+			
+			// 关闭其他所有页面
 			for (let i = 1; i < pages.length; i++) {
 				try {
-					await pages[i].close();
+					if (!pages[i].isClosed()) {
+						await pages[i].close();
+					}
 				} catch {
 					// 忽略关闭错误
 				}
@@ -102,6 +117,26 @@ export class BrowserManager {
 
 		// 设置默认超时
 		this.page.setDefaultTimeout(this.config.navigationTimeout ?? 30000);
+
+		// 监听新页面打开事件，防止打开新标签页
+		this.context.on('page', async (newPage) => {
+			this.logger.info('检测到新页面打开，正在关闭...');
+			try {
+				// 获取新页面的 URL
+				const newUrl = newPage.url();
+				
+				// 关闭新页面
+				await newPage.close();
+				
+				// 如果新页面有 URL（不是 about:blank），在当前页面导航到该 URL
+				if (newUrl && newUrl !== 'about:blank' && this.page && !this.page.isClosed()) {
+					this.logger.info(`在新页面打开，导航到: ${newUrl}`);
+					await this.page.goto(newUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+				}
+			} catch (error) {
+				this.logger.error('处理新页面时出错:', error);
+			}
+		});
 
 		this.logger.info('浏览器启动成功');
 	}
@@ -234,6 +269,11 @@ export class BrowserManager {
 				if ((el as HTMLElement).offsetParent !== null) {
 					if (count === index) {
 						const htmlEl = el as HTMLElement;
+						
+						// 如果是链接，移除 target="_blank" 防止打开新标签页
+						if (el instanceof HTMLAnchorElement) {
+							el.removeAttribute('target');
+						}
 						
 						// 聚焦元素
 						htmlEl.focus();

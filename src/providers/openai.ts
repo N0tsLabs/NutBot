@@ -118,6 +118,9 @@ export class OpenAIProvider extends BaseProvider {
 			: '无用户消息';
 		this.logger.debug(`[OpenAI 请求] model=${body.model}, messages=${requestMessages?.length || 0}, user="${lastUserContent}"`);
 
+		// 【调试用】打印完整的请求内容到网页日志 - 不需要时请注释掉下面这行
+		// this.logger.info('[OpenAI 完整请求]', JSON.stringify(body, null, 2));
+
 		try {
 			const response = await fetch(baseURL, {
 				method: 'POST',

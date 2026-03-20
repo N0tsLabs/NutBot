@@ -10,8 +10,14 @@ import { systemInfo } from '../../tools/exec.js';
 import { join } from 'path';
 import { existsSync, createReadStream } from 'fs';
 
-// 浏览器截图保存目录
-const BROWSER_SCREENSHOT_DIR = join(systemInfo.homedir, '.nutbot', 'browser-screenshots');
+// 浏览器截图保存目录 - 使用项目根目录下的 data 文件夹
+const BROWSER_SCREENSHOT_DIR = join(process.cwd(), 'data', 'browser-screenshots');
+
+// 点击标记截图保存目录 - 使用项目根目录下的 data 文件夹
+const MARKED_CLICKS_DIR = join(process.cwd(), 'data', 'marked-clicks');
+
+// 系统截图保存目录 - 使用项目根目录下的 data 文件夹
+const SYSTEM_SCREENSHOT_DIR = join(process.cwd(), 'data', 'screenshots');
 
 /**
  * 创建路由插件
@@ -966,10 +972,17 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 		// 检测系统浏览器
 		fastify.get('/browser/detect', async () => {
 			const browsers = await browserService.detectBrowsers();
+			
+			// 获取系统默认浏览器
+			const { getSystemDefaultBrowser } = await import('../../services/browser/launcher.js');
+			const defaultBrowser = getSystemDefaultBrowser();
+			
 			return {
 				success: true,
 				browsers,
 				platform: process.platform,
+				path: defaultBrowser.executablePath,
+				type: defaultBrowser.type,
 			};
 		});
 
@@ -1008,6 +1021,110 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			return reply.send(createReadStream(filePath));
 		});
 
+		// 获取点击标记截图文件
+		fastify.get<{ Params: { filename: string } }>('/screenshots/marked-clicks/:filename', async (request, reply) => {
+			const { filename } = request.params;
+			
+			// 安全检查：防止目录遍历攻击
+			if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+				return reply.code(400).send({ error: true, message: 'Invalid filename' });
+			}
+			
+			const filePath = join(MARKED_CLICKS_DIR, filename);
+			
+			if (!existsSync(filePath)) {
+				return reply.code(404).send({ error: true, message: 'Marked screenshot not found' });
+			}
+			
+			reply.header('Content-Type', 'image/png');
+			reply.header('Cache-Control', 'public, max-age=3600');
+			return reply.send(createReadStream(filePath));
+		});
+
+		// 获取系统截图文件
+		fastify.get<{ Params: { filename: string } }>('/screenshots/system/:filename', async (request, reply) => {
+			const { filename } = request.params;
+			
+			// 安全检查：防止目录遍历攻击
+			if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+				return reply.code(400).send({ error: true, message: 'Invalid filename' });
+			}
+			
+			const filePath = join(SYSTEM_SCREENSHOT_DIR, filename);
+			
+			if (!existsSync(filePath)) {
+				return reply.code(404).send({ error: true, message: 'Screenshot not found' });
+			}
+			
+			reply.header('Content-Type', 'image/jpeg');
+			reply.header('Cache-Control', 'public, max-age=3600');
+			return reply.send(createReadStream(filePath));
+		});
+
+	};
+}
+
+/**
+ * 注册截图服务路由（独立注册，不带 /api 前缀）
+ */
+export function registerScreenshotRoutes(): FastifyPluginAsync {
+	return async (fastify) => {
+		// 获取浏览器截图文件
+		fastify.get<{ Params: { filename: string } }>('/browser/:filename', async (request, reply) => {
+			const { filename } = request.params;
+			
+			if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+				return reply.code(400).send({ error: true, message: 'Invalid filename' });
+			}
+			
+			const filePath = join(BROWSER_SCREENSHOT_DIR, filename);
+			
+			if (!existsSync(filePath)) {
+				return reply.code(404).send({ error: true, message: 'Screenshot not found' });
+			}
+			
+			reply.header('Content-Type', 'image/png');
+			reply.header('Cache-Control', 'public, max-age=3600');
+			return reply.send(createReadStream(filePath));
+		});
+
+		// 获取点击标记截图文件
+		fastify.get<{ Params: { filename: string } }>('/marked-clicks/:filename', async (request, reply) => {
+			const { filename } = request.params;
+			
+			if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+				return reply.code(400).send({ error: true, message: 'Invalid filename' });
+			}
+			
+			const filePath = join(MARKED_CLICKS_DIR, filename);
+			
+			if (!existsSync(filePath)) {
+				return reply.code(404).send({ error: true, message: 'Marked screenshot not found' });
+			}
+			
+			reply.header('Content-Type', 'image/png');
+			reply.header('Cache-Control', 'public, max-age=3600');
+			return reply.send(createReadStream(filePath));
+		});
+
+		// 获取系统截图文件
+		fastify.get<{ Params: { filename: string } }>('/system/:filename', async (request, reply) => {
+			const { filename } = request.params;
+			
+			if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+				return reply.code(400).send({ error: true, message: 'Invalid filename' });
+			}
+			
+			const filePath = join(SYSTEM_SCREENSHOT_DIR, filename);
+			
+			if (!existsSync(filePath)) {
+				return reply.code(404).send({ error: true, message: 'Screenshot not found' });
+			}
+			
+			reply.header('Content-Type', 'image/jpeg');
+			reply.header('Cache-Control', 'public, max-age=3600');
+			return reply.send(createReadStream(filePath));
+		});
 	};
 }
 

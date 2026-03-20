@@ -29,6 +29,7 @@
 
 	--success: #4ec9b0;
 	--error: #f14c4c;
+	--error-hover: #d43a3a;
 	--warning: #cca700;
 	--info: #3794ff;
 
@@ -38,8 +39,8 @@
 	--scrollbar-thumb-hover: #555555;
 }
 
-/* 浅色主题 */
-[data-theme='light'] {
+/* 浅色主题 - 应用于 html 元素 */
+html[data-theme='light'] {
 	--bg-primary: #ffffff;
 	--bg-secondary: #f3f3f3;
 	--bg-tertiary: #e8e8e8;
@@ -481,6 +482,23 @@ body {
 
 .image-modal-img {
 	@apply max-w-full max-h-[85vh] rounded-lg shadow-2xl;
+}
+
+/* 标记截图模态框信息 */
+.image-modal-info {
+	@apply mb-4 text-center;
+}
+
+.image-modal-title {
+	@apply text-lg font-semibold mb-1;
+	color: #ffffff;
+}
+
+.image-modal-path {
+	@apply text-xs;
+	color: rgba(255, 255, 255, 0.6);
+	font-family: monospace;
+	word-break: break-all;
 }
 
 /* ============================================

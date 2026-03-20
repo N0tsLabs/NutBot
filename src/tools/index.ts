@@ -15,6 +15,9 @@ import { NotifyTool } from './notify.js';
 import { WindowTool } from './window.js';
 import { SystemInfoTool } from './system-info.js';
 import { IdentityTool } from './identity.js';
+import { AppTool } from './app.js';
+import { LauncherTool } from './launcher.js';
+import { ProcessTool } from './process.js';
 import type { ToolSchema } from '../types/index.js';
 
 export {
@@ -33,6 +36,9 @@ export {
 	WindowTool,
 	SystemInfoTool,
 	IdentityTool,
+	AppTool,
+	LauncherTool,
+	ProcessTool,
 	systemInfo,
 	getSystemDescription,
 };

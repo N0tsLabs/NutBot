@@ -314,6 +314,9 @@ export class ToolRegistry {
 			{ name: 'window', module: './window.js' }, // 窗口管理
 			{ name: 'system_info', module: './system-info.js' }, // 系统信息（公网IP等）
 			{ name: 'identity', module: './identity.js' }, // 身份管理
+			{ name: 'app', module: './app.js' }, // 应用管理（打开、关闭应用）
+			{ name: 'launcher', module: './launcher.js' }, // 系统启动器（开始菜单、设置等）
+			{ name: 'process', module: './process.js' }, // 进程管理
 		];
 
 		for (const { name, module } of builtinTools) {

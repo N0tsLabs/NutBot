@@ -22,6 +22,10 @@ export const useAppStore = defineStore('app', () => {
 	const currentStatus = ref(null); // 当前执行状态
 	const toolExecutions = ref([]); // 工具执行历史
 
+	// 步骤流数据 - 用于新的时间线UI
+	const processingSteps = ref([]); // 当前处理的步骤列表
+	const currentStep = ref(null); // 当前正在进行的步骤
+
 	// 调试模式
 	const debugConfirm = ref(null); // 当前等待确认的调试数据
 
@@ -194,38 +198,83 @@ export const useAppStore = defineStore('app', () => {
 		logs.value = [];
 	};
 
+	// 添加或更新步骤
+	const addOrUpdateStep = (stepData) => {
+		const existingIndex = processingSteps.value.findIndex(s => s.step === stepData.step);
+		if (existingIndex !== -1) {
+			// 更新现有步骤
+			processingSteps.value[existingIndex] = { ...processingSteps.value[existingIndex], ...stepData };
+		} else {
+			// 添加新步骤
+			processingSteps.value.push(stepData);
+		}
+		currentStep.value = stepData;
+	};
+
 	const handleChatChunk = (message) => {
 		const chunk = message.chunk;
 		const lastMessage = messages.value[messages.value.length - 1];
 
 		switch (chunk.type) {
 			case 'thinking':
-				currentStatus.value = { type: 'thinking', iteration: chunk.iteration };
+				currentStatus.value = { type: 'thinking', iteration: chunk.iteration, step: chunk.step };
+				// 初始化步骤
+				if (chunk.step) {
+					addOrUpdateStep({
+						step: chunk.step,
+						type: 'thinking',
+						status: 'running',
+						thinking: '',
+						tools: [],
+						summary: '',
+					});
+				}
 				break;
 
-		case 'content':
-			if (chunk.isSummary && lastMessage && lastMessage.role === 'assistant' && lastMessage.content && !lastMessage.streaming) {
-				// 总结阶段的内容，创建新消息
-				messages.value.push({
-					id: Date.now().toString(),
-					role: 'assistant',
-					content: chunk.content || '',
-					streaming: true,
-					timestamp: new Date().toISOString(),
-				});
-			} else if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
-				// 直接累积到 content 实现流式显示
-				const newContent = chunk.content || '';
-				if (newContent) {
-					// 直接追加内容，不做任何换行处理
-					lastMessage.content = (lastMessage.content || '') + newContent;
+			case 'step_thinking':
+				// 步骤中的实时思考内容
+				if (chunk.step) {
+					addOrUpdateStep({
+						step: chunk.step,
+						type: 'thinking',
+						status: 'running',
+						thinking: (processingSteps.value.find(s => s.step === chunk.step)?.thinking || '') + (chunk.content || ''),
+					});
 				}
-			}
-			currentStatus.value = { type: 'generating' };
-			break;
+				// 同时更新消息
+				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
+					lastMessage.thinkingContent = (lastMessage.thinkingContent || '') + (chunk.content || '');
+				}
+				currentStatus.value = { type: 'generating', step: chunk.step };
+				break;
+
+			case 'step_summary':
+				// 步骤总结内容
+				if (chunk.step) {
+					addOrUpdateStep({
+						step: chunk.step,
+						type: 'summary',
+						status: 'running',
+						summary: (processingSteps.value.find(s => s.step === chunk.step)?.summary || '') + (chunk.content || ''),
+					});
+				}
+				// 同时更新消息
+				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
+					lastMessage.content = (lastMessage.content || '') + (chunk.content || '');
+				}
+				currentStatus.value = { type: 'summarizing', step: chunk.step };
+				break;
+
+			case 'content':
+				// 兼容旧版本，直接追加到消息内容
+				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
+					lastMessage.content = (lastMessage.content || '') + (chunk.content || '');
+				}
+				currentStatus.value = { type: 'generating' };
+				break;
 
 			case 'tools':
-				currentStatus.value = { type: 'tools', count: chunk.count };
+				currentStatus.value = { type: 'tools', count: chunk.count, step: chunk.step };
 				break;
 
 			case 'tool_start':
@@ -243,7 +292,24 @@ export const useAppStore = defineStore('app', () => {
 					action: action,
 					args: chunk.args,
 					description: chunk.description,
+					step: chunk.step,
 				};
+				// 添加到步骤流
+				if (chunk.step) {
+					const step = processingSteps.value.find(s => s.step === chunk.step);
+					if (step) {
+						if (!step.tools) step.tools = [];
+						step.tools.push({
+							id: `${chunk.tool}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+							name: chunk.tool,
+							action: action,
+							params: chunk.args,
+							status: 'running',
+							description: chunk.description,
+							startTime: Date.now(),
+						});
+					}
+				}
 				toolExecutions.value.push({
 					id: Date.now(),
 					tool: chunk.tool,
@@ -251,16 +317,19 @@ export const useAppStore = defineStore('app', () => {
 					args: chunk.args,
 					status: 'running',
 					startTime: Date.now(),
+					step: chunk.step,
 				});
 				// 在当前消息中添加工具调用记录
 				if (lastMessage && lastMessage.role === 'assistant') {
 					if (!lastMessage.toolCalls) lastMessage.toolCalls = [];
 					lastMessage.toolCalls.push({
+						id: `${chunk.tool}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
 						name: chunk.tool,
 						action: action,
-						arguments: chunk.args,
+						params: chunk.args,
 						status: 'running',
 						description: chunk.description,
+						startTime: Date.now(),
 					});
 				}
 				break;
@@ -269,21 +338,35 @@ export const useAppStore = defineStore('app', () => {
 				currentStatus.value = {
 					type: 'tool_done',
 					tool: chunk.tool,
+					step: chunk.step,
 				};
-				// 更新工具执行状态
-				const runningTool = toolExecutions.value.find((t) => t.tool === chunk.tool && t.status === 'running');
-				if (runningTool) {
-					runningTool.status = 'success';
-					runningTool.result = chunk.result;
-					runningTool.duration = Date.now() - runningTool.startTime;
+				// 更新步骤流中的工具状态
+				if (chunk.step) {
+					const step = processingSteps.value.find(s => s.step === chunk.step);
+					if (step && step.tools) {
+						const tool = step.tools.findLast(t => t.name === chunk.tool && t.status === 'running');
+						if (tool) {
+							tool.status = 'success';
+							tool.result = chunk.result;
+							tool.duration = Date.now() - tool.startTime;
+						}
+					}
+				}
+				// 更新工具执行状态 - 找到最后一个正在运行的同名工具
+				const runningToolIndex = toolExecutions.value.findLastIndex((t) => t.tool === chunk.tool && t.status === 'running');
+				if (runningToolIndex !== -1) {
+					toolExecutions.value[runningToolIndex].status = 'success';
+					toolExecutions.value[runningToolIndex].result = chunk.result;
+					toolExecutions.value[runningToolIndex].duration = Date.now() - toolExecutions.value[runningToolIndex].startTime;
 				}
 
 				// 更新最后一条助手消息的工具调用状态（合并到同一条消息）
-				if (lastMessage && lastMessage.role === 'assistant') {
-					const toolCall = lastMessage.toolCalls?.find((t) => t.name === chunk.tool && t.status === 'running');
-					if (toolCall) {
-						toolCall.status = 'success';
-						toolCall.result = chunk.result;
+				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.toolCalls) {
+					const toolCallIndex = lastMessage.toolCalls.findLastIndex((t) => t.name === chunk.tool && t.status === 'running');
+					if (toolCallIndex !== -1) {
+						lastMessage.toolCalls[toolCallIndex].status = 'success';
+						lastMessage.toolCalls[toolCallIndex].result = chunk.result;
+						lastMessage.toolCalls[toolCallIndex].duration = Date.now() - lastMessage.toolCalls[toolCallIndex].startTime;
 					}
 				}
 				break;
@@ -293,21 +376,35 @@ export const useAppStore = defineStore('app', () => {
 					type: 'tool_error',
 					tool: chunk.tool,
 					error: chunk.error,
+					step: chunk.step,
 				};
-				// 更新工具执行状态
-				const errorTool = toolExecutions.value.find((t) => t.tool === chunk.tool && t.status === 'running');
-				if (errorTool) {
-					errorTool.status = 'error';
-					errorTool.error = chunk.error;
-					errorTool.duration = Date.now() - errorTool.startTime;
+				// 更新步骤流中的工具状态
+				if (chunk.step) {
+					const step = processingSteps.value.find(s => s.step === chunk.step);
+					if (step && step.tools) {
+						const tool = step.tools.findLast(t => t.name === chunk.tool && t.status === 'running');
+						if (tool) {
+							tool.status = 'error';
+							tool.error = chunk.error;
+							tool.duration = Date.now() - tool.startTime;
+						}
+					}
+				}
+				// 更新工具执行状态 - 找到最后一个正在运行的同名工具
+				const errorToolIndex = toolExecutions.value.findLastIndex((t) => t.tool === chunk.tool && t.status === 'running');
+				if (errorToolIndex !== -1) {
+					toolExecutions.value[errorToolIndex].status = 'error';
+					toolExecutions.value[errorToolIndex].error = chunk.error;
+					toolExecutions.value[errorToolIndex].duration = Date.now() - toolExecutions.value[errorToolIndex].startTime;
 				}
 
 				// 更新最后一条助手消息的工具调用状态（合并到同一条消息）
-				if (lastMessage && lastMessage.role === 'assistant') {
-					const toolCall = lastMessage.toolCalls?.find((t) => t.name === chunk.tool && t.status === 'running');
-					if (toolCall) {
-						toolCall.status = 'error';
-						toolCall.result = { error: chunk.error };
+				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.toolCalls) {
+					const toolCallIndex = lastMessage.toolCalls.findLastIndex((t) => t.name === chunk.tool && t.status === 'running');
+					if (toolCallIndex !== -1) {
+						lastMessage.toolCalls[toolCallIndex].status = 'error';
+						lastMessage.toolCalls[toolCallIndex].result = { error: chunk.error };
+						lastMessage.toolCalls[toolCallIndex].duration = Date.now() - lastMessage.toolCalls[toolCallIndex].startTime;
 					}
 				}
 				break;
@@ -405,9 +502,20 @@ export const useAppStore = defineStore('app', () => {
 				msg.streaming = false;
 			}
 		});
+		// 标记所有步骤为完成
+		processingSteps.value.forEach(step => {
+			if (step.status === 'running') {
+				step.status = 'completed';
+			}
+		});
 		// 清理状态
 		currentStatus.value = null;
 		toolExecutions.value = [];
+		// 延迟清理步骤流（让用户可以看到完整流程）
+		setTimeout(() => {
+			processingSteps.value = [];
+			currentStep.value = null;
+		}, 5000);
 	};
 
 	const handleChatError = (message) => {
@@ -513,6 +621,8 @@ export const useAppStore = defineStore('app', () => {
 		// 清理之前的状态
 		currentStatus.value = { type: 'sending' };
 		toolExecutions.value = [];
+		processingSteps.value = []; // 清空步骤流
+		currentStep.value = null;
 
 		// 使用的 Agent ID（优先使用传入的，否则使用当前选中的）
 		const agentId = options.agentId || currentAgentId.value;
@@ -593,28 +703,183 @@ export const useAppStore = defineStore('app', () => {
 		}
 	};
 
-	// 处理历史消息中的 toolCalls，确保 action 字段存在
+	// 中断当前聊天
+	const interruptChat = async (reason = 'user_requested') => {
+		console.log(`[interruptChat] 发送中断请求，reason=${reason}`);
+		
+		// 通过 WebSocket 发送中断请求
+		if (ws.value && ws.value.readyState === 1) {
+			// 1 = OPEN
+			ws.value.send(
+				JSON.stringify({
+					type: 'chat_interrupt',
+					id: Date.now().toString(),
+					payload: {
+						reason,
+						sessionId: currentSessionId.value,
+					},
+				})
+			);
+			console.log('[interruptChat] 中断请求已通过 WebSocket 发送');
+		} else {
+			console.warn('[interruptChat] WebSocket 未连接，无法发送中断请求');
+			// 回退到 HTTP API
+			try {
+				const baseUrl = api.getBaseUrl();
+				await fetch(`${baseUrl}/api/sessions/${currentSessionId.value}/interrupt`, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+					},
+					body: JSON.stringify({ reason }),
+				});
+				console.log('[interruptChat] 中断请求已通过 HTTP 发送');
+			} catch (error) {
+				console.error('[interruptChat] 发送中断请求失败:', error);
+			}
+		}
+	};
+
+	// 处理历史消息中的 toolCalls，确保字段兼容性
 	const processHistoryToolCalls = (history) => {
 		if (!Array.isArray(history)) return history;
 		
-		return history.map(msg => {
-			if (msg.role === 'assistant' && msg.toolCalls && Array.isArray(msg.toolCalls)) {
-				msg.toolCalls = msg.toolCalls.map(tool => {
-					// 如果已经有 action 字段，不需要处理
-					if (tool.action) return tool;
+		const processedMessages = [];
+		let currentAssistantMsg = null;
+		
+		for (const msg of history) {
+			// 处理 assistant 消息
+			if (msg.role === 'assistant') {
+				// 确保 toolCalls 数组存在
+				if (!msg.toolCalls) {
+					msg.toolCalls = [];
+				}
+				processedMessages.push(msg);
+				currentAssistantMsg = msg;
+				continue;
+			}
+			
+			// 处理 tool 消息 - 合并到最近的 assistant 消息
+			if (msg.role === 'tool') {
+				if (currentAssistantMsg) {
+					const params = msg.arguments || msg.params;
 					
-					// 从 arguments 中提取 action
+					// 从 params 中提取 action
+					let action = '';
 					try {
-						const args = typeof tool.arguments === 'string' ? JSON.parse(tool.arguments) : tool.arguments;
-						tool.action = args?.action || args?.method || '';
+						const args = typeof params === 'string' ? JSON.parse(params) : params;
+						action = args?.action || args?.method || '';
 					} catch {
-						tool.action = '';
+						action = '';
 					}
+					
+					const toolData = {
+						id: msg.toolCallId || `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+						name: msg.metadata?.toolName || 'tool',
+						action: action,
+						params: params,
+						result: null,
+						status: 'completed',
+						duration: 0,
+					};
+					
+					// 尝试解析 content 作为 result
+					if (msg.content) {
+						try {
+							const parsed = typeof msg.content === 'string' ? JSON.parse(msg.content) : msg.content;
+							toolData.result = parsed;
+							if (parsed.success === false) {
+								toolData.status = 'error';
+								toolData.error = parsed.error;
+							}
+						} catch {
+							toolData.result = { content: msg.content };
+						}
+					}
+					
+					// 从 metadata 中提取更多信息
+					if (msg.metadata) {
+						if (msg.metadata.isMultimodal) {
+							toolData.isMultimodal = true;
+						}
+						if (msg.metadata.aiContext) {
+							toolData.aiContext = msg.metadata.aiContext;
+						}
+					}
+					
+					currentAssistantMsg.toolCalls.push(toolData);
+					console.log(`[processHistoryToolCalls] 将 tool 消息合并到 assistant 消息:`, toolData.name);
+				} else {
+					console.warn(`[processHistoryToolCalls] 找到 tool 消息但没有前置的 assistant 消息`);
+				}
+				continue;
+			}
+			
+			// 处理包含截图结果的 user 消息（多模态内容）
+			if (msg.role === 'user' && msg.content && msg.content.includes('[截图结果]')) {
+				// 如果上一条是 assistant 消息，将截图内容附加到它的最后一条 tool
+				if (currentAssistantMsg && currentAssistantMsg.toolCalls && currentAssistantMsg.toolCalls.length > 0) {
+					const lastTool = currentAssistantMsg.toolCalls[currentAssistantMsg.toolCalls.length - 1];
+					// 从 content 中提取图片信息
+					const imageMatch = msg.content.match(/\[图片\]/);
+					if (imageMatch && lastTool.result) {
+						// 截图结果已经在 tool 消息中，这里只是标记
+						console.log(`[processHistoryToolCalls] 跳过截图 user 消息，结果已在 tool 中`);
+						continue;
+					}
+				}
+				// 如果不符合上述条件，作为普通 user 消息处理
+				processedMessages.push(msg);
+				currentAssistantMsg = null;
+				continue;
+			}
+			
+			// 普通 user 消息
+			if (msg.role === 'user') {
+				processedMessages.push(msg);
+				currentAssistantMsg = null;
+				continue;
+			}
+			
+			// 其他角色（如 system）直接保留
+			processedMessages.push(msg);
+		}
+		
+		// 处理 assistant 消息中的 toolCalls
+		processedMessages.forEach(msg => {
+			if (msg.role === 'assistant' && msg.toolCalls && Array.isArray(msg.toolCalls)) {
+				msg.toolCalls = msg.toolCalls.map((tool, index) => {
+					// 兼容处理：确保有 id 字段
+					if (!tool.id) {
+						tool.id = `${tool.name || 'tool'}-${msg.timestamp || Date.now()}-${index}`;
+					}
+					
+					// 兼容处理：如果后端返回的是 arguments，转换为 params
+					if (tool.arguments !== undefined && tool.params === undefined) {
+						tool.params = tool.arguments;
+					}
+					
+					// 确保 status 字段存在
+					if (!tool.status) {
+						tool.status = tool.result ? 'success' : 'running';
+					}
+					
+					// 从 params 中提取 action
+					if (!tool.action) {
+						try {
+							const args = typeof tool.params === 'string' ? JSON.parse(tool.params) : tool.params;
+							tool.action = args?.action || args?.method || '';
+						} catch {
+							tool.action = '';
+						}
+					}
+					
 					return tool;
 				});
 			}
-			return msg;
 		});
+		
+		return processedMessages;
 	};
 
 	// 加载数据
@@ -865,7 +1130,7 @@ export const useAppStore = defineStore('app', () => {
 		try {
 			const history = await api.get(`/api/sessions/${id}/history`);
 			if (Array.isArray(history)) {
-				messages.value = history;
+				messages.value = processHistoryToolCalls(history);
 				console.log(`[selectSession] 成功加载 ${history.length} 条历史消息`);
 			} else if (history.error) {
 				console.error(`[selectSession] 加载历史失败: ${history.message}`);
@@ -943,12 +1208,16 @@ export const useAppStore = defineStore('app', () => {
 		agents,
 		currentAgentId,
 		connectionStatus,
+		// 步骤流相关
+		processingSteps,
+		currentStep,
 
 		// 方法
 		setConnected,
 		setWebSocket,
 		handleMessage,
 		sendMessage,
+		interruptChat,
 		loadSessions,
 		loadProviders,
 		loadTools,
