@@ -11,7 +11,7 @@ import { systemInfo } from './exec.js';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
-import { getWindowInfo, formatWindowInfo } from '../utils/window-info.js';
+import { getTaskbar, formatTaskbar, getWindows } from '../utils/ui-automation.js';
 
 // 截图保存目录 - 使用项目根目录下的 data 文件夹
 const SCREENSHOT_DIR = join(process.cwd(), 'data', 'screenshots');
@@ -264,14 +264,12 @@ export class ScreenshotTool extends BaseTool {
 		const savedPath = join(SCREENSHOT_DIR, filename);
 		await fs.writeFile(savedPath, originalBuffer);
 
-		// 【新增】获取窗口信息
+		// 【新增】获取窗口信息（任务栏和系统托盘）
 		let windowInfoText = '';
 		try {
-			const windowInfoResult = await getWindowInfo();
-			if (windowInfoResult.success) {
-				windowInfoText = formatWindowInfo(windowInfoResult);
-				this.logger.debug(`获取到 ${windowInfoResult.windows.length} 个窗口信息`);
-			}
+			const taskbar = await getTaskbar();
+			windowInfoText = formatTaskbar(taskbar);
+			this.logger.debug(`获取到 ${taskbar.length} 个任务栏元素`);
 		} catch (error) {
 			this.logger.warn('获取窗口信息失败:', error);
 		}

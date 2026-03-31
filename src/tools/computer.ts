@@ -919,12 +919,81 @@ export class ComputerTool extends BaseTool {
 			}
 		}
 
-			case 'scroll': {
-				const dir = direction || 'down';
-				await this.lib.scroll(dir, amount);
-				this.logger.debug(`滚动: ${dir} ${amount}`);
-				return withDelay({ success: true, action: 'scroll', direction: dir, amount });
+		case 'scroll': {
+			const dir = direction || 'down';
+			const scrollAmount = amount || 3;
+			
+			// 如果有坐标，先移动鼠标到该位置（滚动通常需要在特定区域进行）
+			let imgX: number | undefined;
+			let imgY: number | undefined;
+			let finalPos: { x: number; y: number } | undefined;
+			let scale: number | undefined;
+			let preScrollBuffer: Buffer | undefined;
+			let preScrollWidth: number = 0;
+			let preScrollHeight: number = 0;
+			
+			if (coordinate && coordinate.length === 2) {
+				[imgX, imgY] = coordinate;
+				scale = await this.getScale();
+				const { x, y } = await this.convertCoordinate(imgX, imgY);
+				finalPos = await this.calibratedMove(x, y);
+				this.logger.debug(`滚动前移动鼠标: 截图(${imgX}, ${imgY}) → 实际(${finalPos.x}, ${finalPos.y})`);
+				
+				// 【关键】在滚动前截图，用于生成标记图
+				const screenshotDesktop = (await import('screenshot-desktop')).default;
+				preScrollBuffer = await screenshotDesktop({ format: 'png' });
+				const sharp = (await import('sharp')).default;
+				const metadata = await sharp(preScrollBuffer).metadata();
+				preScrollWidth = metadata.width || 1920;
+				preScrollHeight = metadata.height || 1080;
 			}
+			
+			// 执行滚动
+			await this.lib.scroll(dir, scrollAmount);
+			this.logger.debug(`滚动: ${dir} ${scrollAmount}`);
+			
+			// 【关键】等待界面响应（滚动后内容加载需要时间）
+			const waitTime = delay > 0 ? delay : 500;
+			await new Promise(r => setTimeout(r, waitTime));
+			
+			// 自动截图返回给 AI（滚动后的截图）
+			const screenshotResult = await this.captureScreenshot();
+			
+			// 如果有坐标，在滚动前的截图上生成带标记的截图
+			let markedImage: string | undefined;
+			if (imgX !== undefined && imgY !== undefined && finalPos && preScrollBuffer) {
+				markedImage = await this.createMarkedScreenshotOnBuffer(
+					preScrollBuffer, preScrollWidth, preScrollHeight,
+					imgX, imgY, finalPos.x, finalPos.y, 'scroll'
+				);
+			}
+			
+			// 获取屏幕信息用于调试
+			const screenSize = await this.lib.getScreenSize();
+			
+			return withDelay({
+				success: true,
+				action: 'scroll',
+				direction: dir,
+				amount: scrollAmount,
+				...(imgX !== undefined && {
+					imageCoordinate: { x: imgX, y: imgY },
+					actualCoordinate: finalPos,
+					scale,
+					markedScreenshot: markedImage,
+				}),
+				screenSize,
+				// 包含截图结果，让 AI 直接看到滚动后的界面
+				screenshot: screenshotResult.success ? {
+					base64: screenshotResult.base64,
+					format: screenshotResult.format,
+					imageSize: screenshotResult.imageSize,
+				} : undefined,
+				message: (imgX !== undefined && imgY !== undefined)
+					? `已在坐标 (${imgX.toFixed(3)}, ${imgY.toFixed(3)}) 执行${dir}滚动，当前屏幕截图已返回，请分析滚动后的界面状态。`
+					: `已执行${dir}滚动，当前屏幕截图已返回，请分析滚动后的界面状态。`,
+			});
+		}
 
 			case 'type': {
 				if (!text) {

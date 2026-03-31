@@ -495,7 +495,7 @@ export class Agent {
 					this.logger.info(`任务 ${runId} 被中断`);
 					// 更新现有 assistant 消息或创建新消息
 					if (currentAssistantMsgId) {
-						this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+						await this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
 							content: '操作已被终止',
 							metadata: { interrupted: true },
 						});
@@ -553,7 +553,7 @@ export class Agent {
 						this.logger.info(`任务 ${runId} 被中断`);
 						// 更新现有 assistant 消息或创建新消息
 						if (currentAssistantMsgId) {
-							this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+							await this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
 								content: '操作已被终止',
 								metadata: { interrupted: true },
 							});
@@ -634,7 +634,7 @@ export class Agent {
 						const existingContent = typeof existingMsg?.content === 'string' ? existingMsg.content : '';
 						// 追加最终回复内容
 						const newContent = existingContent + '\n\n' + fullContent;
-						this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+						await this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
 							content: newContent,
 						});
 						this.logger.debug(`[更新 assistant] msgId=${currentAssistantMsgId}, 追加最终回复`);
@@ -695,7 +695,7 @@ export class Agent {
 							const existingContent = typeof existingMsg?.content === 'string' ? existingMsg.content : '';
 							// 追加新的思考内容（用换行分隔）
 							const newThinkingContent = existingContent + '\n\n' + `<thinking>\n${fullContent}\n</thinking>`;
-							this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+							await this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
 								content: newThinkingContent,
 							});
 						}
@@ -722,7 +722,7 @@ export class Agent {
 						this.logger.info(`任务 ${runId} 在工具执行前被中断`);
 						// 更新现有 assistant 消息，而不是创建新消息
 						if (currentAssistantMsgId) {
-							this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+							await this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
 								content: '操作已被终止',
 								metadata: { interrupted: true },
 							});
@@ -804,7 +804,7 @@ export class Agent {
 							this.logger.info(`任务 ${runId} 在工具执行前被中断`);
 							// 更新现有 assistant 消息或创建新消息
 							if (currentAssistantMsgId) {
-								this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+								await this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
 									content: '操作已被终止',
 									metadata: { interrupted: true },
 								});
@@ -842,7 +842,7 @@ export class Agent {
 						}
 
 						yield { type: 'tool_result', tool: toolName, result, step: iteration };
-	
+
 						const processed = this.processToolResult(toolName, result, capabilities.hasVision);
 						
 						// 添加 tool 结果消息（纯文本）
@@ -854,6 +854,8 @@ export class Agent {
 								toolName,
 								isMultimodal: processed.isMultimodal,
 								aiContext: processed.aiContext,
+								// 【关键】保存完整的原始结果，包含 markedScreenshot 等字段
+								rawResult: result,
 							},
 						});
 						
@@ -916,7 +918,7 @@ export class Agent {
 					this.logger.info(`任务 ${runId} 在工具执行完成后被中断`);
 					// 更新现有 assistant 消息或创建新消息
 					if (currentAssistantMsgId) {
-						this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+						await this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
 							content: '操作已被终止',
 							metadata: { interrupted: true },
 						});

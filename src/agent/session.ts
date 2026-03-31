@@ -278,11 +278,11 @@ export class SessionManager {
 	 * 更新指定消息的内容
 	 * 用于在总结阶段更新 assistant 消息，而不是创建新消息
 	 */
-	updateMessage(
+	async updateMessage(
 		sessionId: string,
 		messageId: string,
 		updates: { content?: string; metadata?: Record<string, unknown> }
-	): void {
+	): Promise<void> {
 		const session = this.sessions.get(sessionId);
 		if (!session) return;
 
@@ -294,7 +294,7 @@ export class SessionManager {
 			if (updates.metadata !== undefined) {
 				message.metadata = { ...message.metadata, ...updates.metadata };
 			}
-			this.saveSession(session);
+			await this.saveSession(session);
 			this.logger.debug(`更新消息 ${messageId} 成功`);
 		} else {
 			this.logger.warn(`未找到消息: ${messageId}`);

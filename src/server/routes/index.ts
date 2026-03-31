@@ -467,6 +467,27 @@ export function registerRoutes(gateway: Gateway): FastifyPluginAsync {
 			}
 		});
 
+		// 更新会话中的消息（用于前端更新消息内容，如终止操作后保存状态）
+		fastify.put<{ Params: { id: string; messageId: string }, Body: { content?: string; metadata?: Record<string, unknown> } }>('/sessions/:id/messages/:messageId', async (request, reply) => {
+			const { id, messageId } = request.params;
+			const { content, metadata } = request.body || {};
+			
+			try {
+				const session = gateway.sessionManager.getSession(id);
+				if (!session) {
+					return reply.code(404).send({ error: true, message: 'Session not found' });
+				}
+				
+				await gateway.sessionManager.updateMessage(id, messageId, { content, metadata });
+				console.log(`[updateMessage] 成功更新会话 ${id} 的消息 ${messageId}`);
+				return { success: true };
+			} catch (error) {
+				const message = (error as Error).message;
+				console.error(`[updateMessage] 更新消息失败: ${message}`);
+				return reply.code(500).send({ error: true, message: `Failed to update message: ${message}` });
+			}
+		});
+
 		// 清空所有会话
 		fastify.delete('/sessions', async () => {
 			await gateway.sessionManager.clearAllSessions();

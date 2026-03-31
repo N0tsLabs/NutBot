@@ -3,7 +3,7 @@
  * 运行: node test/test-ui.mjs
  */
 
-import { getElements, getTaskbar, getWindows, format, formatTaskbar, findApp } from './ui-automation.js';
+import { getElements, getTaskbar, getWindows, format, formatTaskbar, findApp } from '../src/utils/ui-automation.js';
 
 console.log('========================================');
 console.log('   UI 自动化测试');
@@ -43,6 +43,23 @@ try {
         console.log(`✓ 找到 Clash @ (${clash.x}, ${clash.y})`);
     } else {
         console.log('✗ 未找到 Clash');
+    }
+
+    console.log('\n🔍 查找 QQ...');
+    const qq = await findApp('QQ');
+    if (qq.found) {
+        console.log(`✓ 找到 QQ @ (${qq.x}, ${qq.y})`);
+        console.log(`  名称: ${qq.name}`);
+    } else {
+        console.log('✗ 未找到 QQ');
+    }
+
+    console.log('\n🔍 查找微信...');
+    const wechat = await findApp('微信');
+    if (wechat.found) {
+        console.log(`✓ 找到微信 @ (${wechat.x}, ${wechat.y})`);
+    } else {
+        console.log('✗ 未找到微信');
     }
 
     // 4. 获取所有窗口

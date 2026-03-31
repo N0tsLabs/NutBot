@@ -819,6 +819,10 @@ const renderMarkdown = (text) => {
 	let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 	// 如果过滤后为空，可能整段都是思考内容，返回原文
 	if (!cleaned) cleaned = text;
+	// 【关键】将单个换行符转换为 <br> 标签，确保换行正确显示
+	// marked 默认会把单个换行符转为空格，只有双换行符才会产生新段落
+	// 使用负向回顾断言，不把双换行中的第一个换行替换掉
+	cleaned = cleaned.replace(/(?<!\n)\n(?!\n)/g, '<br>');
 	return marked(cleaned);
 };
 

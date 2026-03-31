@@ -36,6 +36,48 @@ export const useAppStore = defineStore('app', () => {
 	const logs = ref([]); // 日志列表
 	const maxLogs = 1000; // 最大日志条数
 
+	// ========== 步骤更新中间件系统 ==========
+	// 用于集成飞书等外部通知渠道
+	const stepUpdateMiddlewares = ref([]); // 注册的中间件列表
+
+	// 注册步骤更新中间件
+	// middleware: (type, chunk, context) => void
+	const registerStepUpdateMiddleware = (middleware) => {
+		if (typeof middleware === 'function') {
+			stepUpdateMiddlewares.value.push(middleware);
+			console.log('[Middleware] 注册成功，当前中间件数量:', stepUpdateMiddlewares.value.length);
+		}
+	};
+
+	// 注销步骤更新中间件
+	const unregisterStepUpdateMiddleware = (middleware) => {
+		const index = stepUpdateMiddlewares.value.indexOf(middleware);
+		if (index > -1) {
+			stepUpdateMiddlewares.value.splice(index, 1);
+			console.log('[Middleware] 注销成功，当前中间件数量:', stepUpdateMiddlewares.value.length);
+		}
+	};
+
+	// 触发步骤更新回调
+	const emitStepUpdate = (type, chunk) => {
+		const context = {
+			sessionId: currentSessionId.value,
+			messages: messages.value,
+			currentStep: currentStep.value,
+			processingSteps: processingSteps.value,
+			toolExecutions: toolExecutions.value,
+			timestamp: new Date().toISOString(),
+		};
+		// 异步执行所有中间件，不阻塞主流程
+		stepUpdateMiddlewares.value.forEach((middleware) => {
+			try {
+				middleware(type, chunk, context);
+			} catch (error) {
+				console.error('[Middleware] 执行失败:', error);
+			}
+		});
+	};
+
 	// ========== 连接状态管理 ==========
 	const connectionStatus = ref({
 		lastUpdate: null,
@@ -231,39 +273,49 @@ export const useAppStore = defineStore('app', () => {
 				}
 				break;
 
-			case 'step_thinking':
-				// 步骤中的实时思考内容
-				if (chunk.step) {
-					addOrUpdateStep({
-						step: chunk.step,
-						type: 'thinking',
-						status: 'running',
-						thinking: (processingSteps.value.find(s => s.step === chunk.step)?.thinking || '') + (chunk.content || ''),
-					});
-				}
-				// 同时更新消息
+		case 'step_thinking':
+			// 步骤中的实时思考内容
+			if (chunk.step) {
+				const existingStep = processingSteps.value.find(s => s.step === chunk.step);
+				const isNewStep = !existingStep;
+				addOrUpdateStep({
+					step: chunk.step,
+					type: 'thinking',
+					status: 'running',
+					thinking: (existingStep?.thinking || '') + (chunk.content || ''),
+				});
+				// 同时更新消息 - 新步骤时添加换行分隔
 				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
-					lastMessage.thinkingContent = (lastMessage.thinkingContent || '') + (chunk.content || '');
+					const separator = isNewStep && lastMessage.thinkingContent ? '\n' : '';
+					lastMessage.thinkingContent = (lastMessage.thinkingContent || '') + separator + (chunk.content || '');
 				}
-				currentStatus.value = { type: 'generating', step: chunk.step };
-				break;
+			}
+			// 触发中间件回调
+			emitStepUpdate('thinking', chunk);
+			currentStatus.value = { type: 'generating', step: chunk.step };
+			break;
 
-			case 'step_summary':
-				// 步骤总结内容
-				if (chunk.step) {
-					addOrUpdateStep({
-						step: chunk.step,
-						type: 'summary',
-						status: 'running',
-						summary: (processingSteps.value.find(s => s.step === chunk.step)?.summary || '') + (chunk.content || ''),
-					});
-				}
-				// 同时更新消息
+		case 'step_summary':
+			// 步骤总结内容
+			if (chunk.step) {
+				const existingStep = processingSteps.value.find(s => s.step === chunk.step);
+				const isNewStep = !existingStep;
+				addOrUpdateStep({
+					step: chunk.step,
+					type: 'summary',
+					status: 'running',
+					summary: (existingStep?.summary || '') + (chunk.content || ''),
+				});
+				// 同时更新消息 - 新步骤时添加换行分隔
 				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
-					lastMessage.content = (lastMessage.content || '') + (chunk.content || '');
+					const separator = isNewStep && lastMessage.content ? '\n' : '';
+					lastMessage.content = (lastMessage.content || '') + separator + (chunk.content || '');
 				}
-				currentStatus.value = { type: 'summarizing', step: chunk.step };
-				break;
+			}
+			// 触发中间件回调
+			emitStepUpdate('summary', chunk);
+			currentStatus.value = { type: 'summarizing', step: chunk.step };
+			break;
 
 			case 'content':
 				// 兼容旧版本，直接追加到消息内容
@@ -277,52 +329,29 @@ export const useAppStore = defineStore('app', () => {
 				currentStatus.value = { type: 'tools', count: chunk.count, step: chunk.step };
 				break;
 
-			case 'tool_start':
-				// 提取 action 从 args 中
-				let action = '';
-				try {
-					const args = typeof chunk.args === 'string' ? JSON.parse(chunk.args) : chunk.args;
-					action = args?.action || args?.method || '';
-				} catch {
-					action = '';
-				}
-				currentStatus.value = {
-					type: 'tool_running',
-					tool: chunk.tool,
-					action: action,
-					args: chunk.args,
-					description: chunk.description,
-					step: chunk.step,
-				};
-				// 添加到步骤流
-				if (chunk.step) {
-					const step = processingSteps.value.find(s => s.step === chunk.step);
-					if (step) {
-						if (!step.tools) step.tools = [];
-						step.tools.push({
-							id: `${chunk.tool}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-							name: chunk.tool,
-							action: action,
-							params: chunk.args,
-							status: 'running',
-							description: chunk.description,
-							startTime: Date.now(),
-						});
-					}
-				}
-				toolExecutions.value.push({
-					id: Date.now(),
-					tool: chunk.tool,
-					action: action,
-					args: chunk.args,
-					status: 'running',
-					startTime: Date.now(),
-					step: chunk.step,
-				});
-				// 在当前消息中添加工具调用记录
-				if (lastMessage && lastMessage.role === 'assistant') {
-					if (!lastMessage.toolCalls) lastMessage.toolCalls = [];
-					lastMessage.toolCalls.push({
+		case 'tool_start':
+			// 提取 action 从 args 中
+			let action = '';
+			try {
+				const args = typeof chunk.args === 'string' ? JSON.parse(chunk.args) : chunk.args;
+				action = args?.action || args?.method || '';
+			} catch {
+				action = '';
+			}
+			currentStatus.value = {
+				type: 'tool_running',
+				tool: chunk.tool,
+				action: action,
+				args: chunk.args,
+				description: chunk.description,
+				step: chunk.step,
+			};
+			// 添加到步骤流
+			if (chunk.step) {
+				const step = processingSteps.value.find(s => s.step === chunk.step);
+				if (step) {
+					if (!step.tools) step.tools = [];
+					step.tools.push({
 						id: `${chunk.tool}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
 						name: chunk.tool,
 						action: action,
@@ -332,44 +361,71 @@ export const useAppStore = defineStore('app', () => {
 						startTime: Date.now(),
 					});
 				}
-				break;
+			}
+			toolExecutions.value.push({
+				id: Date.now(),
+				tool: chunk.tool,
+				action: action,
+				args: chunk.args,
+				status: 'running',
+				startTime: Date.now(),
+				step: chunk.step,
+			});
+			// 在当前消息中添加工具调用记录
+			if (lastMessage && lastMessage.role === 'assistant') {
+				if (!lastMessage.toolCalls) lastMessage.toolCalls = [];
+				lastMessage.toolCalls.push({
+					id: `${chunk.tool}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+					name: chunk.tool,
+					action: action,
+					params: chunk.args,
+					status: 'running',
+					description: chunk.description,
+					startTime: Date.now(),
+				});
+			}
+			// 触发中间件回调
+			emitStepUpdate('tool_start', { ...chunk, action });
+			break;
 
-			case 'tool_result':
-				currentStatus.value = {
-					type: 'tool_done',
-					tool: chunk.tool,
-					step: chunk.step,
-				};
-				// 更新步骤流中的工具状态
-				if (chunk.step) {
-					const step = processingSteps.value.find(s => s.step === chunk.step);
-					if (step && step.tools) {
-						const tool = step.tools.findLast(t => t.name === chunk.tool && t.status === 'running');
-						if (tool) {
-							tool.status = 'success';
-							tool.result = chunk.result;
-							tool.duration = Date.now() - tool.startTime;
-						}
+		case 'tool_result':
+			currentStatus.value = {
+				type: 'tool_done',
+				tool: chunk.tool,
+				step: chunk.step,
+			};
+			// 更新步骤流中的工具状态
+			if (chunk.step) {
+				const step = processingSteps.value.find(s => s.step === chunk.step);
+				if (step && step.tools) {
+					const tool = step.tools.findLast(t => t.name === chunk.tool && t.status === 'running');
+					if (tool) {
+						tool.status = 'success';
+						tool.result = chunk.result;
+						tool.duration = Date.now() - tool.startTime;
 					}
 				}
-				// 更新工具执行状态 - 找到最后一个正在运行的同名工具
-				const runningToolIndex = toolExecutions.value.findLastIndex((t) => t.tool === chunk.tool && t.status === 'running');
-				if (runningToolIndex !== -1) {
-					toolExecutions.value[runningToolIndex].status = 'success';
-					toolExecutions.value[runningToolIndex].result = chunk.result;
-					toolExecutions.value[runningToolIndex].duration = Date.now() - toolExecutions.value[runningToolIndex].startTime;
-				}
+			}
+			// 更新工具执行状态 - 找到最后一个正在运行的同名工具
+			const runningToolIndex = toolExecutions.value.findLastIndex((t) => t.tool === chunk.tool && t.status === 'running');
+			if (runningToolIndex !== -1) {
+				toolExecutions.value[runningToolIndex].status = 'success';
+				toolExecutions.value[runningToolIndex].result = chunk.result;
+				toolExecutions.value[runningToolIndex].duration = Date.now() - toolExecutions.value[runningToolIndex].startTime;
+			}
 
-				// 更新最后一条助手消息的工具调用状态（合并到同一条消息）
-				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.toolCalls) {
-					const toolCallIndex = lastMessage.toolCalls.findLastIndex((t) => t.name === chunk.tool && t.status === 'running');
-					if (toolCallIndex !== -1) {
-						lastMessage.toolCalls[toolCallIndex].status = 'success';
-						lastMessage.toolCalls[toolCallIndex].result = chunk.result;
-						lastMessage.toolCalls[toolCallIndex].duration = Date.now() - lastMessage.toolCalls[toolCallIndex].startTime;
-					}
+			// 更新最后一条助手消息的工具调用状态（合并到同一条消息）
+			if (lastMessage && lastMessage.role === 'assistant' && lastMessage.toolCalls) {
+				const toolCallIndex = lastMessage.toolCalls.findLastIndex((t) => t.name === chunk.tool && t.status === 'running');
+				if (toolCallIndex !== -1) {
+					lastMessage.toolCalls[toolCallIndex].status = 'success';
+					lastMessage.toolCalls[toolCallIndex].result = chunk.result;
+					lastMessage.toolCalls[toolCallIndex].duration = Date.now() - lastMessage.toolCalls[toolCallIndex].startTime;
 				}
-				break;
+			}
+			// 触发中间件回调
+			emitStepUpdate('tool_result', chunk);
+			break;
 
 			case 'tool_error':
 				currentStatus.value = {
@@ -398,18 +454,20 @@ export const useAppStore = defineStore('app', () => {
 					toolExecutions.value[errorToolIndex].duration = Date.now() - toolExecutions.value[errorToolIndex].startTime;
 				}
 
-				// 更新最后一条助手消息的工具调用状态（合并到同一条消息）
-				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.toolCalls) {
-					const toolCallIndex = lastMessage.toolCalls.findLastIndex((t) => t.name === chunk.tool && t.status === 'running');
-					if (toolCallIndex !== -1) {
-						lastMessage.toolCalls[toolCallIndex].status = 'error';
-						lastMessage.toolCalls[toolCallIndex].result = { error: chunk.error };
-						lastMessage.toolCalls[toolCallIndex].duration = Date.now() - lastMessage.toolCalls[toolCallIndex].startTime;
-					}
+			// 更新最后一条助手消息的工具调用状态（合并到同一条消息）
+			if (lastMessage && lastMessage.role === 'assistant' && lastMessage.toolCalls) {
+				const toolCallIndex = lastMessage.toolCalls.findLastIndex((t) => t.name === chunk.tool && t.status === 'running');
+				if (toolCallIndex !== -1) {
+					lastMessage.toolCalls[toolCallIndex].status = 'error';
+					lastMessage.toolCalls[toolCallIndex].result = { error: chunk.error };
+					lastMessage.toolCalls[toolCallIndex].duration = Date.now() - lastMessage.toolCalls[toolCallIndex].startTime;
 				}
-				break;
+			}
+			// 触发中间件回调
+			emitStepUpdate('tool_error', chunk);
+			break;
 
-			case 'done':
+		case 'done':
 				// done 在 handleChatDone 中统一处理
 				currentStatus.value = null;
 				break;
@@ -562,8 +620,10 @@ export const useAppStore = defineStore('app', () => {
 		toolExecutions.value = [];
 	};
 
-	const handleChatInterrupted = (message) => {
+	const handleChatInterrupted = async (message) => {
 		const lastMessage = messages.value[messages.value.length - 1];
+		let messageToSave = null;
+		
 		if (lastMessage && lastMessage.streaming) {
 			lastMessage.streaming = false;
 			// 简化中断提示为一句话
@@ -576,17 +636,34 @@ export const useAppStore = defineStore('app', () => {
 				lastMessage.content = lastMessage.content + '\n\n' + interruptMessage;
 			}
 			lastMessage.interrupted = true;
-		} else if (!lastMessage || lastMessage.role !== 'assistant') {
-			// 如果没有正在流式传输的助手消息，创建一个新的中断消息
-			messages.value.push({
-				id: Date.now().toString(),
-				role: 'assistant',
-				content: '操作已被终止',
-				streaming: false,
-				interrupted: true,
-				timestamp: new Date().toISOString(),
-			});
+			messageToSave = lastMessage;
+		} else if (lastMessage && lastMessage.role === 'assistant') {
+			// 如果最后一条是助手消息但不在流式状态，更新它
+			const interruptMessage = '操作已被终止';
+			if (!lastMessage.content?.includes('操作已被终止')) {
+				lastMessage.content = lastMessage.content + '\n\n' + interruptMessage;
+			}
+			lastMessage.interrupted = true;
+			messageToSave = lastMessage;
 		}
+		// 注意：如果没有助手消息，不创建新消息，因为后端不会有这条消息的记录
+		
+		// 【关键】将中断后的消息状态保存到后端（只保存已存在的消息）
+		if (messageToSave && messageToSave.id && currentSessionId.value) {
+			try {
+				await api.put(`/api/sessions/${currentSessionId.value}/messages/${messageToSave.id}`, {
+					content: messageToSave.content,
+					metadata: {
+						interrupted: true,
+						toolCalls: messageToSave.toolCalls
+					}
+				});
+				console.log('[handleChatInterrupted] 消息状态已保存到后端');
+			} catch (error) {
+				console.error('[handleChatInterrupted] 保存消息状态失败:', error);
+			}
+		}
+		
 		// 清理状态
 		currentStatus.value = null;
 		toolExecutions.value = [];
@@ -805,6 +882,19 @@ export const useAppStore = defineStore('app', () => {
 						if (msg.metadata.aiContext) {
 							toolData.aiContext = msg.metadata.aiContext;
 						}
+						// 【关键】从 rawResult 中提取 markedScreenshot 等字段
+						if (msg.metadata.rawResult) {
+							const rawResult = msg.metadata.rawResult;
+							if (rawResult.markedScreenshot) {
+								toolData.result = toolData.result || {};
+								toolData.result.markedScreenshot = rawResult.markedScreenshot;
+							}
+							// 也提取 screenshot 字段
+							if (rawResult.screenshot) {
+								toolData.result = toolData.result || {};
+								toolData.result.screenshot = rawResult.screenshot;
+							}
+						}
 					}
 					
 					currentAssistantMsg.toolCalls.push(toolData);
@@ -815,24 +905,27 @@ export const useAppStore = defineStore('app', () => {
 				continue;
 			}
 			
-			// 处理包含截图结果的 user 消息（多模态内容）
-			if (msg.role === 'user' && msg.content && msg.content.includes('[截图结果]')) {
-				// 如果上一条是 assistant 消息，将截图内容附加到它的最后一条 tool
-				if (currentAssistantMsg && currentAssistantMsg.toolCalls && currentAssistantMsg.toolCalls.length > 0) {
-					const lastTool = currentAssistantMsg.toolCalls[currentAssistantMsg.toolCalls.length - 1];
-					// 从 content 中提取图片信息
-					const imageMatch = msg.content.match(/\[图片\]/);
-					if (imageMatch && lastTool.result) {
-						// 截图结果已经在 tool 消息中，这里只是标记
-						console.log(`[processHistoryToolCalls] 跳过截图 user 消息，结果已在 tool 中`);
-						continue;
-					}
+		// 处理包含截图结果的 user 消息（多模态内容）
+		// 这些消息是工具执行后自动添加的，用于给 AI 提供截图信息
+		// 但在前端显示时，截图结果应该通过 toolCalls 中的 screenshot 字段展示
+		if (msg.role === 'user' && msg.content && msg.content.includes('[截图结果]')) {
+			// 如果上一条是 assistant 消息，这条截图消息应该关联到它的最后一条 tool
+			if (currentAssistantMsg && currentAssistantMsg.toolCalls && currentAssistantMsg.toolCalls.length > 0) {
+				const lastTool = currentAssistantMsg.toolCalls[currentAssistantMsg.toolCalls.length - 1];
+				// 从 content 中提取图片信息
+				const imageMatch = msg.content.match(/\[图片\]/);
+				if (imageMatch) {
+					// 截图结果消息应该被跳过，不显示在前端
+					// 截图内容应该通过 toolCalls 中的 screenshot 字段展示
+					console.log(`[processHistoryToolCalls] 跳过截图 user 消息，结果应在 tool 中展示`);
+					continue;
 				}
-				// 如果不符合上述条件，作为普通 user 消息处理
-				processedMessages.push(msg);
-				currentAssistantMsg = null;
-				continue;
 			}
+			// 如果不符合上述条件（没有前置 assistant 消息），作为普通 user 消息处理
+			processedMessages.push(msg);
+			currentAssistantMsg = null;
+			continue;
+		}
 			
 			// 普通 user 消息
 			if (msg.role === 'user') {
@@ -1244,5 +1337,11 @@ export const useAppStore = defineStore('app', () => {
 		setCurrentAgent,
 		exportAgent,
 		importAgent,
+
+		// 步骤更新中间件系统（用于集成飞书等通知渠道）
+		stepUpdateMiddlewares,
+		registerStepUpdateMiddleware,
+		unregisterStepUpdateMiddleware,
+		emitStepUpdate,
 	};
 });

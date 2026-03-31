@@ -28,13 +28,13 @@ export class WindowTool extends BaseTool {
 	constructor(config: Record<string, unknown> = {}) {
 		super({
 			name: 'window',
-			description: '窗口管理工具，支持列出窗口、聚焦窗口、调整窗口大小和位置',
+			description: '窗口管理工具，支持列出窗口、调整窗口大小和位置（注意：聚焦窗口请使用点击操作）',
 			parameters: {
 				action: {
 					type: 'string',
-					description: '操作类型: list(列出窗口), focus(聚焦窗口), resize(调整大小), move(移动窗口), minimize(最小化), maximize(最大化), restore(恢复), close(关闭)',
+					description: '操作类型: list(列出窗口), resize(调整大小), move(移动窗口), minimize(最小化), maximize(最大化), restore(恢复), close(关闭)。注意：聚焦窗口请直接点击任务栏图标或窗口',
 					required: true,
-					enum: ['list', 'focus', 'resize', 'move', 'minimize', 'maximize', 'restore', 'close'],
+					enum: ['list', 'resize', 'move', 'minimize', 'maximize', 'restore', 'close'],
 				},
 				title: {
 					type: 'string',
@@ -87,9 +87,6 @@ export class WindowTool extends BaseTool {
 		switch (action) {
 			case 'list':
 				return await this.listWindows();
-			case 'focus':
-				if (!title && !processName) throw new Error('focus 操作需要 title 或 processName 参数');
-				return await this.focusWindow(title, processName);
 			case 'resize':
 				if (!title && !processName) throw new Error('resize 操作需要 title 或 processName 参数');
 				if (width === undefined || height === undefined) throw new Error('resize 操作需要 width 和 height 参数');
@@ -540,16 +537,35 @@ Write-Output $procs[0].MainWindowTitle
 		const searchTerm = title || processName || '';
 
 		if (systemInfo.isWindows) {
+			// 使用 PowerShell 文件执行，避免 here-string 在命令行中的解析问题
 			const psScript = `
-				Add-Type @"
-				using System;
-				using System.Runtime.InteropServices;
-				public class WindowMax { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); }
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class WindowMax {
+		  [DllImport("user32.dll")]
+		  public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+}
 "@
-				$proc = Get-Process | Where-Object { $_.MainWindowTitle -like "*${searchTerm}*" } | Select-Object -First 1
-				if ($proc) { [WindowMax]::ShowWindow($proc.MainWindowHandle, 3) }
-			`;
-			await execAsync(`powershell -command "${psScript.replace(/\n/g, ' ')}"`, { encoding: 'utf-8' });
+$proc = Get-Process | Where-Object { $_.MainWindowTitle -like "*${searchTerm}*" } | Select-Object -First 1
+if ($proc) {
+		  [WindowMax]::ShowWindow($proc.MainWindowHandle, 3)
+		  Write-Host "已最大化窗口: $($proc.MainWindowTitle)"
+} else {
+		  Write-Host "未找到匹配的窗口"
+}
+`;
+			// 写入临时文件执行
+			const { writeFileSync, unlinkSync } = await import('fs');
+			const { join } = await import('path');
+			const { tmpdir } = await import('os');
+			const tmpFile = join(tmpdir(), `nutbot-maximize-${Date.now()}.ps1`);
+			writeFileSync(tmpFile, psScript, 'utf8');
+			try {
+				await execAsync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${tmpFile}"`, { encoding: 'utf-8' });
+			} finally {
+				try { unlinkSync(tmpFile); } catch {}
+			}
 		} else if (systemInfo.isMac) {
 			const script = `tell application "System Events" to click (first button of window 1 of (first process whose name contains "${searchTerm}") whose subrole is "AXFullScreenButton")`;
 			try {

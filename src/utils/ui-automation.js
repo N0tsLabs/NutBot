@@ -159,16 +159,46 @@ if($taskbar) {
             $rect = $child.Current.BoundingRectangle
 
             if($name -and $rect.Width -gt 0 -and $rect.Height -gt 0) {
-                $itemType = if($className -eq "TrayNotifyWnd"){"NotifyArea"}
-                           elseif($name -match "Steam"){"AppIcon"}
-                           elseif($name -match "Clash"){"AppIcon"}
-                           elseif($name -match "WiFi|网络|Wi-Fi"){"Network"}
-                           elseif($name -match "音量|Volume"){"Volume"}
-                           elseif($name -match "时间|时钟"){"Clock"}
-                           else{"TrayIcon"}
+                # 返回所有任务栏元素，让AI自己识别
+                # 只过滤掉一些系统内部元素
+                $isSystemInternal = $className -eq "Start" -or 
+                                   $className -eq "ReBarWindow32" -or
+                                   ($name -eq "" -and $rect.Width -lt 10)
+                
+                if(-not $isSystemInternal) {
+                    $results += @{
+                        name = $name
+                        className = $className
+                        x = [math]::Round($rect.Left + $rect.Width/2)
+                        y = [math]::Round($rect.Top + $rect.Height/2)
+                        width = $rect.Width
+                        height = $rect.Height
+                    }
+                }
+            }
+        } catch {}
+    }
+}
 
+# 查找系统托盘溢出区域
+$overflowCondition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ClassNameProperty, "NotifyIconOverflowWindow")
+$overflowArea = $desktop.FindFirst([System.Windows.Automation.TreeScope]::Children, $overflowCondition)
+
+if($overflowArea) {
+    $overflowChildren = $overflowArea.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition)
+
+    for($i=0; $i -lt $overflowChildren.Count; $i++) {
+        try {
+            $child = $overflowChildren[$i]
+            $name = $child.Current.Name
+            $className = $child.Current.ClassName
+            $rect = $child.Current.BoundingRectangle
+
+            if($name -and $rect.Width -gt 0 -and $rect.Height -gt 0) {
+                # 返回所有溢出区域的元素
                 $results += @{
-                    type = $itemType
                     name = $name
                     className = $className
                     x = [math]::Round($rect.Left + $rect.Width/2)
@@ -184,6 +214,25 @@ if($taskbar) {
 $results | ConvertTo-Json -Depth 5 -Compress
 `;
     return runPS(script, 30000);
+}
+
+// 查找特定应用
+export async function findApp(keyword) {
+    const taskbar = await getTaskbar();
+    const found = taskbar.find(el => el.name && el.name.toLowerCase().includes(keyword.toLowerCase()));
+    
+    if (found) {
+        return {
+            found: true,
+            name: found.name,
+            x: found.x,
+            y: found.y,
+            width: found.width,
+            height: found.height
+        };
+    }
+    
+    return { found: false };
 }
 
 // 获取所有窗口
@@ -242,22 +291,29 @@ export function format(elements, title = 'UI Elements') {
 export function formatTaskbar(elements) {
     const lines = ['# 任务栏元素', ''];
 
-    elements.forEach((el, i) => {
-        if (el.type === 'Taskbar') {
-            lines.push(`📊 ${el.name}: (${el.x}, ${el.y}) ${el.width}x${el.height}`);
-            lines.push('');
-        } else if (el.type === 'NotifyArea') {
-            lines.push(`📌 系统托盘区域: (${el.x}, ${el.y})`);
-            lines.push('');
-        } else if (el.name) {
-            const name = el.name.substring(0, 40) || '(无名称)';
-            const icon = el.type === 'AppIcon' ? '📱' :
-                         el.type === 'Network' ? '📶' :
-                         el.type === 'Volume' ? '🔊' :
-                         el.type === 'Clock' ? '🕐' : '🔹';
-            lines.push(`  ${icon} ${name} @ (${el.x}, ${el.y})`);
+    // 第一个元素是任务栏本身
+    if (elements.length > 0 && elements[0].type === 'Taskbar') {
+        const taskbar = elements[0];
+        lines.push(`📊 ${taskbar.name}: (${taskbar.x}, ${taskbar.y}) ${taskbar.width}x${taskbar.height}`);
+        lines.push('');
+        
+        // 其余元素是任务栏上的子元素
+        for (let i = 1; i < elements.length; i++) {
+            const el = elements[i];
+            if (el.name) {
+                const name = el.name.substring(0, 40) || '(无名称)';
+                lines.push(`  🔹 ${name} @ (${el.x}, ${el.y})`);
+            }
         }
-    });
+    } else {
+        // 兼容旧格式或没有type字段的情况
+        elements.forEach((el) => {
+            if (el.name) {
+                const name = el.name.substring(0, 40) || '(无名称)';
+                lines.push(`  🔹 ${name} @ (${el.x}, ${el.y})`);
+            }
+        });
+    }
 
     return lines.join('\n');
 }
