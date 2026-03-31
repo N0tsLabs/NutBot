@@ -208,7 +208,6 @@
 										:key="idx"
 										class="tool-call-item"
 									>
-										<div v-if="tool.thinking" class="tool-thinking">💭 {{ tool.thinking }}</div>
 										<div class="tool-call-row" @click.stop="toggleToolDetail(msg.id, idx)">
 											<span class="tool-icon">
 												<span v-if="tool.status === 'running'" class="spin">⚙️</span>
@@ -228,17 +227,28 @@
 												</div>
 												<pre class="tool-code">{{ formatToolArgs(tool.arguments) }}</pre>
 											</div>
-													<!-- 系统截图工具 (screenshot) 的截图显示 -->
-													<div v-if="tool.name === 'screenshot' && (tool.result?.base64 || tool.result?.savedPath)" class="tool-section">
-														<div class="tool-section-head"><span>截图预览</span></div>
-														<div class="screenshot-box" @click="openImageModal(tool.result.base64 || tool.result.savedPath)">
-															<img 
-																:src="tool.result.savedPath ? getSystemScreenshotUrl(tool.result.savedPath) : 'data:image/jpeg;base64,' + tool.result.base64" 
-																alt="截图" 
-															/>
-															<div class="screenshot-hover">🔍 点击放大</div>
-														</div>
+										<!-- 系统截图工具 (screenshot) 的截图显示 -->
+												<div v-if="tool.name === 'screenshot' && (tool.result?.base64 || tool.result?.savedPath)" class="tool-section">
+													<div class="tool-section-head"><span>截图预览</span></div>
+													<div class="screenshot-box" @click="openImageModal(tool.result.base64 || tool.result.savedPath)">
+														<img 
+															:src="tool.result.savedPath ? getSystemScreenshotUrl(tool.result.savedPath) : 'data:image/jpeg;base64,' + tool.result.base64" 
+															alt="截图" 
+														/>
+														<div class="screenshot-hover">🔍 点击放大</div>
 													</div>
+												</div>
+												<!-- computer 工具的截图显示（点击、拖拽等操作后的屏幕状态） -->
+												<div v-if="tool.name === 'computer' && tool.result?.screenshot?.base64" class="tool-section">
+													<div class="tool-section-head"><span>操作后屏幕状态</span></div>
+													<div class="screenshot-box" @click="openImageModal('data:image/png;base64,' + tool.result.screenshot.base64)">
+														<img 
+															:src="'data:image/png;base64,' + tool.result.screenshot.base64" 
+															alt="操作后截图" 
+														/>
+														<div class="screenshot-hover">🔍 点击放大</div>
+													</div>
+												</div>
 											<!-- 浏览器工具 (browser) 的截图显示 -->
 											<div v-if="tool.name === 'browser' && tool.result?.action === 'screenshot' && tool.result?.imageUrl" class="tool-section">
 												<div class="tool-section-head"><span>浏览器截图预览</span></div>
@@ -270,17 +280,8 @@
 								</div>
 							</div>
 							
-							<!-- AI 思考内容（如果有） -->
-							<div v-if="getMessageThinking(msg)" class="msg-thinking">
-								<div class="thinking-header">
-									<span class="thinking-icon">💭</span>
-									<span class="thinking-label">思考</span>
-								</div>
-								<div class="thinking-content">{{ getMessageThinking(msg) }}</div>
-							</div>
-
-							<!-- 消息文本 -->
-							<div v-if="getMessageContent(msg)" class="msg-text markdown" v-html="renderMarkdown(getMessageContent(msg) + (msg.streaming ? '▊' : ''))"></div>
+							<!-- 消息文本（包含思考内容和回复内容） -->
+							<div v-if="getFullMessageContent(msg)" class="msg-text markdown" v-html="renderMarkdown(getFullMessageContent(msg) + (msg.streaming ? '▊' : ''))"></div>
 							<div v-else-if="msg.streaming && msg.content" class="msg-text markdown" v-html="renderMarkdown(msg.content + '▊')"></div>
 							<div v-else-if="!msg.streaming && !msg.content && !msg.error" class="msg-text markdown text-gray-500">无内容</div>
 							<div v-if="msg.error" class="msg-error">
@@ -348,7 +349,7 @@
 		<div v-if="imageModal.visible" class="image-modal" @click="closeImageModal">
 			<div class="image-modal-content" @click.stop>
 				<button class="image-modal-close" @click="closeImageModal">✕</button>
-				<img :src="'data:image/jpeg;base64,' + imageModal.base64" class="image-modal-img" />
+				<img :src="imageModal.base64.startsWith('data:') ? imageModal.base64 : 'data:image/jpeg;base64,' + imageModal.base64" class="image-modal-img" />
 			</div>
 		</div>
 
@@ -381,9 +382,6 @@
 			<div class="debug-modal">
 				<div class="debug-modal-header">
 					<h3>🔍 调试模式 - 确认操作</h3>
-					<p class="debug-modal-thinking" v-if="store.debugConfirm.thinking">
-						💭 {{ store.debugConfirm.thinking }}
-					</p>
 				</div>
 				
 				<div class="debug-modal-body">
@@ -1266,11 +1264,15 @@ const extractThinking = (content) => {
 	return { thinking: '', content };
 };
 
-// 获取消息的思考内容（优先从 metadata.thinking，否则从内容提取）
+// 获取消息的思考内容（优先从 metadata.thinking，其次 thinkingContent，否则从内容提取）
 const getMessageThinking = (msg) => {
 	// 优先从 metadata 获取
 	if (msg?.metadata?.thinking) {
 		return msg.metadata.thinking;
+	}
+	// 其次从 thinkingContent 获取（实时流式传输时）
+	if (msg?.thinkingContent) {
+		return msg.thinkingContent;
 	}
 	// 否则从内容提取
 	if (!msg?.content) return '';
@@ -1280,9 +1282,36 @@ const getMessageThinking = (msg) => {
 
 // 获取消息去除思考后的内容
 const getMessageContent = (msg) => {
-	if (!msg?.content) return '';
-	const { content } = extractThinking(msg.content);
-	return content || msg.content;
+	// 优先从 content 获取
+	if (msg?.content) {
+		const { content } = extractThinking(msg.content);
+		return content || msg.content;
+	}
+	// 如果没有 content 但有 thinkingContent，返回空（思考内容会单独显示）
+	return '';
+};
+
+// 获取完整消息内容（思考内容 + 回复内容，作为普通文本显示）
+const getFullMessageContent = (msg) => {
+	if (!msg) return '';
+	
+	let content = '';
+	
+	// 如果有 content，直接使用（包含 <thinking> 标签的内容）
+	if (msg.content) {
+		content = msg.content;
+	}
+	
+	// 如果有 thinkingContent（实时流式传输时），追加到内容中
+	if (msg.thinkingContent) {
+		if (content) {
+			content = content + '\n\n' + msg.thinkingContent;
+		} else {
+			content = msg.thinkingContent;
+		}
+	}
+	
+	return content;
 };
 
 // 键盘事件处理

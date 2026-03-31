@@ -550,6 +550,89 @@ export class ComputerTool extends BaseTool {
 	}
 
 	/**
+	 * 在已有的截图 buffer 上生成带点击标记的截图
+	 * 用于点击前生成标记图，让 AI 确认点击位置
+	 */
+	private async createMarkedScreenshotOnBuffer(
+		buffer: Buffer,
+		width: number,
+		height: number,
+		clickX: number,
+		clickY: number,
+		actualX: number,
+		actualY: number,
+		action: string
+	): Promise<string | undefined> {
+		try {
+			const sharp = (await import('sharp')).default;
+			const { existsSync, mkdirSync } = await import('fs');
+
+			// 截图目录 - 使用项目根目录下的 data 文件夹
+			const MARKED_DIR = join(process.cwd(), 'data', 'marked-clicks');
+			if (!existsSync(MARKED_DIR)) {
+				mkdirSync(MARKED_DIR, { recursive: true });
+			}
+
+			// 将相对坐标转换为截图上的像素坐标
+			// clickX 和 clickY 是 AI 提供的相对坐标 (0-1)
+			const pixelX = Math.round(clickX * width);
+			const pixelY = Math.round(clickY * height);
+
+			// 创建 SVG 标记
+			const markerSize = 30;
+			const svg = `
+				<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+					<defs>
+						<marker id="arrow" markerWidth="10" markerHeight="10" refX="5" refY="5" orient="auto">
+							<path d="M0,0 L10,5 L0,10" fill="#ff0000" />
+						</marker>
+					</defs>
+					
+					<!-- 十字准星 -->
+					<line x1="${pixelX - markerSize}" y1="${pixelY}" x2="${pixelX + markerSize}" y2="${pixelY}" 
+						stroke="#ff0000" stroke-width="3" />
+					<line x1="${pixelX}" y1="${pixelY - markerSize}" x2="${pixelX}" y2="${pixelY + markerSize}" 
+						stroke="#ff0000" stroke-width="3" />
+					
+					<!-- 中心点 -->
+					<circle cx="${pixelX}" cy="${pixelY}" r="6" fill="#ff0000" />
+					<circle cx="${pixelX}" cy="${pixelY}" r="10" fill="none" stroke="#ff0000" stroke-width="2" />
+					
+					<!-- 标签背景 -->
+					<rect x="${pixelX + 15}" y="${pixelY - 35}" width="280" height="50" 
+						fill="rgba(255, 0, 0, 0.8)" rx="4" />
+					
+					<!-- 标签文字 -->
+					<text x="${pixelX + 20}" y="${pixelY - 18}" fill="white" font-size="14" font-weight="bold"
+						font-family="Arial, sans-serif">${action}</text>
+					<text x="${pixelX + 20}" y="${pixelY}" fill="white" font-size="12"
+						font-family="Arial, sans-serif">相对: (${clickX.toFixed(3)}, ${clickY.toFixed(3)})</text>
+					<text x="${pixelX + 20}" y="${pixelY + 14}" fill="white" font-size="12"
+						font-family="Arial, sans-serif">实际: (${actualX}, ${actualY})</text>
+				</svg>
+			`;
+
+			// 合成图片
+			const markedBuffer = await sharp(buffer)
+				.composite([{ input: Buffer.from(svg), blend: 'over' }])
+				.png()
+				.toBuffer();
+
+			// 保存文件
+			const filename = `click-${Date.now()}.png`;
+			const filepath = join(MARKED_DIR, filename);
+			await sharp(markedBuffer).toFile(filepath);
+
+			this.logger.info(`已生成点击标记截图(点击前): ${filepath}`);
+			// 返回文件名，前端通过 /screenshots/marked-clicks/{filename} 访问
+			return filename;
+		} catch (error) {
+			this.logger.warn('生成点击标记截图失败:', error);
+			return undefined;
+		}
+	}
+
+	/**
 	 * 截图并返回 base64（用于 click 等操作后自动截图）
 	 */
 	private async captureScreenshot(): Promise<{
@@ -688,6 +771,20 @@ export class ComputerTool extends BaseTool {
 				const [imgX, imgY] = coordinate;
 				const scale = await this.getScale();
 				const { x, y } = await this.convertCoordinate(imgX, imgY);
+				
+				// 【关键】先截图（点击前），用于生成标记图让 AI 确认点击位置
+				const screenshotDesktop = (await import('screenshot-desktop')).default;
+				const sharp = (await import('sharp')).default;
+				const preClickBuffer = await screenshotDesktop({ format: 'png' });
+				const metadata = await sharp(preClickBuffer).metadata();
+				const width = metadata.width || 1920;
+				const height = metadata.height || 1080;
+				
+				// 在点击前的截图上生成标记图
+				const markedImage = await this.createMarkedScreenshotOnBuffer(
+					preClickBuffer, width, height, imgX, imgY, x, y, 'left_click'
+				);
+				
 				const finalPos = await this.calibratedMove(x, y);
 				// 增加延迟，确保鼠标移动完成后再点击
 				await new Promise(r => setTimeout(r, 100));
@@ -698,11 +795,8 @@ export class ComputerTool extends BaseTool {
 				const waitTime = delay > 0 ? delay : 500;
 				await new Promise(r => setTimeout(r, waitTime));
 
-				// 自动截图返回给 AI
+				// 自动截图返回给 AI（点击后）
 				const screenshotResult = await this.captureScreenshot();
-
-				// 生成带标记的截图
-				const markedImage = await this.createMarkedScreenshot(imgX, imgY, finalPos.x, finalPos.y, 'left_click');
 
 				// 获取屏幕信息用于调试
 				const screenSize = await this.lib.getScreenSize();
@@ -715,14 +809,14 @@ export class ComputerTool extends BaseTool {
 					actualCoordinate: finalPos,
 					scale: scale,
 					screenSize: screenSize,
-					markedScreenshot: markedImage,
+					markedScreenshot: markedImage, // 这是点击前的标记图
 					// 包含截图结果，让 AI 直接看到点击后的界面
 					screenshot: screenshotResult.success ? {
 						base64: screenshotResult.base64,
 						format: screenshotResult.format,
 						imageSize: screenshotResult.imageSize,
 					} : undefined,
-					message: `已在坐标 (${imgX.toFixed(3)}, ${imgY.toFixed(3)}) 执行左键点击，当前屏幕截图已返回，请分析点击后的界面状态。`,
+					message: `已在坐标 (${imgX.toFixed(3)}, ${imgY.toFixed(3)}) 执行左键点击。标记图显示的是点击前的界面状态，当前屏幕截图已返回，请分析点击后的界面状态。`,
 				});
 			} else {
 				await this.lib.mouse.leftClick();
@@ -838,7 +932,26 @@ export class ComputerTool extends BaseTool {
 				}
 				await this.lib.type(text);
 				this.logger.debug(`输入文本: ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
-				return withDelay({ success: true, action: 'type', text });
+				
+				// 【关键】等待界面响应
+				const waitTime = delay > 0 ? delay : 500;
+				await new Promise(r => setTimeout(r, waitTime));
+				
+				// 自动截图返回给 AI
+				const screenshotResult = await this.captureScreenshot();
+				
+				return withDelay({
+					success: true,
+					action: 'type',
+					text,
+					// 包含截图结果
+					screenshot: screenshotResult.success ? {
+						base64: screenshotResult.base64,
+						format: screenshotResult.format,
+						imageSize: screenshotResult.imageSize,
+					} : undefined,
+					message: `已输入文本"${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"，当前屏幕截图已返回，请分析输入后的界面状态。`,
+				});
 			}
 
 			case 'key': {
@@ -847,7 +960,26 @@ export class ComputerTool extends BaseTool {
 				}
 				await this.lib.key(key);
 				this.logger.debug(`按键: ${key}`);
-				return withDelay({ success: true, action: 'key', key });
+				
+				// 【关键】等待界面响应
+				const waitTime = delay > 0 ? delay : 500;
+				await new Promise(r => setTimeout(r, waitTime));
+				
+				// 自动截图返回给 AI
+				const screenshotResult = await this.captureScreenshot();
+				
+				return withDelay({
+					success: true,
+					action: 'key',
+					key,
+					// 包含截图结果
+					screenshot: screenshotResult.success ? {
+						base64: screenshotResult.base64,
+						format: screenshotResult.format,
+						imageSize: screenshotResult.imageSize,
+					} : undefined,
+					message: `已执行按键 ${key}，当前屏幕截图已返回，请分析按键后的界面状态。`,
+				});
 			}
 
 			case 'hotkey': {
@@ -856,7 +988,26 @@ export class ComputerTool extends BaseTool {
 				}
 				await this.lib.hotkey(keys);
 				this.logger.debug(`快捷键: ${keys.join('+')}`);
-				return withDelay({ success: true, action: 'hotkey', keys });
+				
+				// 【关键】等待界面响应
+				const waitTime = delay > 0 ? delay : 500;
+				await new Promise(r => setTimeout(r, waitTime));
+				
+				// 自动截图返回给 AI，让 AI 看到按键后的界面状态
+				const screenshotResult = await this.captureScreenshot();
+				
+				return withDelay({
+					success: true,
+					action: 'hotkey',
+					keys,
+					// 包含截图结果，让 AI 直接看到按键后的界面
+					screenshot: screenshotResult.success ? {
+						base64: screenshotResult.base64,
+						format: screenshotResult.format,
+						imageSize: screenshotResult.imageSize,
+					} : undefined,
+					message: `已执行快捷键 ${keys.join('+')}，当前屏幕截图已返回，请分析按键后的界面状态。`,
+				});
 			}
 
 			case 'cursor_position': {

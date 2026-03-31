@@ -12,6 +12,7 @@ import { logger } from '../utils/logger.js';
 const log = logger.child('PromptParser');
 
 export interface ParsedToolCall {
+	id?: string | null;
 	name: string;
 	arguments: Record<string, unknown>;
 }

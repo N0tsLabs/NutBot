@@ -221,9 +221,9 @@ export class Agent {
 		const provider = this.gateway.providerManager.getProvider(modelRef);
 		if (provider) {
 			return {
-				hasVision: provider.supportsVision?.() ?? defaultCapabilities.hasVision,
-				hasFunctionCall: provider.supportsFunctionCall?.() ?? defaultCapabilities.hasFunctionCall,
-				supportsThinking: provider.supportsThinking?.() ?? defaultCapabilities.supportsThinking,
+				hasVision: provider.supportsVision ?? defaultCapabilities.hasVision,
+				hasFunctionCall: provider.supportsFunctionCall() ?? defaultCapabilities.hasFunctionCall,
+				supportsThinking: provider.supportsThinking() ?? defaultCapabilities.supportsThinking,
 			};
 		}
 
@@ -548,10 +548,6 @@ export class Agent {
 					? { tools: tools as any }  // Function mode
 					: {};  // Prompt mode
 
-				let summaryContent = '';
-				let hasMoreToolCalls = false;
-				let summaryDone = false;
-
 				for await (const chunk of this.gateway.providerManager.chat(modelRef, messages, chatOptions)) {
 					if (this.interruptRequested) {
 						this.logger.info(`任务 ${runId} 被中断`);
@@ -586,7 +582,7 @@ export class Agent {
 					// 【修改】实时输出思考内容，让用户看到 AI 的思考过程
 					// 使用 step_thinking 类型标记这是步骤中的思考
 					if (newContent) {
-						yield { type: 'step_thinking', content: newContent, iteration };
+						yield { type: 'step_thinking', content: newContent, step: iteration };
 					}
 				} else if (chunk.type === 'tool_use') {
 						// 处理工具调用（Function Calling 模式）
@@ -628,9 +624,22 @@ export class Agent {
 						this.logger.aiResponse(fullContent);
 					}
 
-					// 保存 assistant 消息到 session（无工具调用的情况）
-					// 修复：确保没有工具调用的 AI 回复也能被持久化保存
-					if (fullContent) {
+				// 保存 assistant 消息到 session（无工具调用的情况）
+				// 修复：确保没有工具调用的 AI 回复也能被持久化保存
+				if (fullContent) {
+					if (currentAssistantMsgId) {
+						// 如果已有消息，追加内容到现有消息
+						const sessionData = this.gateway.sessionManager.getSession(session.id);
+						const existingMsg = sessionData?.messages.find(m => m.id === currentAssistantMsgId);
+						const existingContent = typeof existingMsg?.content === 'string' ? existingMsg.content : '';
+						// 追加最终回复内容
+						const newContent = existingContent + '\n\n' + fullContent;
+						this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+							content: newContent,
+						});
+						this.logger.debug(`[更新 assistant] msgId=${currentAssistantMsgId}, 追加最终回复`);
+					} else {
+						// 创建新的 assistant 消息
 						const msgId = `msg_${Date.now()}`;
 						this.gateway.sessionManager.addMessage(session.id, {
 							id: msgId,
@@ -639,10 +648,13 @@ export class Agent {
 						});
 						this.logger.debug(`[保存 assistant] msgId=${msgId}, 无工具调用`);
 					}
+				}
 
-					this.logger.info(`任务完成（无工具调用）`);
-					shouldStop = true;
-					continue;
+				this.logger.info(`任务完成（无工具调用）`);
+				shouldStop = true;
+				// 重置消息 ID，为下一轮对话做准备
+				currentAssistantMsgId = null;
+				continue;
 				}
 
 				// ========== 8. 执行工具调用 ==========
@@ -673,8 +685,21 @@ export class Agent {
 					});
 					
 					if (currentAssistantMsgId) {
-						// 如果当前轮次已有 assistant 消息，追加 toolCalls
+						// 如果当前轮次已有 assistant 消息，追加 toolCalls 和思考内容
 						this.gateway.sessionManager.appendToolCalls(session.id, currentAssistantMsgId, toolCallsData);
+						
+						// 【关键】追加本次迭代的思考内容到现有消息
+						if (fullContent) {
+							const sessionData = this.gateway.sessionManager.getSession(session.id);
+							const existingMsg = sessionData?.messages.find(m => m.id === currentAssistantMsgId);
+							const existingContent = typeof existingMsg?.content === 'string' ? existingMsg.content : '';
+							// 追加新的思考内容（用换行分隔）
+							const newThinkingContent = existingContent + '\n\n' + `<thinking>\n${fullContent}\n</thinking>`;
+							this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
+								content: newThinkingContent,
+							});
+						}
+						
 						this.logger.debug(`[追加 toolCalls] msgId=${currentAssistantMsgId}, toolCalls=${JSON.stringify(toolCalls.map(tc => tc.name))}`);
 					} else {
 						// 创建新的 assistant 消息
@@ -857,7 +882,7 @@ export class Agent {
 	
 						// 更新 assistant 消息中的 toolCall，添加执行结果
 						if (currentToolCallId) {
-							this.gateway.sessionManager.updateToolCallResult(session.id, currentToolCallId, result);
+							this.gateway.sessionManager.updateToolCallResult(session.id, currentToolCallId, result as { success?: boolean; error?: string; [key: string]: unknown });
 						}
 					} catch (error) {
 						const errorMessage = (error as Error).message;
@@ -906,134 +931,17 @@ export class Agent {
 					return;
 				}
 
-				// ========== 9. 工具执行完成，调用 AI 总结 ==========
-				this.logger.debug(`工具执行完成，准备调用 AI 总结`);
-				yield { type: 'thinking', iteration: iteration + 0.5 };  // 使用半迭代号表示总结阶段
-
-				// 获取最新消息（包含工具结果）- 使用智能压缩
-				const summaryMessages = this.gateway.sessionManager.getMessagesForAI(session.id, {
-					systemPrompt: finalSystemPrompt,
-					maxTokens: 60000,
-					preserveRecentRounds: 6,
-				});
-
-			// 总结阶段恢复工具调用能力，允许 AI 继续执行下一步
-			const summaryOptions = { tools: tools as any[], tool_choice: 'auto' };
-
-			// 在每次总结开始前添加换行分隔（如果不是第一次总结）
-			if (iteration > 1) {
-				yield { type: 'content', content: '\n\n', isSummary: true };
-			}
-
-			summaryContent = '';
-				hasMoreToolCalls = false;
-				summaryDone = false;
-
-				for await (const chunk of this.gateway.providerManager.chat(modelRef, summaryMessages, summaryOptions)) {
-					if (this.interruptRequested) {
-						this.logger.info(`任务 ${runId} 被中断`);
-						// 更新现有 assistant 消息或创建新消息
-						if (currentAssistantMsgId) {
-							this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
-								content: '操作已被终止',
-								metadata: { interrupted: true },
-							});
-						} else {
-							this.gateway.sessionManager.addMessage(session.id, {
-								role: 'assistant',
-								content: '操作已被终止',
-								metadata: { interrupted: true },
-							});
-						}
-						yield { type: 'content', content: '操作已被终止' };
-						return;
-					}
-
-					if (chunk.type === 'error') {
-						// 处理 API 错误
-						const errorMsg = chunk.error || chunk.content || '未知错误';
-						this.logger.error(`总结阶段 API 错误: ${errorMsg}`);
-						yield { type: 'error', error: errorMsg };
-						return;
-					}
-
-				if (chunk.type === 'content') {
-					const chunkContent = chunk.fullContent || chunk.content || '';
-					this.logger.debug(`[总结阶段] 收到 content chunk`);
-					// 总结阶段实时输出内容，使用 step_summary 类型
-					// 这样前端可以区分步骤思考和最终总结
-					const newContent = chunkContent.slice(summaryContent.length);
-					if (newContent) {
-						yield { type: 'step_summary', content: newContent, step: iteration };
-					}
-					summaryContent = chunkContent;
-				} else if (chunk.type === 'tool_use') {
-						// 如果有新的工具调用，继续执行
-						hasMoreToolCalls = true;
-						const toolUse = chunk.toolUse as any;
-						if (toolUse?.function?.name) {
-							toolCalls.push({
-								id: toolUse.id || null,
-								name: toolUse.function.name,
-								arguments: safeParseJSON(toolUse.function.arguments, {}),
-							});
-						}
-					} else if (chunk.type === 'finish') {
-						// 如果 finish_reason 是 stop 且没有新工具调用，说明总结完成
-						if (chunk.reason === 'stop' && !hasMoreToolCalls) {
-							summaryDone = true;
-						}
-					}
-
-					// 如果总结完成，退出循环
-					if (summaryDone) {
-						break;
-					}
-				}
-
-				// 如果没有新的工具调用，任务完成
-				if (!hasMoreToolCalls) {
-					this.logger.info(`任务完成（AI 总结完成）`);
-					// 保存总结消息到 session
-					// 修复：如果当前轮次已有 assistant 消息（带 toolCalls），则更新该消息
-					// 否则创建新的 assistant 消息
-					if (summaryContent) {
-						if (currentAssistantMsgId) {
-							// 获取现有消息的内容，追加总结内容
-							const sessionData = this.gateway.sessionManager.getSession(session.id);
-							const existingMsg = sessionData?.messages.find(m => m.id === currentAssistantMsgId);
-							const existingContent = typeof existingMsg?.content === 'string' ? existingMsg.content : '';
-							// 在 </thinking> 标签后追加总结内容
-							let newContent: string;
-							if (existingContent.includes('</thinking>')) {
-								// 在 </thinking> 后追加总结
-								newContent = existingContent.replace('</thinking>', `</thinking>\n\n${summaryContent}`);
-							} else {
-								// 没有 thinking 标签，直接追加
-								newContent = existingContent ? existingContent + '\n\n' + summaryContent : summaryContent;
-							}
-							this.gateway.sessionManager.updateMessage(session.id, currentAssistantMsgId, {
-								content: newContent,
-							});
-							this.logger.debug(`[更新总结] msgId=${currentAssistantMsgId}, 内容长度: ${newContent.length}`);
-						} else {
-							// 当前轮次没有 toolCalls，创建新消息
-							this.gateway.sessionManager.addMessage(session.id, {
-								role: 'assistant',
-								content: summaryContent,
-							});
-							this.logger.debug(`[保存总结] 新消息，内容长度: ${summaryContent.length}`);
-						}
-					}
-					yield { type: 'done', content: summaryContent };
-					shouldStop = true;
-					// 重置当前轮次的 assistant 消息 ID（任务完成时）
-					currentAssistantMsgId = null;
-				} else {
-					// 总结阶段产生了新的 toolCalls，继续下一轮迭代
-					// 此时 currentAssistantMsgId 保持不变，新的 toolCalls 会在下一轮被添加到同一个消息中
-					this.logger.info(`总结阶段产生新的 toolCalls，继续迭代`);
-				}
+				// ========== 9. 【优化】工具执行完成后，直接进入下一轮迭代 ==========
+				// OpenClaw 式流程：AI 在一次调用中同时完成"思考"和"决定下一步"
+				// 不需要单独的"总结阶段"，工具结果直接作为下一轮的消息
+				this.logger.debug(`工具执行完成，准备进入下一轮迭代`);
+				
+				// 【关键】不重置 currentAssistantMsgId，保持同一个消息
+				// 这样所有迭代轮次的 toolCalls 和思考内容都会合并到同一个消息中
+				// 只有在任务完成时才重置
+				
+				// 继续下一轮迭代（while 循环会自动继续）
+				continue;
 			}
 
 			// 超时强制总结
@@ -1157,6 +1065,7 @@ export class Agent {
 				'scroll': '【已滚动】',
 				'type': '【已输入】',
 				'key': '【已按键】',
+				'hotkey': '【已按快捷键】',
 			};
 			const displayContent = actionMap[cr.action || ''] || '【操作完成】';
 
