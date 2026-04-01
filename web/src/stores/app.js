@@ -284,9 +284,9 @@ export const useAppStore = defineStore('app', () => {
 					status: 'running',
 					thinking: (existingStep?.thinking || '') + (chunk.content || ''),
 				});
-				// 同时更新消息 - 新步骤时添加换行分隔
+				// 同时更新消息 - 新步骤时添加双换行分隔（产生段落效果）
 				if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
-					const separator = isNewStep && lastMessage.thinkingContent ? '\n' : '';
+					const separator = isNewStep && lastMessage.thinkingContent ? '\n\n' : '';
 					lastMessage.thinkingContent = (lastMessage.thinkingContent || '') + separator + (chunk.content || '');
 				}
 			}
